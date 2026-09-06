@@ -1,49 +1,43 @@
 name: Build MediBox Android APK
+
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: subosito/flutter-action@v2
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Generate Android project
-        run: |
-          flutter create --platforms=android --project-name medibox --org lt.medibox .
-          rm -rf test
+      - name: Flutter version
+        run: flutter --version
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Add camera permission
-        run: |
-          python3 - <<'PY2'
-          p='android/app/src/main/AndroidManifest.xml'
-          s=open(p,encoding='utf-8').read()
-          needle='<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
-          if 'android.permission.CAMERA' not in s:
-              s=s.replace(needle, needle+'\n    <uses-permission android:name="android.permission.CAMERA"/>')
-          open(p,'w',encoding='utf-8').write(s)
-          PY2
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
 
-      - name: Analyze application
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib
+      - name: Tests
+        run: flutter test
 
-      - name: Build release APK
+      - name: Build APK
         run: flutter build apk --release
 
-      - name: Upload APK
+      - name: Upload MediBox APK
         uses: actions/upload-artifact@v4
         with:
-          name: MediBox-v1-APK
+          name: MediBox-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
