@@ -1,0 +1,22 @@
+name: medibox
+description: MediBox - išmani šeimos vaistinėlė
+publish_to: 'none'
+version: 0.2.0+2
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  shared_preferences: ^2.5.3
+  image_picker: ^1.1.2
+  google_mlkit_text_recognition: ^0.15.0
+  mobile_scanner: ^7.0.1
+  url_launcher: ^6.3.2
+  intl: ^0.20.2
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+flutter:
+  uses-material-design: true

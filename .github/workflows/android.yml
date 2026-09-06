@@ -1,0 +1,35 @@
+name: Build MediBox Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Android project
+        run: flutter create --platforms=android --project-name medibox --org lt.medibox .
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Add camera permission
+        run: |
+          python3 - <<'PY'
+          p='android/app/src/main/AndroidManifest.xml'
+          s=open(p,encoding='utf-8').read()
+          needle='<manifest xmlns:android="http://schemas.android.com/apk/res/android">'
+          if 'android.permission.CAMERA' not in s:
+              s=s.replace(needle, needle+'\n    <uses-permission android:name="android.permission.CAMERA"/>')
+          open(p,'w',encoding='utf-8').write(s)
+          PY
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediBox-v1-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
