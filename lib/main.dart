@@ -54,10 +54,15 @@ class App extends StatefulWidget {
 
 class _App extends State<App> {
   AppData? data;
+  bool launchAccepted = false;
   @override
   void initState() {
     super.initState();
-    Store.load().then((v) {
+    Future.wait([
+      Store.load(),
+      Future<void>.delayed(const Duration(milliseconds: 1400)),
+    ]).then((values) {
+      final v = values.first as AppData;
       if (mounted) setState(() => data = v);
     });
   }
@@ -72,10 +77,20 @@ class _App extends State<App> {
   @override
   Widget build(c) {
     final d = data;
-    if (d == null)
-      return const MaterialApp(
-        home: Scaffold(body: Center(child: CircularProgressIndicator())),
+    if (d == null || !launchAccepted) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        locale: d != null && d.language != 'system' ? Locale(d.language) : null,
+        supportedLocales: const [Locale('lt'), Locale('en')],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
+        home: LaunchScreen(
+          ready: d != null,
+          onStart: d == null
+              ? null
+              : () => setState(() => launchAccepted = true),
+        ),
       );
+    }
     Locale? locale;
     if (d.language != 'system') locale = Locale(d.language);
     return MaterialApp(
@@ -114,6 +129,121 @@ class _App extends State<App> {
           : OnboardingPage(data: d, onChanged: changed),
     );
   }
+}
+
+class LaunchScreen extends StatelessWidget {
+  final bool ready;
+  final VoidCallback? onStart;
+  const LaunchScreen({super.key, required this.ready, this.onStart});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: const Color(0xfff6fbfa),
+    body: SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(28, 26, 28, 22),
+        child: Column(
+          children: [
+            const MediBoxLogo(size: 76),
+            const SizedBox(height: 12),
+            const Text(
+              'MediBox',
+              style: TextStyle(
+                fontSize: 42,
+                height: 1,
+                fontWeight: FontWeight.w900,
+                color: navy,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              tx(
+                context,
+                'Tavo išmani šeimos vaistinėlė.',
+                'Your smart family medicine cabinet.',
+              ),
+              style: const TextStyle(fontSize: 17, color: navy),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: Image.asset(
+                'assets/images/medibox_family.webp',
+                fit: BoxFit.contain,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(15),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: .94),
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x14000000), blurRadius: 16),
+                ],
+              ),
+              child: const Column(
+                children: [
+                  _LaunchBenefit(
+                    Icons.inventory_2_outlined,
+                    'Mažiau rūpesčių',
+                    'Less worry',
+                  ),
+                  _LaunchBenefit(
+                    Icons.verified_user_outlined,
+                    'Daugiau saugumo',
+                    'More safety',
+                  ),
+                  _LaunchBenefit(
+                    Icons.people_outline,
+                    'Sveikesnė šeima',
+                    'A healthier family',
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: green,
+                minimumSize: const Size.fromHeight(54),
+              ),
+              onPressed: onStart,
+              child: ready
+                  ? Text(tx(context, 'Pradėti', 'Get started'))
+                  : const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: Colors.white,
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _LaunchBenefit extends StatelessWidget {
+  final IconData icon;
+  final String lt, en;
+  const _LaunchBenefit(this.icon, this.lt, this.en);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 5),
+    child: Row(
+      children: [
+        Icon(icon, color: green, size: 21),
+        const SizedBox(width: 12),
+        Text(
+          tx(context, lt, en),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ],
+    ),
+  );
 }
 
 class MediBoxLogo extends StatelessWidget {
@@ -155,7 +285,7 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  int step = 0;
+  int step = 1;
   String choice = 'self';
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -242,11 +372,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   Widget _choice(BuildContext context) {
     final options = [
-      (
-        'self',
-        Icons.person_outline,
-        tx(context, 'Aš pats / Aš pati', 'Myself'),
-      ),
+      ('self', Icons.person_outline, tx(context, 'Aš', 'Me')),
       ('child', Icons.child_care, tx(context, 'Mano vaikas', 'My child')),
       (
         'family',
@@ -375,10 +501,10 @@ class RoleAvatar extends StatelessWidget {
         child: Icon(Icons.home_rounded, color: green, size: 30),
       );
     }
-    final alignment = switch (type) {
-      'child' => const Alignment(-0.15, 0.65),
-      'family' => Alignment.center,
-      _ => const Alignment(0.15, -0.55),
+    final face = switch (type) {
+      'child' => '👦',
+      'family' => '👵',
+      _ => '👩',
     };
     return Container(
       width: 54,
@@ -388,14 +514,7 @@ class RoleAvatar extends StatelessWidget {
         color: mint,
         border: Border.all(color: const Color(0xffb9e5d9), width: 2),
       ),
-      child: ClipOval(
-        child: Image.asset(
-          'assets/images/medibox_family.webp',
-          fit: BoxFit.cover,
-          alignment: alignment,
-          scale: type == 'family' ? 1 : 0.65,
-        ),
-      ),
+      child: Center(child: Text(face, style: const TextStyle(fontSize: 31))),
     );
   }
 }
@@ -518,7 +637,7 @@ class HomePage extends StatelessWidget {
                   c,
                   MaterialPageRoute(
                     builder: (_) =>
-                        RemindersPage(data: data, onChanged: onChanged),
+                        ReminderRoutePage(data: data, onChanged: onChanged),
                   ),
                 ),
                 icon: const Icon(Icons.notifications_outlined, size: 28),
@@ -610,7 +729,7 @@ class HomePage extends StatelessWidget {
                             onPressed: () => Navigator.push(
                               c,
                               MaterialPageRoute(
-                                builder: (_) => RemindersPage(
+                                builder: (_) => ReminderRoutePage(
                                   data: data,
                                   onChanged: onChanged,
                                 ),
@@ -1353,15 +1472,23 @@ class _MemberEditor extends State<MemberEditor> {
 class RemindersPage extends StatelessWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const RemindersPage({super.key, required this.data, required this.onChanged});
+  final bool showTitle;
+  const RemindersPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+    this.showTitle = true,
+  });
   @override
   Widget build(c) {
     final rs = [...data.reminders]..sort((a, b) => a.time.compareTo(b.time));
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
-        title(tx(c, 'Priminimai', 'Reminders')),
-        const SizedBox(height: 10),
+        if (showTitle) ...[
+          title(tx(c, 'Priminimai', 'Reminders')),
+          const SizedBox(height: 10),
+        ],
         if (rs.isEmpty)
           card(
             Text(
@@ -1414,6 +1541,29 @@ class RemindersPage extends StatelessWidget {
       ],
     );
   }
+}
+
+class ReminderRoutePage extends StatelessWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const ReminderRoutePage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: const Color(0xfff6fbfa),
+    appBar: AppBar(
+      title: Text(tx(context, 'Priminimai', 'Reminders')),
+      backgroundColor: const Color(0xfff6fbfa),
+    ),
+    body: SafeArea(
+      top: false,
+      child: RemindersPage(data: data, onChanged: onChanged, showTitle: false),
+    ),
+  );
 }
 
 String daysLabel(BuildContext c, List<int> d) {
@@ -1746,7 +1896,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.6.0'),
+                const Text('MediBox v0.6.1'),
                 Text(
                   tx(
                     c,
