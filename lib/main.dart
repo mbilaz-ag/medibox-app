@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
+import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -1614,7 +1615,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.5.0'),
+                const Text('MediBox v0.5.1'),
                 Text(
                   tx(
                     c,
@@ -1822,9 +1823,40 @@ class CameraCapturePage extends StatefulWidget {
 class _CameraCapturePage extends State<CameraCapturePage> {
   String mode = 'box';
   bool busy = false;
+  CameraController? camera;
+  Future<void>? cameraReady;
+
+  @override
+  void initState() {
+    super.initState();
+    cameraReady = _startCamera();
+  }
+
+  Future<void> _startCamera() async {
+    final cameras = await availableCameras();
+    if (cameras.isEmpty) throw StateError('No camera');
+    final back = cameras.where(
+      (x) => x.lensDirection == CameraLensDirection.back,
+    );
+    camera = CameraController(
+      back.isEmpty ? cameras.first : back.first,
+      ResolutionPreset.high,
+      enableAudio: false,
+    );
+    await camera!.initialize();
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    camera?.dispose();
+    super.dispose();
+  }
 
   Future<void> capture() async {
     if (mode == 'barcode') {
+      await camera?.dispose();
+      camera = null;
       await Navigator.push(
         context,
         MaterialPageRoute(
@@ -1832,16 +1864,16 @@ class _CameraCapturePage extends State<CameraCapturePage> {
               BarcodePage(data: widget.data, onChanged: widget.onChanged),
         ),
       );
+      if (mounted) setState(() => cameraReady = _startCamera());
       return;
     }
+    final controller = camera;
+    if (controller == null || !controller.value.isInitialized) return;
     setState(() => busy = true);
     TextRecognizer? recognizer;
     try {
-      final file = await ImagePicker().pickImage(
-        source: ImageSource.camera,
-        imageQuality: 92,
-      );
-      if (file == null || !mounted) return;
+      final file = await controller.takePicture();
+      if (!mounted) return;
       recognizer = TextRecognizer(script: TextRecognitionScript.latin);
       final result = await recognizer.processImage(
         InputImage.fromFilePath(file.path),
@@ -1904,26 +1936,52 @@ class _CameraCapturePage extends State<CameraCapturePage> {
               ),
             ),
             Expanded(
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 22),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(26),
-                  gradient: const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xff53645e), Color(0xff25332f)],
-                  ),
-                  border: Border.all(color: Colors.white70, width: 2),
-                ),
-                child: Center(
-                  child: Icon(
-                    mode == 'barcode'
-                        ? Icons.qr_code_2_rounded
-                        : Icons.center_focus_strong,
-                    size: 115,
-                    color: Colors.white54,
-                  ),
-                ),
+              child: FutureBuilder<void>(
+                future: cameraReady,
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Text(
+                        tx(
+                          context,
+                          'Kamera nepasiekiama. Patikrinkite leidimą.',
+                          'Camera unavailable. Check permission.',
+                        ),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    );
+                  }
+                  if (snapshot.connectionState != ConnectionState.done ||
+                      camera == null) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  return Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 22),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(color: Colors.white70, width: 2),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CameraPreview(camera!),
+                          Center(
+                            child: Icon(
+                              mode == 'barcode'
+                                  ? Icons.qr_code_2_rounded
+                                  : Icons.center_focus_strong,
+                              size: 115,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
             const SizedBox(height: 18),
