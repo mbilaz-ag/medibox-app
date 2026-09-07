@@ -22,6 +22,7 @@ import 'services/expiry_status.dart';
 import 'services/store.dart';
 import 'services/vvkt_service.dart';
 import 'services/ai_symptom_service.dart';
+import 'widgets/body_map.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -5116,7 +5117,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.17.4'),
+                const Text('MediBox v0.17.5'),
                 Text(
                   tx(
                     c,
@@ -6050,9 +6051,12 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   @override
   Widget build(c) => Scaffold(
     appBar: AppBar(title: Text(step == 0 ? widget.category : tx(c, 'Simptomų įvertinimas', 'Symptom assessment'))),
-    body: AnimatedSwitcher(
-      duration: const Duration(milliseconds: 220),
-      child: step == 0 ? _firstStep(c) : step == 1 ? _questionsStep(c) : _resultStep(c),
+    body: SafeArea(
+      top: false,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 220),
+        child: step == 0 ? _firstStep(c) : step == 1 ? _questionsStep(c) : _resultStep(c),
+      ),
     ),
   );
 
@@ -6077,40 +6081,13 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             borderRadius: BorderRadius.circular(30),
             border: Border.all(color: const Color(0xffd7ebe5)),
           ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(7),
-                child: Image.asset(
-                  bodyMapAsset,
-                  fit: BoxFit.contain,
-                  filterQuality: FilterQuality.high,
-                  errorBuilder: (context, error, stackTrace) => Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.image_not_supported_outlined,
-                          color: green,
-                          size: 48,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          tx(
-                            context,
-                            'Kūno vaizdo nepavyko įkelti',
-                            'Body image could not be loaded',
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              CustomPaint(painter: _BodyMapPainter(location: location)),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.all(7),
+            child: BodyMapView(
+              asset: bodyMapAsset,
+              location: location,
+              errorLabel: tx(c, 'Kūno vaizdo nepavyko įkelti', 'Body image could not be loaded'),
+            ),
           ),
         ),
       ),
@@ -6449,47 +6426,6 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       ],
     );
   }
-}
-
-class _BodyMapPainter extends CustomPainter {
-  final String location;
-  const _BodyMapPainter({required this.location});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final marker = _markerFor(size, location);
-    if (marker != null) {
-      canvas.drawCircle(marker.$1, marker.$2 + 7, Paint()..color = green.withValues(alpha: .18));
-      canvas.drawCircle(marker.$1, marker.$2, Paint()..color = green.withValues(alpha: .72));
-      canvas.drawCircle(marker.$1, marker.$2, Paint()
-        ..color = green
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5);
-      canvas.drawCircle(marker.$1, 3, Paint()..color = navy);
-    }
-  }
-
-  (Offset, double)? _markerFor(Size size, String value) {
-    final cx = size.width / 2;
-    if (value.contains('Galva') || value == 'Veidas') return (Offset(cx, 38), 20);
-    if (value.contains('Gerkl')) return (Offset(cx, 66), 12);
-    if (value.contains('Krūtin')) return (Offset(cx, 96), 27);
-    if (value == 'Viršutinėje pilvo dalyje') return (Offset(cx, 118), 27);
-    if (value == 'Dešinėje') return (Offset(cx - 20, 138), 24);
-    if (value == 'Kairėje') return (Offset(cx + 20, 138), 24);
-    if (value == 'Apatinėje dalyje') return (Offset(cx, 151), 27);
-    if (value.contains('Visą pilvą') || value == 'Pilvas') return (Offset(cx, 135), 38);
-    if (value.contains('Nugara')) return (Offset(cx, 116), 35);
-    if (value.contains('Rank')) return (Offset(cx - 57, 133), 22);
-    if (value.contains('Koj')) return (Offset(cx + 25, 209), 26);
-    if (value.contains('Liemuo')) return (Offset(cx, 120), 38);
-    if (value.contains('Sąnariai') || value.contains('Kelios')) return (Offset(cx, 137), 54);
-    return null;
-  }
-
-  @override
-  bool shouldRepaint(covariant _BodyMapPainter oldDelegate) =>
-      oldDelegate.location != location;
 }
 
 String _matchReason(BuildContext c, String category) => switch (category) {
