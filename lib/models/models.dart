@@ -1,3 +1,5 @@
+import 'leaflet_draft.dart';
+
 class MedicineStockBatch {
   final String id;
   double quantity;
@@ -58,6 +60,7 @@ class Med {
   bool registryVerified;
   List<String> memberIds;
   List<MedicineStockBatch> batches;
+  LeafletRecord? leafletRecord;
   Med({
     required this.id,
     required this.name,
@@ -88,6 +91,7 @@ class Med {
     this.registrationNumber = '',
     this.supplyStatus = '',
     this.registryVerified = false,
+    this.leafletRecord,
     List<String>? memberIds,
     List<MedicineStockBatch>? batches,
   }) : memberIds = memberIds ?? [],
@@ -123,6 +127,7 @@ class Med {
     'registrationNumber': registrationNumber,
     'supplyStatus': supplyStatus,
     'registryVerified': registryVerified,
+    'leafletRecord': leafletRecord?.toJson(),
     'batches': batches.map((batch) => batch.toJson()).toList(),
   };
   factory Med.fromJson(Map<String, dynamic> j) => Med(
@@ -156,6 +161,7 @@ class Med {
     registrationNumber: '${j['registrationNumber'] ?? ''}',
     supplyStatus: '${j['supplyStatus'] ?? ''}',
     registryVerified: j['registryVerified'] == true,
+    leafletRecord: LeafletRecord.tryRead(j['leafletRecord']),
     batches: (j['batches'] as List?)
         ?.map((item) => MedicineStockBatch.fromJson(
             Map<String, dynamic>.from(item)))

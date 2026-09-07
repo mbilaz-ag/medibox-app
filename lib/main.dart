@@ -23,6 +23,9 @@ import 'services/store.dart';
 import 'services/vvkt_service.dart';
 import 'services/ai_symptom_service.dart';
 import 'widgets/body_map.dart';
+import 'models/leaflet_draft.dart';
+import 'widgets/leaflet_import_page.dart';
+import 'services/firebase_leaflet_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -2072,6 +2075,9 @@ class MedicinePage extends StatelessWidget {
             ],
           ),
         ),
+        if (med.leafletRecord != null && med.leafletRecord!.identity.matches(
+            LeafletIdentity(med.name, med.strength, med.dosageForm)))
+          LeafletRecordCard(record: med.leafletRecord!),
         if (med.leaflet.isNotEmpty || med.notes.isNotEmpty)
           card(
             Column(
@@ -2591,6 +2597,33 @@ class _MedicineEditor extends State<MedicineEditor> {
   late VvktMedicine? _registryMedicine = widget.registryMedicine;
   late String imagePath = widget.medicine?.imagePath ?? widget.initialImagePath;
   late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
+  late LeafletRecord? _leafletRecord = widget.medicine?.leafletRecord;
+
+  Future<void> _importLeaflet() async {
+    final identity = LeafletIdentity(name.text, strength.text, dosageForm.text);
+    if (!identity.isComplete) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
+        'Pirmiausia įrašyk tikslų pavadinimą, stiprumą ir vaisto formą.',
+        'First enter the exact medicine name, strength and form.'))));
+      return;
+    }
+    _vvktDebounce?.cancel();
+    final record = await Navigator.push<LeafletRecord>(context, MaterialPageRoute(
+      builder: (_) => LeafletImportPage(identity: identity, initialUrl: leaflet.text),
+    ));
+    if (!mounted || record == null) return;
+    // An outstanding registry request may have changed the editor meanwhile.
+    if (!record.identity.matches(LeafletIdentity(name.text, strength.text, dosageForm.text))) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
+        'Vaisto duomenys pasikeitė. Lapelio ištraukos nepridėtos.',
+        'Medicine details changed. Leaflet extracts were not added.'))));
+      return;
+    }
+    setState(() => _leafletRecord = record);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
+      'Ištraukos perkeltos. Kad išliktų, išsaugok vaisto kortelę.',
+      'Extracts applied. Save the medicine card to keep them.'))));
+  }
 
   @override
   void initState() {
@@ -2923,6 +2956,15 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
         field(c, dosageForm, 'Vaisto forma (tabletės, sirupas...)', 'Dosage form'),
         field(c, packageSize, 'Pakuotės dydis', 'Package size'),
+        if (FirebaseLeafletService.supported)
+          OutlinedButton.icon(onPressed: _importLeaflet,
+            icon: const Icon(Icons.auto_awesome_outlined),
+            label: Text(tx(c, 'Papildyti iš lapelio su AI', 'Import leaflet with AI'))),
+        if (_leafletRecord != null) ...[
+          LeafletRecordCard(record: _leafletRecord!),
+          TextButton(onPressed: () => setState(() => _leafletRecord = null),
+            child: Text(tx(c, 'Pašalinti lapelio ištraukas', 'Remove leaflet extracts'))),
+        ],
         _categoryPicker(c),
         _memberPicker(c),
         field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
@@ -3037,6 +3079,9 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ) ??
                 10;
             final existing = widget.medicine;
+            final leafletRecord = _leafletRecord?.identity.matches(
+              LeafletIdentity(name.text, strength.text, dosageForm.text)) == true
+                ? _leafletRecord : null;
             if (existing == null) {
               widget.data.meds.add(Med(
                 id: newId(),
@@ -3067,6 +3112,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                     _registryMedicine?.registrationNumber ?? '',
                 supplyStatus: _registryMedicine?.supplyStatus ?? '',
                 registryVerified: _registryMedicine != null,
+                leafletRecord: leafletRecord,
                 memberIds: selectedMemberIds.toList(),
                 batchNumber: batchNumber.text.trim(),
                 barcode: barcode.text.trim(),
@@ -3076,6 +3122,7 @@ class _MedicineEditor extends State<MedicineEditor> {
             } else {
               existing.memberIds = selectedMemberIds.toList();
               existing
+                ..leafletRecord = leafletRecord
                 ..name = name.text.trim()
                 ..substance = sub.text.trim()
                 ..strength = strength.text.trim()

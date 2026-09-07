@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "281777960665",
+    "project_id": "medibox-6d80d",
+    "storage_bucket": "medibox-6d80d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:281777960665:android:6dd1f4eb6585cebc9570c8",
+        "android_client_info": {
+          "package_name": "lt.medibox.medibox"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCS4_FhipWdyMl5VtpG-3fKhS-toPpKb6Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
