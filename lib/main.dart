@@ -9,6 +9,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'models/models.dart';
 import 'services/medicine_matcher.dart';
+import 'services/expiry_status.dart';
 import 'services/store.dart';
 
 void main() => runApp(const App());
@@ -676,13 +677,30 @@ class HomePage extends StatelessWidget {
     final remaining = active.length - taken;
     final lowStockMeds = data.meds.where((x) => x.stock < 10).toList();
     final expiringMeds = data.meds
-        .where((x) => _expiresSoon(x.expiry, now))
-        .toList();
+        .where((x) => medicineNeedsExpiryAttention(x.expiry, now))
+        .toList()
+      ..sort((a, b) =>
+          (daysUntilMedicineExpiry(a.expiry, now) ?? 999999).compareTo(
+            daysUntilMedicineExpiry(b.expiry, now) ?? 999999,
+          ));
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+    return Stack(
       children: [
-        Row(
+        Positioned.fill(
+          child: Image.asset(
+            'assets/images/medibox_home_background.webp',
+            fit: BoxFit.cover,
+          ),
+        ),
+        Positioned.fill(
+          child: ColoredBox(
+            color: const Color(0xfff6fbfa).withValues(alpha: .88),
+          ),
+        ),
+        ListView(
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+          children: [
+            Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
@@ -738,9 +756,12 @@ class HomePage extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 14),
-        card(
-          Column(
+            const SizedBox(height: 14),
+            Card(
+          color: Colors.white.withValues(alpha: .94),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -800,27 +821,23 @@ class HomePage extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                        if (active.isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          FilledButton(
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size(0, 36),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                              ),
-                            ),
-                            onPressed: () => Navigator.push(
-                              c,
-                              MaterialPageRoute(
-                                builder: (_) => ReminderRoutePage(
-                                  data: data,
-                                  onChanged: onChanged,
-                                ),
-                              ),
-                            ),
-                            child: Text(tx(c, 'Rodyti visus', 'Show all')),
+                        const SizedBox(height: 8),
+                        FilledButton(
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size(0, 38),
+                            padding: const EdgeInsets.symmetric(horizontal: 14),
                           ),
-                        ],
+                          onPressed: () => Navigator.push(
+                            c,
+                            MaterialPageRoute(
+                              builder: (_) => ReminderRoutePage(
+                                data: data,
+                                onChanged: onChanged,
+                              ),
+                            ),
+                          ),
+                          child: Text(tx(c, 'Rodyti visus', 'Show all')),
+                        ),
                       ],
                     ),
                   ),
@@ -851,16 +868,33 @@ class HomePage extends StatelessWidget {
                     (r) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Container(
-                        width: 10,
-                        height: 10,
+                        width: 12,
+                        height: 12,
                         decoration: BoxDecoration(
-                          color: r.takenDates.contains(today)
-                              ? green
-                              : const Color(0xffff9f1c),
+                          color: _reminderColor(r, now, today),
                           shape: BoxShape.circle,
                         ),
                       ),
-                      title: Text('${r.time}  ${r.title}'),
+                      title: Row(
+                        children: [
+                          SizedBox(
+                            width: 64,
+                            child: Text(
+                              r.time,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                color: navy,
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Text(
+                              r.title,
+                              style: const TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                        ],
+                      ),
                       subtitle: Text(_who(data, r, tx(c, 'Aš', 'Me'))),
                       trailing: IconButton(
                         tooltip: r.takenDates.contains(today)
@@ -888,10 +922,55 @@ class HomePage extends StatelessWidget {
                     ),
                   ),
             ],
+            ),
           ),
         ),
-        const SizedBox(height: 12),
-        Row(
+            const SizedBox(height: 12),
+            if (lowStockMeds.isNotEmpty) ...[
+          _medicineStatusCard(
+            context: c,
+            medicines: lowStockMeds,
+            icon: Icons.warning_amber_rounded,
+            color: const Color(0xffff9f1c),
+            background: const Color(0xfffff3df),
+            title: tx(
+              c,
+              '${lowStockMeds.length} preparatų atsargos mažos',
+              '${lowStockMeds.length} medicines are low in stock',
+            ),
+            onTap: () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => CabinetPage(data: data, onChanged: onChanged),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+            ],
+            if (expiringMeds.isNotEmpty) ...[
+          _medicineStatusCard(
+            context: c,
+            medicines: expiringMeds,
+            icon: Icons.event_busy_outlined,
+            color: const Color(0xffe53935),
+            background: const Color(0xffffe9e8),
+            title: tx(
+              c,
+              '${expiringMeds.length} preparatų greitai baigs galioti',
+              '${expiringMeds.length} medicines expire soon',
+            ),
+            expiry: true,
+            now: now,
+            onTap: () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => CabinetPage(data: data, onChanged: onChanged),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+            ],
+            Row(
           children: [
             Expanded(
               child: FilledButton.icon(
@@ -909,7 +988,7 @@ class HomePage extends StatelessWidget {
             Expanded(
               child: FilledButton.icon(
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xffe1f4ef),
+                  backgroundColor: const Color(0xffdff4ef),
                   foregroundColor: navy,
                 ),
                 onPressed: () => Navigator.push(
@@ -923,53 +1002,28 @@ class HomePage extends StatelessWidget {
               ),
             ),
           ],
-        ),
-        const SizedBox(height: 12),
-        if (lowStockMeds.isNotEmpty) ...[
-          _medicineStatusCard(
-            context: c,
-            medicines: lowStockMeds,
-            icon: Icons.warning_amber_rounded,
-            color: const Color(0xffff9f1c),
-            background: const Color(0xfffff3df),
-            title: tx(
-              c,
-              '${lowStockMeds.length} preparatų atsargos mažos',
-              '${lowStockMeds.length} medicines are low in stock',
             ),
-          ),
-          const SizedBox(height: 8),
-        ],
-        if (expiringMeds.isNotEmpty) ...[
-          _medicineStatusCard(
-            context: c,
-            medicines: expiringMeds,
-            icon: Icons.event_busy_outlined,
-            color: const Color(0xffe53935),
-            background: const Color(0xffffe9e8),
-            title: tx(
-              c,
-              '${expiringMeds.length} preparatų greitai baigs galioti',
-              '${expiringMeds.length} medicines expire soon',
-            ),
-            expiry: true,
-            now: now,
-          ),
-          const SizedBox(height: 8),
-        ],
-        _statusStrip(
-          icon: Icons.people,
-          color: green,
-          background: const Color(0xffe5f6f1),
-          text: tx(
-            c,
-            'Šeimos narių: ${data.members.length}',
-            'Family members: ${data.members.length}',
-          ),
+            const SizedBox(height: 12),
+            _familyStatusCard(c, data, onChanged),
+          ],
         ),
       ],
     );
   }
+}
+
+Color _reminderColor(Reminder reminder, DateTime now, String today) {
+  if (reminder.takenDates.contains(today)) return green;
+  final parts = reminder.time.split(':');
+  if (parts.length == 2) {
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour != null && minute != null) {
+      final due = DateTime(now.year, now.month, now.day, hour, minute);
+      if (due.isBefore(now)) return const Color(0xffe53935);
+    }
+  }
+  return const Color(0xffffa51f);
 }
 
 String _todayLabel(BuildContext context, DateTime date) {
@@ -1002,45 +1056,6 @@ String _todayLabel(BuildContext context, DateTime date) {
   return 'Šiandien, ${weekdays[date.weekday - 1]}, ${months[date.month - 1]} ${date.day} d.';
 }
 
-Widget _statusStrip({
-  required IconData icon,
-  required Color color,
-  required Color background,
-  required String text,
-}) => Container(
-  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-  decoration: BoxDecoration(
-    color: background,
-    borderRadius: BorderRadius.circular(14),
-  ),
-  child: Row(
-    children: [
-      Icon(icon, color: color),
-      const SizedBox(width: 12),
-      Expanded(
-        child: Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
-      ),
-    ],
-  ),
-);
-
-bool _expiresSoon(String value, DateTime now) {
-  final days = _daysUntilExpiry(value, now);
-  return days != null && days >= 0 && days <= 30;
-}
-
-int? _daysUntilExpiry(String value, DateTime now) {
-  try {
-    final parts = value.split('-').map(int.parse).toList();
-    final expiry = parts.length == 2
-        ? DateTime(parts[0], parts[1] + 1, 0)
-        : DateTime(parts[0], parts[1], parts[2]);
-    return expiry.difference(DateTime(now.year, now.month, now.day)).inDays;
-  } catch (_) {
-    return null;
-  }
-}
-
 Widget _medicineStatusCard({
   required BuildContext context,
   required List<Med> medicines,
@@ -1050,52 +1065,126 @@ Widget _medicineStatusCard({
   required String title,
   bool expiry = false,
   DateTime? now,
-}) => Container(
-  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-  decoration: BoxDecoration(
-    color: background,
-    borderRadius: BorderRadius.circular(14),
-  ),
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Row(
-        children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(fontWeight: FontWeight.w800),
+  VoidCallback? onTap,
+}) => InkWell(
+  onTap: onTap,
+  borderRadius: BorderRadius.circular(16),
+  child: Container(
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    decoration: BoxDecoration(
+      color: background,
+      borderRadius: BorderRadius.circular(14),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, color: color),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
             ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 8),
-      ...medicines.take(4).map((medicine) {
-        final days = expiry ? _daysUntilExpiry(medicine.expiry, now!) : null;
-        final detail = expiry
-            ? tx(
-                context,
-                'galioja iki ${medicine.expiry} • liko ${days ?? 0} d.',
-                'expires ${medicine.expiry} • ${days ?? 0} days left',
-              )
-            : tx(
-                context,
-                'liko ${medicine.stock} vnt.',
-                '${medicine.stock} remaining',
-              );
-        return Padding(
-          padding: const EdgeInsets.only(left: 36, top: 4),
-          child: Text(
-            '${medicine.name} ${medicine.strength} — $detail',
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          ),
-        );
-      }),
-    ],
+            if (onTap != null) Icon(Icons.chevron_right_rounded, color: color),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ...medicines.take(4).map((medicine) {
+          final days = expiry
+              ? daysUntilMedicineExpiry(medicine.expiry, now!)
+              : null;
+          final detail = expiry
+              ? _expiryDetail(context, medicine.expiry, days)
+              : tx(
+                  context,
+                  'liko ${medicine.stock} vnt.',
+                  '${medicine.stock} remaining',
+                );
+          return Padding(
+            padding: const EdgeInsets.only(left: 36, top: 4),
+            child: Text(
+              '${medicine.name} ${medicine.strength} — $detail',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: expiry && (days ?? 0) < 0
+                    ? const Color(0xffb91c1c)
+                    : navy,
+              ),
+            ),
+          );
+        }),
+      ],
+    ),
   ),
 );
+
+String _expiryDetail(BuildContext context, String expiry, int? days) {
+  if (days == null) return expiry;
+  if (days < 0) {
+    return tx(context, 'galiojimas pasibaigė', 'expired');
+  }
+  if (days == 0) {
+    return tx(context, 'galioja iki šiandien', 'expires today');
+  }
+  return tx(context, 'liko $days d.', '$days days left');
+}
+
+Widget _familyStatusCard(
+  BuildContext context,
+  AppData data,
+  VoidCallback onChanged,
+) => InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FamilyPage(data: data, onChanged: onChanged),
+        ),
+      ),
+      child: Container(
+        height: 82,
+        padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
+        decoration: BoxDecoration(
+          color: const Color(0xffe2f6f1).withValues(alpha: .96),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.groups_rounded, color: green, size: 31),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                tx(
+                  context,
+                  'Šeimos narių: ${data.members.length}',
+                  'Family members: ${data.members.length}',
+                ),
+                style: const TextStyle(
+                  color: navy,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(28),
+              child: Image.asset(
+                'assets/images/medibox_family_equal.webp',
+                width: 92,
+                height: 62,
+                fit: BoxFit.cover,
+                alignment: Alignment.topCenter,
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded, color: green),
+          ],
+        ),
+      ),
+    );
 
 String _who(AppData d, Reminder r, String me) {
   if (r.memberId.isEmpty) return me;
