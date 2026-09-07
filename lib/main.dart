@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -1298,12 +1299,9 @@ class _FamilyAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final imagePath = member?.imagePath ?? '';
-    final relation = member?.relation.toLowerCase() ?? '';
-    final face = relation.contains('child') || relation.contains('vaik')
-        ? '👦'
-        : relation.contains('self')
-        ? '👨'
-        : ['👨', '👩', '👦'][fallbackIndex % 3];
+    final face = member == null
+          ? ['👨', '👩', '👦'][fallbackIndex % 3]
+          : _memberEmoji(member!.gender, member!.ageGroup);
     return Container(
       width: 48,
       height: 48,
@@ -1327,6 +1325,15 @@ class _FamilyAvatar extends StatelessWidget {
     );
   }
 }
+
+String _memberEmoji(String gender, String ageGroup) => switch ((gender, ageGroup)) {
+  ('female', 'child') => '👧',
+  ('male', 'child') => '👦',
+  (_, 'child') => '🧒',
+  ('female', _) => '👩',
+  ('male', _) => '👨',
+  _ => '🧑',
+};
 
 class ExpiringMedicinesPage extends StatefulWidget {
   final AppData data;
@@ -1774,11 +1781,32 @@ class _MedicineEditor extends State<MedicineEditor> {
       ),
   };
   final newCategory = TextEditingController();
+  Timer? _vvktDebounce;
+  bool _applyingVvkt = false;
+  bool _vvktSearchBusy = false;
+  String _vvktSearchError = '';
+  List<VvktMedicine> _vvktSearchResults = [];
+  late VvktMedicine? _registryMedicine = widget.registryMedicine;
   late String imagePath = widget.medicine?.imagePath ?? widget.initialImagePath;
   late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
 
   @override
+  void initState() {
+    super.initState();
+    name.addListener(_scheduleVvktSearch);
+    if (widget.medicine == null &&
+        widget.registryMedicine == null &&
+        name.text.trim().length >= 3) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scheduleVvktSearch();
+      });
+    }
+  }
+
+  @override
   void dispose() {
+    _vvktDebounce?.cancel();
+    name.removeListener(_scheduleVvktSearch);
     for (final x in [
       name, sub, strength, manufacturer, dosageForm, packageSize, newCategory,
       purpose, dosage, warnings, sideEffects, interactions, expiry,
@@ -1787,6 +1815,122 @@ class _MedicineEditor extends State<MedicineEditor> {
       x.dispose();
     }
     super.dispose();
+  }
+
+  void _scheduleVvktSearch() {
+    if (_applyingVvkt) return;
+    _vvktDebounce?.cancel();
+    final query = name.text.trim();
+    if (query.length < 3) {
+      if (mounted) setState(() => _vvktSearchResults = []);
+      return;
+    }
+    _vvktDebounce = Timer(
+      const Duration(milliseconds: 650),
+      () => _searchVvktByName(query),
+    );
+  }
+
+  Future<void> _searchVvktByName(String query) async {
+    if (!mounted || name.text.trim() != query) return;
+    setState(() {
+      _vvktSearchBusy = true;
+      _vvktSearchError = '';
+    });
+    try {
+      var results = await VvktService.search(query);
+      if (results.isEmpty) {
+        final variants = {
+          query,
+          _registryTitleCase(query),
+          query.toUpperCase(),
+        };
+        for (final variant in variants) {
+          results = await VvktService.searchByPrefix(variant);
+          if (results.isNotEmpty) break;
+        }
+      }
+      if (!mounted || name.text.trim() != query) return;
+      final best = VvktService.bestMatch(results, strength.text);
+      setState(() => _vvktSearchResults = results);
+      if (best != null) _applyVvktMedicine(best);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _vvktSearchResults = [];
+          _vvktSearchError = tx(
+            context,
+            'Nepavyko prisijungti prie VVKT.',
+            'Could not connect to VVKT.',
+          );
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _vvktSearchBusy = false);
+    }
+  }
+
+  void _applyVvktMedicine(VvktMedicine medicine) {
+    _applyingVvkt = true;
+    name.text = medicine.name;
+    sub.text = medicine.substance;
+    strength.text = medicine.strength;
+    manufacturer.text = medicine.registrant;
+    dosageForm.text = medicine.dosageForm;
+    packageSize.text = medicine.packageDescription;
+    prescription = medicine.prescriptionStatus.toLowerCase() == 'receptinis';
+    if (dosage.text.trim().isEmpty && medicine.administrationRoute.isNotEmpty) {
+      dosage.text = '${tx(context, 'Vartojimo būdas', 'Administration route')}: '
+          '${medicine.administrationRoute}';
+    }
+    selectedCategories.remove('Kita');
+    selectedCategories.addAll(
+      _suggestMedicineCategories(
+        medicine.atcCode,
+        '${medicine.name} ${medicine.substance}',
+      ),
+    );
+    _registryMedicine = medicine;
+    _applyingVvkt = false;
+    if (mounted) setState(() {});
+  }
+
+  Widget _vvktNameResults(BuildContext c) {
+    if (_vvktSearchBusy) {
+      return const Padding(
+        padding: EdgeInsets.only(bottom: 12),
+        child: LinearProgressIndicator(),
+      );
+    }
+    if (_vvktSearchError.isNotEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Text(_vvktSearchError, style: const TextStyle(color: Color(0xffb45309))),
+      );
+    }
+    if (_vvktSearchResults.isEmpty) return const SizedBox.shrink();
+    return Card(
+      color: const Color(0xffe5f7f0),
+      child: ExpansionTile(
+        initiallyExpanded: _registryMedicine == null,
+        leading: const Icon(Icons.verified_outlined, color: green),
+        title: Text(
+          tx(c, 'VVKT rasta: ${_vvktSearchResults.length}', 'VVKT results: ${_vvktSearchResults.length}'),
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
+        subtitle: _registryMedicine == null
+            ? null
+            : Text('${_registryMedicine!.name} ${_registryMedicine!.strength}'),
+        children: _vvktSearchResults.take(10).map((medicine) => ListTile(
+          title: Text('${medicine.name} ${medicine.strength}'),
+          subtitle: Text('${medicine.dosageForm} • ${medicine.packageDescription}'),
+          trailing: medicine.registrationNumber == _registryMedicine?.registrationNumber
+              ? const Icon(Icons.check_circle, color: green)
+              : null,
+          onTap: () => _applyVvktMedicine(medicine),
+        )).toList(),
+      ),
+    );
   }
 
   Future<void> _pickPhoto(ImageSource source) async {
@@ -1918,6 +2062,7 @@ class _MedicineEditor extends State<MedicineEditor> {
         ),
         const SizedBox(height: 12),
         field(c, name, 'Pavadinimas', 'Name'),
+        _vvktNameResults(c),
         field(c, sub, 'Veiklioji medžiaga', 'Active ingredient'),
         field(c, strength, 'Stiprumas', 'Strength'),
         field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
@@ -2030,11 +2175,11 @@ class _MedicineEditor extends State<MedicineEditor> {
                 warnings: warnings.text.trim(),
                 sideEffects: sideEffects.text.trim(),
                 interactions: interactions.text.trim(),
-                atcCode: widget.registryMedicine?.atcCode ?? '',
+                atcCode: _registryMedicine?.atcCode ?? '',
                 registrationNumber:
-                    widget.registryMedicine?.registrationNumber ?? '',
-                supplyStatus: widget.registryMedicine?.supplyStatus ?? '',
-                registryVerified: widget.registryMedicine != null,
+                    _registryMedicine?.registrationNumber ?? '',
+                supplyStatus: _registryMedicine?.supplyStatus ?? '',
+                registryVerified: _registryMedicine != null,
                 memberIds: widget.initialMemberId.isEmpty
                     ? null
                     : [widget.initialMemberId],
@@ -2063,13 +2208,13 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..warnings = warnings.text.trim()
                 ..sideEffects = sideEffects.text.trim()
                 ..interactions = interactions.text.trim()
-                ..atcCode = (widget.registryMedicine?.atcCode ?? existing.atcCode)
-                ..registrationNumber = (widget.registryMedicine?.registrationNumber ??
+                ..atcCode = (_registryMedicine?.atcCode ?? existing.atcCode)
+                ..registrationNumber = (_registryMedicine?.registrationNumber ??
                     existing.registrationNumber)
-                ..supplyStatus = (widget.registryMedicine?.supplyStatus ??
+                ..supplyStatus = (_registryMedicine?.supplyStatus ??
                     existing.supplyStatus)
                 ..registryVerified = (existing.registryVerified ||
-                    widget.registryMedicine != null)
+                    _registryMedicine != null)
                 ..expiry = expiry.text.trim()
                 ..stock = parsedStock
                 ..prescription = prescription
@@ -2225,30 +2370,19 @@ class FamilyPage extends StatelessWidget {
             ),
           ),
         ),
-      ...data.members.map(
-        (m) => Card(
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            leading: _FamilyAvatar(
-              member: m,
-              fallbackIndex: data.members.indexOf(m),
-            ),
-            title: Text(
-              m.name,
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-            subtitle: Text(relationName(c, m.relation)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) =>
-                    MemberEditor(data: data, member: m, onChanged: onChanged),
-              ),
-            ),
-          ),
-        ),
-      ),
+      if (data.members.any((m) => m.ageGroup != 'child')) ...[
+        _familyGroupTitle(c, 'Suaugusieji', 'Adults'),
+        ...data.members
+            .where((m) => m.ageGroup != 'child')
+            .map((m) => _familyMemberCard(c, data, m, onChanged)),
+      ],
+      if (data.members.any((m) => m.ageGroup == 'child')) ...[
+        const SizedBox(height: 8),
+        _familyGroupTitle(c, 'Vaikai', 'Children'),
+        ...data.members
+            .where((m) => m.ageGroup == 'child')
+            .map((m) => _familyMemberCard(c, data, m, onChanged)),
+      ],
       const SizedBox(height: 8),
       FilledButton.icon(
         onPressed: () => Navigator.push(
@@ -2264,6 +2398,49 @@ class FamilyPage extends StatelessWidget {
     ),
   );
 }
+
+Widget _familyGroupTitle(BuildContext c, String lt, String en) => Padding(
+  padding: const EdgeInsets.fromLTRB(4, 4, 4, 6),
+  child: Text(
+    tx(c, lt, en),
+    style: const TextStyle(
+      color: navy,
+      fontSize: 17,
+      fontWeight: FontWeight.w800,
+    ),
+  ),
+);
+
+Widget _familyMemberCard(
+  BuildContext c,
+  AppData data,
+  Member member,
+  VoidCallback onChanged,
+) => Card(
+  child: ListTile(
+    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    leading: _FamilyAvatar(
+      member: member,
+      fallbackIndex: data.members.indexOf(member),
+    ),
+    title: Text(
+      member.name,
+      style: const TextStyle(fontWeight: FontWeight.w700),
+    ),
+    subtitle: Text(relationName(c, member.relation)),
+    trailing: const Icon(Icons.chevron_right),
+    onTap: () => Navigator.push(
+      c,
+      MaterialPageRoute(
+        builder: (_) => MemberEditor(
+          data: data,
+          member: member,
+          onChanged: onChanged,
+        ),
+      ),
+    ),
+  ),
+);
 
 const relations = [
   'self',
@@ -2336,6 +2513,9 @@ class _MemberEditor extends State<MemberEditor> {
       facilityAddress = TextEditingController(text: widget.member?.facilityAddress ?? ''),
       notes = TextEditingController(text: widget.member?.notes ?? '');
   late String relation = widget.member?.relation ?? 'self';
+  late String gender = widget.member?.gender ?? 'unspecified';
+  late String ageGroup = widget.member?.ageGroup ??
+      (widget.member?.relation == 'child' ? 'child' : 'adult');
   late String imagePath = widget.member?.imagePath ?? '';
   @override
   void dispose() {
@@ -2407,7 +2587,10 @@ class _MemberEditor extends State<MemberEditor> {
             backgroundColor: mint,
             backgroundImage: imagePath.isNotEmpty ? FileImage(File(imagePath)) : null,
             child: imagePath.isEmpty
-                ? const Icon(Icons.person_outline, size: 58, color: green)
+                ? Text(
+                    _memberEmoji(gender, ageGroup),
+                    style: const TextStyle(fontSize: 58),
+                  )
                 : null,
           ),
         ),
@@ -2432,6 +2615,49 @@ class _MemberEditor extends State<MemberEditor> {
         ),
         const SizedBox(height: 12),
         field(c, name, 'Vardas', 'Name'),
+        Text(
+          tx(c, 'Amžiaus grupė', 'Age group'),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: [
+            ButtonSegment(
+              value: 'adult',
+              icon: const Icon(Icons.person_outline),
+              label: Text(tx(c, 'Suaugęs', 'Adult')),
+            ),
+            ButtonSegment(
+              value: 'child',
+              icon: const Icon(Icons.child_care_outlined),
+              label: Text(tx(c, 'Vaikas', 'Child')),
+            ),
+          ],
+          selected: {ageGroup},
+          onSelectionChanged: (values) =>
+              setState(() => ageGroup = values.first),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          initialValue: gender,
+          decoration: InputDecoration(labelText: tx(c, 'Lytis', 'Gender')),
+          items: [
+            DropdownMenuItem(
+              value: 'female',
+              child: Text(tx(c, 'Moteris / mergaitė', 'Female')),
+            ),
+            DropdownMenuItem(
+              value: 'male',
+              child: Text(tx(c, 'Vyras / berniukas', 'Male')),
+            ),
+            DropdownMenuItem(
+              value: 'unspecified',
+              child: Text(tx(c, 'Nenurodyta', 'Not specified')),
+            ),
+          ],
+          onChanged: (value) => setState(() => gender = value!),
+        ),
+        const SizedBox(height: 12),
         DropdownButtonFormField<String>(
           initialValue: relation,
           decoration: InputDecoration(
@@ -2443,7 +2669,10 @@ class _MemberEditor extends State<MemberEditor> {
                     DropdownMenuItem(value: r, child: Text(relationName(c, r))),
               )
               .toList(),
-          onChanged: (v) => setState(() => relation = v!),
+          onChanged: (v) => setState(() {
+            relation = v!;
+            if (relation == 'child') ageGroup = 'child';
+          }),
         ),
         const SizedBox(height: 12),
         dateField(
@@ -2561,6 +2790,8 @@ class _MemberEditor extends State<MemberEditor> {
                 Member(id: newId(), name: '', relation: relation);
             m.name = name.text.trim();
             m.relation = relation;
+            m.gender = gender;
+            m.ageGroup = ageGroup;
             m.birthDate = birth.text.trim();
             m.imagePath = imagePath;
             m.bloodType = bloodType.text.trim();

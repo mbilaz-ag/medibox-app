@@ -119,6 +119,8 @@ class Member {
   final String id;
   String name,
       relation,
+      gender,
+      ageGroup,
       birthDate,
       imagePath,
       bloodType,
@@ -136,6 +138,8 @@ class Member {
     required this.id,
     required this.name,
     required this.relation,
+    this.gender = 'unspecified',
+    this.ageGroup = 'adult',
     this.birthDate = '',
     this.imagePath = '',
     this.bloodType = '',
@@ -154,6 +158,8 @@ class Member {
     'id': id,
     'name': name,
     'relation': relation,
+    'gender': gender,
+    'ageGroup': ageGroup,
     'birthDate': birthDate,
     'imagePath': imagePath,
     'bloodType': bloodType,
@@ -172,6 +178,8 @@ class Member {
     id: '${j['id']}',
     name: '${j['name']}',
     relation: '${j['relation']}',
+    gender: '${j['gender'] ?? _legacyGender('${j['relation']}')}',
+    ageGroup: '${j['ageGroup'] ?? ('${j['relation']}' == 'child' ? 'child' : 'adult')}',
     birthDate: '${j['birthDate'] ?? ''}',
     imagePath: '${j['imagePath'] ?? ''}',
     bloodType: '${j['bloodType'] ?? ''}',
@@ -187,6 +195,12 @@ class Member {
     notes: '${j['notes'] ?? ''}',
   );
 }
+
+String _legacyGender(String relation) => switch (relation) {
+  'mother' || 'sister' => 'female',
+  'father' || 'brother' => 'male',
+  _ => 'unspecified',
+};
 
 class Reminder {
   final String id;
