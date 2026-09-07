@@ -32,3 +32,7 @@ flutter:
     - assets/images/medibox_family.webp
     - assets/images/medibox_family_equal.webp
     - assets/images/medibox_home_background.webp
+    - assets/images/body_maps/adult_female.png
+    - assets/images/body_maps/adult_male.png
+    - assets/images/body_maps/child_female.png
+    - assets/images/body_maps/child_male.png

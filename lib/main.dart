@@ -5751,6 +5751,22 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       widget.category == 'Pilvo problemos' ||
       widget.category == 'Odos problemos';
 
+  String get bodyMapAsset {
+    final member = widget.data.members
+        .where((item) => item.id == widget.memberId)
+        .firstOrNull;
+    final child = member?.ageGroup == 'child';
+    final female = member?.gender == 'female';
+    if (child) {
+      return female
+          ? 'assets/images/body_maps/child_female.png'
+          : 'assets/images/body_maps/child_male.png';
+    }
+    return female
+        ? 'assets/images/body_maps/adult_female.png'
+        : 'assets/images/body_maps/adult_male.png';
+  }
+
   List<String> get symptomOptions => switch (widget.category) {
     'Peršalimas' => ['Sloga', 'Užgulta nosis', 'Gerklės skausmas', 'Kosulys', 'Užkimimas', 'Bendras silpnumas'],
     'Karščiavimas' => ['Iki 38 °C', '38–39 °C', '39 °C ar daugiau', 'Šaltkrėtis', 'Prakaitavimas', 'Silpnumas'],
@@ -5802,15 +5818,15 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             borderRadius: BorderRadius.circular(30),
             border: Border.all(color: const Color(0xffd7ebe5)),
           ),
-          child: CustomPaint(
-            painter: _BodyMapPainter(
-              location: location,
-              gender: widget.data.members
-                      .where((member) => member.id == widget.memberId)
-                      .firstOrNull
-                      ?.gender ??
-                  'unspecified',
-            ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(7),
+                child: Image.asset(bodyMapAsset, fit: BoxFit.contain),
+              ),
+              CustomPaint(painter: _BodyMapPainter(location: location)),
+            ],
           ),
         ),
       ),
@@ -6153,87 +6169,10 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
 
 class _BodyMapPainter extends CustomPainter {
   final String location;
-  final String gender;
-  const _BodyMapPainter({required this.location, required this.gender});
+  const _BodyMapPainter({required this.location});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final female = gender == 'female';
-    final male = gender == 'male';
-    final skin = Paint()..color = const Color(0xffffd9cc);
-    final outline = Paint()
-      ..color = const Color(0xffb86f67)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..strokeJoin = StrokeJoin.round
-      ..strokeCap = StrokeCap.round;
-    final bodyFill = Paint()..color = const Color(0xffffe9e2);
-    final cx = size.width / 2;
-
-    // Head, neck and a soft hair contour make the figure human without using
-    // a cartoon face that competes with the selected pain marker.
-    if (female) {
-      canvas.drawOval(Rect.fromCenter(center: Offset(cx, 37), width: 57, height: 63), Paint()..color = const Color(0xff6c4b43));
-    }
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx, 37), width: 43, height: 51), skin);
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx, 37), width: 43, height: 51), outline);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(cx, 67), width: 20, height: 22), const Radius.circular(8)),
-      skin,
-    );
-
-    final shoulder = female ? 35.0 : (male ? 45.0 : 40.0);
-    final waist = female ? 23.0 : (male ? 32.0 : 28.0);
-    final hip = female ? 37.0 : (male ? 31.0 : 34.0);
-    final torso = Path()
-      ..moveTo(cx - 10, 70)
-      ..cubicTo(cx - shoulder, 73, cx - shoulder, 89, cx - waist, 119)
-      ..cubicTo(cx - waist, 137, cx - hip, 151, cx - hip, 163)
-      ..quadraticBezierTo(cx, 174, cx + hip, 163)
-      ..cubicTo(cx + hip, 151, cx + waist, 137, cx + waist, 119)
-      ..cubicTo(cx + shoulder, 89, cx + shoulder, 73, cx + 10, 70)
-      ..close();
-    canvas.drawPath(torso, bodyFill);
-    canvas.drawPath(torso, outline);
-
-    final limb = Paint()
-      ..color = const Color(0xffffd9cc)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = female ? 13 : 15
-      ..strokeCap = StrokeCap.round;
-    final limbOutline = Paint()
-      ..color = const Color(0xffb86f67)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = limb.strokeWidth + 4
-      ..strokeCap = StrokeCap.round;
-    final leftArmStart = Offset(cx - shoulder + 4, 83);
-    final rightArmStart = Offset(cx + shoulder - 4, 83);
-    final leftHand = Offset(cx - 67, 159);
-    final rightHand = Offset(cx + 67, 159);
-    canvas.drawLine(leftArmStart, leftHand, limbOutline);
-    canvas.drawLine(rightArmStart, rightHand, limbOutline);
-    canvas.drawLine(leftArmStart, leftHand, limb);
-    canvas.drawLine(rightArmStart, rightHand, limb);
-
-    final legWidth = female ? 17.0 : 20.0;
-    limb.strokeWidth = legWidth;
-    limbOutline.strokeWidth = legWidth + 4;
-    final leftHip = Offset(cx - 20, 161);
-    final rightHip = Offset(cx + 20, 161);
-    final leftFoot = Offset(cx - 28, 244);
-    final rightFoot = Offset(cx + 28, 244);
-    canvas.drawLine(leftHip, leftFoot, limbOutline);
-    canvas.drawLine(rightHip, rightFoot, limbOutline);
-    canvas.drawLine(leftHip, leftFoot, limb);
-    canvas.drawLine(rightHip, rightFoot, limb);
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx - 31, 250), width: 29, height: 10), skin);
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx + 31, 250), width: 29, height: 10), skin);
-
-    if (!female && gender == 'male') {
-      final hair = Paint()..color = const Color(0xff5b433e);
-      canvas.drawArc(Rect.fromCenter(center: Offset(cx, 30), width: 43, height: 37), 3.25, 2.95, true, hair);
-    }
-
     final marker = _markerFor(size, location);
     if (marker != null) {
       canvas.drawCircle(marker.$1, marker.$2 + 7, Paint()..color = green.withValues(alpha: .18));
@@ -6266,7 +6205,7 @@ class _BodyMapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BodyMapPainter oldDelegate) =>
-      oldDelegate.location != location || oldDelegate.gender != gender;
+      oldDelegate.location != location;
 }
 
 String _matchReason(BuildContext c, String category) => switch (category) {
