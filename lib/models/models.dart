@@ -13,9 +13,15 @@ class Med {
       batchNumber,
       barcode,
       storageLocation,
-      notes;
+      notes,
+      packageSize,
+      dosage,
+      warnings,
+      sideEffects,
+      interactions;
   double stock;
   bool prescription;
+  List<String> memberIds;
   Med({
     required this.id,
     required this.name,
@@ -34,7 +40,13 @@ class Med {
     this.barcode = '',
     this.storageLocation = '',
     this.notes = '',
-  });
+    this.packageSize = '',
+    this.dosage = '',
+    this.warnings = '',
+    this.sideEffects = '',
+    this.interactions = '',
+    List<String>? memberIds,
+  }) : memberIds = memberIds ?? [];
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
@@ -53,6 +65,12 @@ class Med {
     'barcode': barcode,
     'storageLocation': storageLocation,
     'notes': notes,
+    'packageSize': packageSize,
+    'dosage': dosage,
+    'warnings': warnings,
+    'sideEffects': sideEffects,
+    'interactions': interactions,
+    'memberIds': memberIds,
   };
   factory Med.fromJson(Map<String, dynamic> j) => Med(
     id: '${j['id']}',
@@ -72,19 +90,48 @@ class Med {
     barcode: '${j['barcode'] ?? ''}',
     storageLocation: '${j['storageLocation'] ?? ''}',
     notes: '${j['notes'] ?? ''}',
+    packageSize: '${j['packageSize'] ?? ''}',
+    dosage: '${j['dosage'] ?? ''}',
+    warnings: '${j['warnings'] ?? ''}',
+    sideEffects: '${j['sideEffects'] ?? ''}',
+    interactions: '${j['interactions'] ?? ''}',
+    memberIds: (j['memberIds'] as List?)?.map((x) => '$x').toList(),
   );
 }
 
 class Member {
   final String id;
-  String name, relation, birthDate, allergies, conditions, notes;
+  String name,
+      relation,
+      birthDate,
+      imagePath,
+      bloodType,
+      height,
+      weight,
+      allergies,
+      conditions,
+      intolerantMedicines,
+      healthcareFacility,
+      familyDoctor,
+      facilityPhone,
+      facilityAddress,
+      notes;
   Member({
     required this.id,
     required this.name,
     required this.relation,
     this.birthDate = '',
+    this.imagePath = '',
+    this.bloodType = '',
+    this.height = '',
+    this.weight = '',
     this.allergies = '',
     this.conditions = '',
+    this.intolerantMedicines = '',
+    this.healthcareFacility = '',
+    this.familyDoctor = '',
+    this.facilityPhone = '',
+    this.facilityAddress = '',
     this.notes = '',
   });
   Map<String, dynamic> toJson() => {
@@ -92,8 +139,17 @@ class Member {
     'name': name,
     'relation': relation,
     'birthDate': birthDate,
+    'imagePath': imagePath,
+    'bloodType': bloodType,
+    'height': height,
+    'weight': weight,
     'allergies': allergies,
     'conditions': conditions,
+    'intolerantMedicines': intolerantMedicines,
+    'healthcareFacility': healthcareFacility,
+    'familyDoctor': familyDoctor,
+    'facilityPhone': facilityPhone,
+    'facilityAddress': facilityAddress,
     'notes': notes,
   };
   factory Member.fromJson(Map<String, dynamic> j) => Member(
@@ -101,8 +157,17 @@ class Member {
     name: '${j['name']}',
     relation: '${j['relation']}',
     birthDate: '${j['birthDate'] ?? ''}',
+    imagePath: '${j['imagePath'] ?? ''}',
+    bloodType: '${j['bloodType'] ?? ''}',
+    height: '${j['height'] ?? ''}',
+    weight: '${j['weight'] ?? ''}',
     allergies: '${j['allergies'] ?? ''}',
     conditions: '${j['conditions'] ?? ''}',
+    intolerantMedicines: '${j['intolerantMedicines'] ?? ''}',
+    healthcareFacility: '${j['healthcareFacility'] ?? ''}',
+    familyDoctor: '${j['familyDoctor'] ?? ''}',
+    facilityPhone: '${j['facilityPhone'] ?? ''}',
+    facilityAddress: '${j['facilityAddress'] ?? ''}',
     notes: '${j['notes'] ?? ''}',
   );
 }
