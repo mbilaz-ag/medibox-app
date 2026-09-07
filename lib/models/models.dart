@@ -83,6 +83,7 @@ class Reminder {
   final String id;
   String title, medId, memberId, time, dose, instructions;
   List<int> weekdays;
+  List<String> takenDates;
   bool enabled;
   Reminder({
     required this.id,
@@ -93,8 +94,10 @@ class Reminder {
     this.dose = '',
     this.instructions = '',
     List<int>? weekdays,
+    List<String>? takenDates,
     this.enabled = true,
-  }) : weekdays = weekdays ?? [1, 2, 3, 4, 5, 6, 7];
+  }) : weekdays = weekdays ?? [1, 2, 3, 4, 5, 6, 7],
+       takenDates = takenDates ?? [];
   Map<String, dynamic> toJson() => {
     'id': id,
     'title': title,
@@ -104,6 +107,7 @@ class Reminder {
     'dose': dose,
     'instructions': instructions,
     'weekdays': weekdays,
+    'takenDates': takenDates,
     'enabled': enabled,
   };
   factory Reminder.fromJson(Map<String, dynamic> j) => Reminder(
@@ -115,6 +119,7 @@ class Reminder {
     dose: '${j['dose'] ?? ''}',
     instructions: '${j['instructions'] ?? ''}',
     weekdays: (j['weekdays'] as List?)?.map((x) => (x as num).toInt()).toList(),
+    takenDates: (j['takenDates'] as List?)?.map((x) => '$x').toList(),
     enabled: j['enabled'] != false,
   );
 }
