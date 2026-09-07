@@ -139,7 +139,11 @@ class _App extends State<App> {
       supportedLocales: const [Locale('lt'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: green),
+        brightness: Brightness.light,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: green,
+          brightness: Brightness.light,
+        ),
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xfff6fbfa),
         cardTheme: CardThemeData(
@@ -696,6 +700,32 @@ Widget title(String s) => Text(
     color: navy,
   ),
 );
+
+Future<bool> confirmDelete(BuildContext c, String item) async =>
+    await showDialog<bool>(
+      context: c,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(tx(c, 'Patvirtinkite ištrynimą', 'Confirm deletion')),
+        content: Text(
+          tx(
+            c,
+            'Ar tikrai norite ištrinti „$item“? Šio veiksmo atšaukti nepavyks.',
+            'Delete “$item”? This action cannot be undone.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(tx(c, 'Atšaukti', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(tx(c, 'Ištrinti', 'Delete')),
+          ),
+        ],
+      ),
+    ) ??
+    false;
 
 class HomePage extends StatelessWidget {
   final AppData data;
@@ -1390,26 +1420,34 @@ class MedicinePage extends StatelessWidget {
     required this.onChanged,
   });
   @override
-  Widget build(c) => Scaffold(
+  Widget build(c) => StatefulBuilder(
+    builder: (c, setPageState) => DefaultTabController(
+    length: 5,
+    child: Scaffold(
+    backgroundColor: const Color(0xfff6fbfa),
     appBar: AppBar(
       title: Text(med.name),
       actions: [
         IconButton(
           tooltip: tx(c, 'Redaguoti', 'Edit'),
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => MedicineEditor(
-                data: data,
-                medicine: med,
-                onChanged: onChanged,
+          onPressed: () async {
+            await Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MedicineEditor(
+                  data: data,
+                  medicine: med,
+                  onChanged: onChanged,
+                ),
               ),
-            ),
-          ),
+            );
+            setPageState(() {});
+          },
           icon: const Icon(Icons.edit_outlined),
         ),
         IconButton(
-          onPressed: () {
+          onPressed: () async {
+            if (!await confirmDelete(c, med.name) || !c.mounted) return;
             data.meds.removeWhere((x) => x.id == med.id);
             data.reminders.removeWhere((x) => x.medId == med.id);
             onChanged();
@@ -1418,8 +1456,20 @@ class MedicinePage extends StatelessWidget {
           icon: const Icon(Icons.delete_outline),
         ),
       ],
+      bottom: TabBar(
+        isScrollable: true,
+        tabs: [
+          Tab(text: tx(c, 'Apžvalga', 'Overview')),
+          Tab(text: tx(c, 'Vartojimas', 'Use')),
+          Tab(text: tx(c, 'Įspėjimai', 'Warnings')),
+          Tab(text: tx(c, 'Sąveikos', 'Interactions')),
+          Tab(text: tx(c, 'Daugiau', 'More')),
+        ],
+      ),
     ),
-    body: ListView(
+    body: TabBarView(
+      children: [
+      ListView(
       padding: const EdgeInsets.all(18),
       children: [
         if (med.imagePath.isNotEmpty)
@@ -1516,19 +1566,85 @@ class MedicinePage extends StatelessWidget {
           ),
       ],
     ),
+    _medicineSectionsTab(c, [
+      (tx(c, 'Kaip vartoti?', 'How to use?'), med.dosage),
+      (tx(c, 'Priminimai', 'Reminders'),
+          data.reminders.where((r) => r.medId == med.id)
+              .map((r) => '${r.time} — ${r.dose} ${r.doseUnit}'.trim())
+              .join('\n')),
+    ]),
+    _medicineSectionsTab(c, [
+      (tx(c, 'Svarbu žinoti', 'Important'), med.warnings),
+      (tx(c, 'Dažnesni šalutiniai poveikiai', 'Common side effects'), med.sideEffects),
+    ]),
+    _medicineSectionsTab(c, [
+      (tx(c, 'Sąveikos su kitais vaistais', 'Interactions with medicines'), med.interactions),
+    ]),
+    _medicineSectionsTab(c, [
+      (tx(c, 'Pakuotės dydis', 'Package size'), med.packageSize),
+      (tx(c, 'Gamintojas', 'Manufacturer'), med.manufacturer),
+      (tx(c, 'Informacinis lapelis', 'Package leaflet'), med.leaflet),
+      (tx(c, 'Pastabos', 'Notes'), med.notes),
+    ]),
+      ],
+    ),
+  ),
+  );
   );
 }
+
+Widget _medicineSectionsTab(
+  BuildContext c,
+  List<(String, String)> sections,
+) =>
+    ListView(
+      padding: EdgeInsets.fromLTRB(
+        18,
+        18,
+        18,
+        MediaQuery.paddingOf(c).bottom + 28,
+      ),
+      children: sections
+          .map((section) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: card(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                section.$1,
+                style: const TextStyle(
+                  color: navy,
+                  fontSize: 21,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                section.$2.trim().isEmpty
+                    ? tx(c, 'Informacija dar neįvesta.', 'Information has not been entered yet.')
+                    : section.$2.trim(),
+              ),
+            ],
+          ),
+        ),
+      )).toList(),
+    );
 
 class MedicineEditor extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
   final String sourceText;
+  final String initialImagePath;
+  final String initialMemberId;
   final Med? medicine;
   const MedicineEditor({
     super.key,
     required this.data,
     required this.onChanged,
     this.sourceText = '',
+    this.initialImagePath = '',
+    this.initialMemberId = '',
     this.medicine,
   });
   State<MedicineEditor> createState() => _MedicineEditor();
@@ -1544,8 +1660,15 @@ class _MedicineEditor extends State<MedicineEditor> {
       ),
       manufacturer = TextEditingController(text: widget.medicine?.manufacturer ?? ''),
       dosageForm = TextEditingController(text: widget.medicine?.dosageForm ?? ''),
+      packageSize = TextEditingController(
+        text: widget.medicine?.packageSize ?? _guessPackageSize(widget.sourceText),
+      ),
       category = TextEditingController(text: widget.medicine?.category ?? ''),
       purpose = TextEditingController(text: widget.medicine?.purpose ?? ''),
+      dosage = TextEditingController(text: widget.medicine?.dosage ?? ''),
+      warnings = TextEditingController(text: widget.medicine?.warnings ?? ''),
+      sideEffects = TextEditingController(text: widget.medicine?.sideEffects ?? ''),
+      interactions = TextEditingController(text: widget.medicine?.interactions ?? ''),
       expiry = TextEditingController(
         text: widget.medicine?.expiry ?? MedicineMatcher.expiry(widget.sourceText) ?? '',
       ),
@@ -1556,13 +1679,14 @@ class _MedicineEditor extends State<MedicineEditor> {
       leaflet = TextEditingController(text: widget.medicine?.leaflet ?? ''),
       notes = TextEditingController(text: widget.medicine?.notes ?? '');
   late bool prescription = widget.medicine?.prescription ?? false;
-  late String imagePath = widget.medicine?.imagePath ?? '';
+  late String imagePath = widget.medicine?.imagePath ?? widget.initialImagePath;
   late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
 
   @override
   void dispose() {
     for (final x in [
-      name, sub, strength, manufacturer, dosageForm, category, purpose, expiry,
+      name, sub, strength, manufacturer, dosageForm, packageSize, category,
+      purpose, dosage, warnings, sideEffects, interactions, expiry,
       stock, batchNumber, barcode, storageLocation, leaflet, notes,
     ]) {
       x.dispose();
@@ -1591,8 +1715,14 @@ class _MedicineEditor extends State<MedicineEditor> {
           ? tx(c, 'Pridėti vaistą', 'Add medicine')
           : tx(c, 'Redaguoti vaistą', 'Edit medicine')),
     ),
+    backgroundColor: const Color(0xfff6fbfa),
     body: ListView(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.fromLTRB(
+        18,
+        18,
+        18,
+        MediaQuery.paddingOf(c).bottom + 36,
+      ),
       children: [
         if (imagePath.isNotEmpty)
           Padding(
@@ -1634,8 +1764,13 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, strength, 'Stiprumas', 'Strength'),
         field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
         field(c, dosageForm, 'Vaisto forma (tabletės, sirupas...)', 'Dosage form'),
+        field(c, packageSize, 'Pakuotės dydis', 'Package size'),
         field(c, category, 'Kategorija', 'Category'),
         field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
+        field(c, dosage, 'Kaip vartoti', 'How to use', lines: 3),
+        field(c, warnings, 'Svarbūs įspėjimai', 'Important warnings', lines: 3),
+        field(c, sideEffects, 'Dažnesni šalutiniai poveikiai', 'Common side effects', lines: 3),
+        field(c, interactions, 'Sąveikos su kitais vaistais', 'Interactions', lines: 3),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: Text(tx(c, 'Receptinis vaistas', 'Prescription medicine')),
@@ -1730,20 +1865,37 @@ class _MedicineEditor extends State<MedicineEditor> {
                 imagePath: imagePath,
                 manufacturer: manufacturer.text.trim(),
                 dosageForm: dosageForm.text.trim(),
+                packageSize: packageSize.text.trim(),
+                dosage: dosage.text.trim(),
+                warnings: warnings.text.trim(),
+                sideEffects: sideEffects.text.trim(),
+                interactions: interactions.text.trim(),
+                memberIds: widget.initialMemberId.isEmpty
+                    ? null
+                    : [widget.initialMemberId],
                 batchNumber: batchNumber.text.trim(),
                 barcode: barcode.text.trim(),
                 storageLocation: storageLocation.text.trim(),
                 notes: notes.text.trim(),
               ));
             } else {
+              if (widget.initialMemberId.isNotEmpty &&
+                  !existing.memberIds.contains(widget.initialMemberId)) {
+                existing.memberIds.add(widget.initialMemberId);
+              }
               existing
                 ..name = name.text.trim()
                 ..substance = sub.text.trim()
                 ..strength = strength.text.trim()
                 ..manufacturer = manufacturer.text.trim()
                 ..dosageForm = dosageForm.text.trim()
+                ..packageSize = packageSize.text.trim()
                 ..category = category.text.trim().isEmpty ? 'Kita' : category.text.trim()
                 ..purpose = purpose.text.trim()
+                ..dosage = dosage.text.trim()
+                ..warnings = warnings.text.trim()
+                ..sideEffects = sideEffects.text.trim()
+                ..interactions = interactions.text.trim()
                 ..expiry = expiry.text.trim()
                 ..stock = parsedStock
                 ..prescription = prescription
@@ -1789,14 +1941,23 @@ String _guessStrength(String source) =>
     ).firstMatch(source)?.group(0) ??
     '';
 
+String _guessPackageSize(String source) =>
+    RegExp(r'\bN\s?\d+\b', caseSensitive: false)
+        .firstMatch(source)
+        ?.group(0)
+        ?.replaceAll(' ', '') ??
+    '';
+
 class FamilyPage extends StatelessWidget {
   final AppData data;
   final VoidCallback onChanged;
   const FamilyPage({super.key, required this.data, required this.onChanged});
   @override
-  Widget build(c) => ListView(
-    padding: const EdgeInsets.all(18),
-    children: [
+  Widget build(c) => ColoredBox(
+    color: const Color(0xfff6fbfa),
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+      children: [
       title(tx(c, 'Mano šeima', 'My family')),
       const SizedBox(height: 10),
       if (data.members.isEmpty)
@@ -1812,7 +1973,15 @@ class FamilyPage extends StatelessWidget {
       ...data.members.map(
         (m) => Card(
           child: ListTile(
-            leading: const CircleAvatar(child: Icon(Icons.person)),
+            leading: CircleAvatar(
+              backgroundColor: mint,
+              backgroundImage: m.imagePath.isNotEmpty
+                  ? FileImage(File(m.imagePath))
+                  : null,
+              child: m.imagePath.isEmpty
+                  ? const Icon(Icons.person, color: green)
+                  : null,
+            ),
             title: Text(m.name),
             subtitle: Text(relationName(c, m.relation)),
             trailing: const Icon(Icons.chevron_right),
@@ -1836,7 +2005,8 @@ class FamilyPage extends StatelessWidget {
         icon: const Icon(Icons.person_add),
         label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
       ),
-    ],
+      ],
+    ),
   );
 }
 
@@ -1895,14 +2065,47 @@ class MemberEditor extends StatefulWidget {
 class _MemberEditor extends State<MemberEditor> {
   late final name = TextEditingController(text: widget.member?.name ?? ''),
       birth = TextEditingController(text: widget.member?.birthDate ?? ''),
+      bloodType = TextEditingController(text: widget.member?.bloodType ?? ''),
+      height = TextEditingController(text: widget.member?.height ?? ''),
+      weight = TextEditingController(text: widget.member?.weight ?? ''),
       allergies = TextEditingController(text: widget.member?.allergies ?? ''),
       conditions = TextEditingController(text: widget.member?.conditions ?? ''),
+      intolerantMedicines = TextEditingController(
+        text: widget.member?.intolerantMedicines ?? '',
+      ),
+      healthcareFacility = TextEditingController(
+        text: widget.member?.healthcareFacility ?? '',
+      ),
+      familyDoctor = TextEditingController(text: widget.member?.familyDoctor ?? ''),
+      facilityPhone = TextEditingController(text: widget.member?.facilityPhone ?? ''),
+      facilityAddress = TextEditingController(text: widget.member?.facilityAddress ?? ''),
       notes = TextEditingController(text: widget.member?.notes ?? '');
   late String relation = widget.member?.relation ?? 'self';
+  late String imagePath = widget.member?.imagePath ?? '';
   @override
   void dispose() {
-    for (final x in [name, birth, allergies, conditions, notes]) x.dispose();
+    for (final x in [
+      name, birth, bloodType, height, weight, allergies, conditions,
+      intolerantMedicines, healthcareFacility, familyDoctor, facilityPhone,
+      facilityAddress, notes,
+    ]) {
+      x.dispose();
+    }
     super.dispose();
+  }
+
+  Future<void> _pickMemberPhoto(ImageSource source) async {
+    final picked = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 82,
+      maxWidth: 1200,
+    );
+    if (picked == null) return;
+    final directory = await getApplicationDocumentsDirectory();
+    final extension = picked.path.contains('.') ? picked.path.split('.').last : 'jpg';
+    final id = widget.member?.id ?? newId();
+    final saved = await File(picked.path).copy('${directory.path}/member_$id.$extension');
+    if (mounted) setState(() => imagePath = saved.path);
   }
 
   @override
@@ -1916,11 +2119,17 @@ class _MemberEditor extends State<MemberEditor> {
       actions: [
         if (widget.member != null)
           IconButton(
-            onPressed: () {
+            onPressed: () async {
+              if (!await confirmDelete(c, widget.member!.name) || !c.mounted) {
+                return;
+              }
               widget.data.members.removeWhere((x) => x.id == widget.member!.id);
               widget.data.reminders.removeWhere(
                 (x) => x.memberId == widget.member!.id,
               );
+              for (final medicine in widget.data.meds) {
+                medicine.memberIds.remove(widget.member!.id);
+              }
               widget.onChanged();
               Navigator.pop(c);
             },
@@ -1928,9 +2137,45 @@ class _MemberEditor extends State<MemberEditor> {
           ),
       ],
     ),
+    backgroundColor: const Color(0xfff6fbfa),
     body: ListView(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.fromLTRB(
+        18,
+        18,
+        18,
+        MediaQuery.paddingOf(c).bottom + 32,
+      ),
       children: [
+        Center(
+          child: CircleAvatar(
+            radius: 54,
+            backgroundColor: mint,
+            backgroundImage: imagePath.isNotEmpty ? FileImage(File(imagePath)) : null,
+            child: imagePath.isEmpty
+                ? const Icon(Icons.person_outline, size: 58, color: green)
+                : null,
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _pickMemberPhoto(ImageSource.camera),
+                icon: const Icon(Icons.photo_camera_outlined),
+                label: Text(tx(c, 'Fotografuoti', 'Take photo')),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _pickMemberPhoto(ImageSource.gallery),
+                icon: const Icon(Icons.photo_library_outlined),
+                label: Text(tx(c, 'Galerija', 'Gallery')),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
         field(c, name, 'Vardas', 'Name'),
         DropdownButtonFormField<String>(
           initialValue: relation,
@@ -1952,6 +2197,14 @@ class _MemberEditor extends State<MemberEditor> {
           'Gimimo data YYYY-MM-DD',
           'Date of birth YYYY-MM-DD',
         ),
+        field(c, bloodType, 'Kraujo grupė', 'Blood type'),
+        Row(
+          children: [
+            Expanded(child: field(c, height, 'Ūgis (cm)', 'Height (cm)', number: true)),
+            const SizedBox(width: 10),
+            Expanded(child: field(c, weight, 'Svoris (kg)', 'Weight (kg)', number: true)),
+          ],
+        ),
         field(c, allergies, 'Alergijos', 'Allergies', lines: 2),
         field(
           c,
@@ -1960,7 +2213,91 @@ class _MemberEditor extends State<MemberEditor> {
           'Medical conditions',
           lines: 2,
         ),
+        field(
+          c,
+          intolerantMedicines,
+          'Netoleruojami vaistai',
+          'Intolerant medicines',
+          lines: 2,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          tx(c, 'Gydymo įstaiga', 'Healthcare facility'),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 10),
+        field(c, healthcareFacility, 'Gydymo įstaigos pavadinimas', 'Facility name'),
+        field(c, familyDoctor, 'Šeimos gydytojas', 'Family doctor'),
+        field(c, facilityPhone, 'Gydymo įstaigos telefonas', 'Facility phone'),
+        field(c, facilityAddress, 'Gydymo įstaigos adresas', 'Facility address'),
         field(c, notes, 'Pastabos', 'Notes', lines: 3),
+        if (widget.member != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            tx(c, 'Priskirti vaistai ir priminimai', 'Assigned medicines and reminders'),
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          ...widget.data.meds
+              .where((m) => m.memberIds.contains(widget.member!.id))
+              .map((m) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.medication_outlined, color: green),
+                    title: Text('${m.name} ${m.strength}'.trim()),
+                  )),
+          ...widget.data.reminders
+              .where((r) => r.memberId == widget.member!.id)
+              .map((r) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.alarm_outlined, color: green),
+                    title: Text(r.title),
+                    subtitle: Text(r.time),
+                  )),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await Navigator.push(
+                      c,
+                      MaterialPageRoute(
+                        builder: (_) => MedicineEditor(
+                          data: widget.data,
+                          initialMemberId: widget.member!.id,
+                          onChanged: widget.onChanged,
+                        ),
+                      ),
+                    );
+                    if (mounted) setState(() {});
+                  },
+                  icon: const Icon(Icons.medication_outlined),
+                  label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    await Navigator.push(
+                      c,
+                      MaterialPageRoute(
+                        builder: (_) => ReminderEditor(
+                          data: widget.data,
+                          initialMemberId: widget.member!.id,
+                          onChanged: widget.onChanged,
+                        ),
+                      ),
+                    );
+                    if (mounted) setState(() {});
+                  },
+                  icon: const Icon(Icons.add_alarm_outlined),
+                  label: Text(tx(c, 'Priminimas', 'Reminder')),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
         FilledButton(
           onPressed: () {
             if (name.text.trim().isEmpty) return;
@@ -1970,8 +2307,17 @@ class _MemberEditor extends State<MemberEditor> {
             m.name = name.text.trim();
             m.relation = relation;
             m.birthDate = birth.text.trim();
+            m.imagePath = imagePath;
+            m.bloodType = bloodType.text.trim();
+            m.height = height.text.trim();
+            m.weight = weight.text.trim();
             m.allergies = allergies.text.trim();
             m.conditions = conditions.text.trim();
+            m.intolerantMedicines = intolerantMedicines.text.trim();
+            m.healthcareFacility = healthcareFacility.text.trim();
+            m.familyDoctor = familyDoctor.text.trim();
+            m.facilityPhone = facilityPhone.text.trim();
+            m.facilityAddress = facilityAddress.text.trim();
             m.notes = notes.text.trim();
             if (relation == 'self') {
               final duplicate = widget.data.members.any(
@@ -2116,11 +2462,13 @@ String daysLabel(BuildContext c, List<int> d) {
 class ReminderEditor extends StatefulWidget {
   final AppData data;
   final Reminder? reminder;
+  final String initialMemberId;
   final VoidCallback onChanged;
   const ReminderEditor({
     super.key,
     required this.data,
     this.reminder,
+    this.initialMemberId = '',
     required this.onChanged,
   });
   State<ReminderEditor> createState() => _ReminderEditor();
@@ -2140,7 +2488,7 @@ class _ReminderEditor extends State<ReminderEditor> {
         text: widget.reminder?.instructions ?? '',
       );
   late String medId = widget.reminder?.medId ?? '',
-      memberId = widget.reminder?.memberId ?? '',
+      memberId = widget.reminder?.memberId ?? widget.initialMemberId,
       time = widget.reminder?.time ?? '08:00';
   late String doseUnit = widget.reminder?.doseUnit ?? 'vnt.';
   late List<int> days = [
@@ -2181,7 +2529,12 @@ class _ReminderEditor extends State<ReminderEditor> {
       ],
     ),
     body: ListView(
-      padding: const EdgeInsets.all(18),
+      padding: EdgeInsets.fromLTRB(
+        18,
+        18,
+        18,
+        MediaQuery.paddingOf(c).bottom + 36,
+      ),
       children: [
         field(c, titleC, 'Pavadinimas', 'Title'),
         DropdownButtonFormField<String>(
@@ -2441,7 +2794,12 @@ class _ProfilePage extends State<ProfilePage> {
     return Scaffold(
       appBar: AppBar(title: Text(tx(c, 'Mano profilis', 'My profile'))),
       body: ListView(
-        padding: const EdgeInsets.all(18),
+        padding: EdgeInsets.fromLTRB(
+          18,
+          18,
+          18,
+          MediaQuery.paddingOf(c).bottom + 36,
+        ),
         children: [
           ...List.generate(ctrls.length, (i) {
             if (i == 1) {
@@ -2517,7 +2875,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.7.1'),
+                const Text('MediBox v0.12.0'),
                 Text(
                   tx(
                     c,
@@ -2596,6 +2954,12 @@ bool _validDate(String value, {bool monthOnly = false}) {
       parsed.day == parts[2];
 }
 
+class ScanCaptureResult {
+  final String text;
+  final String imagePath;
+  const ScanCaptureResult(this.text, this.imagePath);
+}
+
 class ScanPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -2605,6 +2969,7 @@ class ScanPage extends StatefulWidget {
 
 class _ScanPage extends State<ScanPage> {
   String text = '';
+  String imagePath = '';
   bool busy = false;
   Future<void> ocr(ImageSource src) async {
     if (busy) return;
@@ -2613,9 +2978,18 @@ class _ScanPage extends State<ScanPage> {
     try {
       final f = await ImagePicker().pickImage(source: src, imageQuality: 90);
       if (f == null || !mounted) return;
+      final directory = await getApplicationDocumentsDirectory();
+      final saved = await File(f.path).copy(
+        '${directory.path}/scan_${newId()}.jpg',
+      );
       r = TextRecognizer(script: TextRecognitionScript.latin);
-      final out = await r.processImage(InputImage.fromFilePath(f.path));
-      if (mounted) setState(() => text = out.text);
+      final out = await r.processImage(InputImage.fromFilePath(saved.path));
+      if (mounted) {
+        setState(() {
+          text = out.text;
+          imagePath = saved.path;
+        });
+      }
     } catch (_) {
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2632,14 +3006,19 @@ class _ScanPage extends State<ScanPage> {
   }
 
   Future<void> openCamera() async {
-    final result = await Navigator.push<String>(
+    final result = await Navigator.push<ScanCaptureResult>(
       context,
       MaterialPageRoute(
         builder: (_) =>
             CameraCapturePage(data: widget.data, onChanged: widget.onChanged),
       ),
     );
-    if (result != null && mounted) setState(() => text = result);
+    if (result != null && mounted) {
+      setState(() {
+        text = result.text;
+        imagePath = result.imagePath;
+      });
+    }
   }
 
   @override
@@ -2671,16 +3050,48 @@ class _ScanPage extends State<ScanPage> {
         ),
         if (busy) const Center(child: CircularProgressIndicator()),
         if (text.isNotEmpty) ...[
+          if (imagePath.isNotEmpty)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Image.file(
+                File(imagePath),
+                height: 180,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) =>
+                    const SizedBox.shrink(),
+              ),
+            ),
           card(
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  tx(c, 'Atpažintas tekstas', 'Recognized text'),
+                  tx(c, 'Atpažinimo rezultatas', 'Recognition result'),
                   style: const TextStyle(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 8),
-                SelectableText(text),
+                Text(
+                  '${_guessName(text)}\n${_guessStrength(text)}',
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                const Divider(),
+                Text(
+                  tx(
+                    c,
+                    'Duomenys nuskaityti nuo pakuotės. Prieš išsaugodami juos patikrinkite.',
+                    'Data was read from the package. Check it before saving.',
+                  ),
+                  style: const TextStyle(color: Color(0xff526572)),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${tx(c, 'Galiojimo data', 'Expiry')}: ${MedicineMatcher.expiry(text) ?? tx(c, 'neatpažinta', 'not recognized')}',
+                ),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  title: Text(tx(c, 'Visas atpažintas tekstas', 'All recognized text')),
+                  children: [SelectableText(text)],
+                ),
               ],
             ),
           ),
@@ -2693,6 +3104,7 @@ class _ScanPage extends State<ScanPage> {
                   data: widget.data,
                   onChanged: widget.onChanged,
                   sourceText: text,
+                  initialImagePath: imagePath,
                 ),
               ),
             ),
@@ -2780,7 +3192,13 @@ class _CameraCapturePage extends State<CameraCapturePage> {
       final result = await recognizer.processImage(
         InputImage.fromFilePath(file.path),
       );
-      if (mounted) Navigator.pop(context, result.text);
+      final directory = await getApplicationDocumentsDirectory();
+      final saved = await File(file.path).copy(
+        '${directory.path}/scan_${newId()}.jpg',
+      );
+      if (mounted) {
+        Navigator.pop(context, ScanCaptureResult(result.text, saved.path));
+      }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
