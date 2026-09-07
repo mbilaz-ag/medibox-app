@@ -20,6 +20,7 @@ import 'services/reminder_notifications.dart';
 import 'services/expiry_status.dart';
 import 'services/store.dart';
 import 'services/vvkt_service.dart';
+import 'services/ai_symptom_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -4856,7 +4857,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.17.0'),
+                const Text('MediBox v0.17.1'),
                 Text(
                   tx(
                     c,
@@ -5736,6 +5737,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   bool cannotDrink = false;
   bool neurologicDeficit = false;
   final Set<String> selectedSymptoms = {};
+  Future<String?>? aiAssessment;
 
   List<String> get locations => switch (widget.category) {
     'Pilvo problemos' => ['Viršutinėje pilvo dalyje', 'Dešinėje', 'Kairėje', 'Apatinėje dalyje', 'Visą pilvą', 'Sunku pasakyti'],
@@ -5890,11 +5892,76 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       ..._categoryQuestions(c),
       const SizedBox(height: 14),
       FilledButton(
-        onPressed: duration.isEmpty ? null : () => setState(() => step = 2),
+        onPressed: duration.isEmpty ? null : () {
+          setState(() {
+            step = 2;
+            aiAssessment = _requestAiAssessment();
+          });
+        },
         child: Text(tx(c, 'Atlikti saugumo patikrą', 'Run safety check')),
       ),
     ],
   );
+
+  Future<String?> _requestAiAssessment() => AiSymptomService.assess(
+    category: widget.category,
+    location: location,
+    symptoms: selectedSymptoms.toList(),
+    severity: severity,
+    duration: duration,
+    safetyAnswers: {
+      'highFever': highFever,
+      'vomiting': vomiting,
+      'persistentVomiting': persistentVomiting,
+      'blood': blood,
+      'breathingProblem': breathingProblem,
+      'faintingOrConfusion': faintingOrConfusion,
+      'swelling': swelling,
+      'cannotDrink': cannotDrink,
+      'neurologicDeficit': neurologicDeficit,
+    },
+    cabinetMedicines: widget.data.meds.map((medicine) => <String, Object?>{
+      'name': medicine.name,
+      'substance': medicine.substance,
+      'strength': medicine.strength,
+      'category': medicine.category,
+      'purpose': medicine.purpose,
+      'prescription': medicine.prescription,
+      'stock': medicine.stock,
+    }).toList(),
+  );
+
+  Widget _aiCard(BuildContext c) {
+    if (!AiSymptomService.isConfigured) {
+      return card(Row(children: [
+        const Icon(Icons.auto_awesome_rounded, color: green),
+        const SizedBox(width: 10),
+        Expanded(child: Text(tx(c,
+          'AI analizė paruošta. Ji bus aktyvuota prijungus saugų „Firebase“ servisą.',
+          'AI analysis is ready and will activate after connecting the secure Firebase service.'))),
+      ]));
+    }
+    return FutureBuilder<String?>(
+      future: aiAssessment,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return card(const Row(children: [
+            SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
+            SizedBox(width: 12),
+            Expanded(child: Text('AI analizuoja pateiktą informaciją…')),
+          ]));
+        }
+        if (snapshot.data == null) return const SizedBox.shrink();
+        return card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Row(children: [Icon(Icons.auto_awesome_rounded, color: green), SizedBox(width: 8), Text('AI paaiškinimas', style: TextStyle(fontWeight: FontWeight.w700, color: navy))]),
+          const SizedBox(height: 8),
+          Text(snapshot.data!),
+          const SizedBox(height: 6),
+          Text(tx(c, 'Tai nėra diagnozė ar gydymo paskyrimas.', 'This is not a diagnosis or treatment prescription.'), style: const TextStyle(fontSize: 12, color: Color(0xff526572))),
+        ]));
+      },
+    );
+  }
 
   List<Widget> _categoryQuestions(BuildContext c) => switch (widget.category) {
     'Peršalimas' => [
@@ -5990,6 +6057,8 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
         card(Text(tx(c,
           'Tai nėra diagnozė. Jei būklė blogėja, simptomai stiprėja ar kelia nerimą – kreipkitės į gydytoją.',
           'This is not a diagnosis. Seek medical care if symptoms worsen or concern you.'))),
+        const SizedBox(height: 10),
+        _aiCard(c),
         const SizedBox(height: 14),
         Text(tx(c, 'Asmens ir bendroje vaistinėlėje radome:', 'Found in the personal and shared medicine cabinet:'),
             style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: navy)),
