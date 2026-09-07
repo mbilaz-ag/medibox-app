@@ -18,6 +18,26 @@ manifest = root / 'android/app/src/main/AndroidManifest.xml'
 text = manifest.read_text().replace('android:label="medibox"', 'android:label="MediBox"')
 if 'android.permission.CAMERA' not in text:
     text = text.replace('<application', '<uses-permission android:name="android.permission.CAMERA"/>\n    <uses-feature android:name="android.hardware.camera" android:required="false"/>\n    <application', 1)
+if 'android.permission.RECEIVE_BOOT_COMPLETED' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <application',
+        1,
+    )
+if 'ScheduledNotificationReceiver' not in text:
+    receivers = '''
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+            </intent-filter>
+        </receiver>
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
+'''
+    text = text.replace('</application>', receivers + '    </application>', 1)
 manifest.write_text(text)
 
 # Install the MediBox launcher icon generated from the approved brand mark.
@@ -41,11 +61,20 @@ if gradle.exists():
 
 // medibox-r8-rules: ML Kit exposes optional scripts which are not bundled.
 android {
+    compileOptions {
+        isCoreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
     buildTypes {
         getByName("release") {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 '''
     gradle.write_text(text)
