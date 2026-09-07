@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'models/models.dart';
 import 'services/medicine_matcher.dart';
@@ -882,85 +885,103 @@ class HomePage extends StatelessWidget {
                   ),
                 ],
               ),
-              const Divider(height: 24),
-              if (active.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Text(
-                    tx(
-                      c,
-                      'Aktyvių priminimų nėra. Sukurk juos skiltyje „Priminimai“.',
-                      'No active reminders. Add them under Reminders.',
-                    ),
-                  ),
-                ),
-              ...active
-                  .take(4)
-                  .map(
-                    (r) => ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: r.takenDates.contains(today)
-                              ? green
-                              : const Color(0xffcbd5df),
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      title: Row(
-                        children: [
-                          SizedBox(
-                            width: 64,
-                            child: Text(
-                              r.time,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w800,
-                                color: navy,
-                              ),
-                            ),
-                          ),
-                          Expanded(
-                            child: Text(
-                              r.title,
-                              style: const TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                          ),
-                        ],
-                      ),
-                      trailing: IconButton(
-                        tooltip: r.takenDates.contains(today)
-                            ? tx(
-                                c,
-                                'Pažymėti kaip neišgertą',
-                                'Mark as not taken',
-                              )
-                            : tx(c, 'Pažymėti kaip išgertą', 'Mark as taken'),
-                        onPressed: () {
-                          if (r.takenDates.contains(today)) {
-                            undoDoseTaken(data, r, now);
-                          } else {
-                            markDoseTaken(data, r, now);
-                          }
-                          onChanged();
-                        },
-                        icon: Icon(
-                          r.takenDates.contains(today)
-                              ? Icons.check_circle
-                              : Icons.radio_button_unchecked,
-                          color: r.takenDates.contains(today)
-                              ? green
-                              : const Color(0xff7b8ba1),
-                          size: 34,
-                        ),
-                      ),
-                    ),
-                  ),
             ],
             ),
           ),
         ),
+            const SizedBox(height: 10),
+            Card(
+              color: Colors.white.withValues(alpha: .96),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(22),
+                side: const BorderSide(color: Color(0xffe5efec)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                child: Column(
+                  children: [
+                    if (active.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                        child: Text(
+                          tx(
+                            c,
+                            'Šiandien suplanuotų vaistų nėra.',
+                            'No medicines scheduled today.',
+                          ),
+                        ),
+                      ),
+                    ...active.take(4).map((r) {
+                      final isTaken = r.takenDates.contains(today);
+                      return Column(
+                        children: [
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Container(
+                              width: 15,
+                              height: 15,
+                              decoration: BoxDecoration(
+                                color: _doseStatusColor(r, now, isTaken),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            title: Row(
+                              children: [
+                                SizedBox(
+                                  width: 72,
+                                  child: Text(
+                                    r.time,
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w900,
+                                      color: navy,
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    r.title,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                      color: navy,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            trailing: IconButton(
+                              tooltip: isTaken
+                                  ? tx(c, 'Pažymėti kaip neišgertą', 'Mark as not taken')
+                                  : tx(c, 'Pažymėti kaip išgertą', 'Mark as taken'),
+                              onPressed: () {
+                                if (isTaken) {
+                                  undoDoseTaken(data, r, now);
+                                } else {
+                                  markDoseTaken(data, r, now);
+                                }
+                                onChanged();
+                              },
+                              icon: Icon(
+                                isTaken
+                                    ? Icons.check_circle
+                                    : Icons.radio_button_unchecked,
+                                color: isTaken
+                                    ? green
+                                    : const Color(0xff7b8ba1),
+                                size: 34,
+                              ),
+                            ),
+                          ),
+                          if (r != active.take(4).last)
+                            const Divider(height: 1, color: Color(0xffe2e8ec)),
+                        ],
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ),
             const SizedBox(height: 12),
             if (lowStockMeds.isNotEmpty) ...[
           _medicineStatusCard(
@@ -1045,6 +1066,13 @@ class HomePage extends StatelessWidget {
       ],
     );
   }
+}
+
+Color _doseStatusColor(Reminder reminder, DateTime now, bool isTaken) {
+  if (isTaken) return green;
+  final due = reminderDateTime(reminder, now);
+  if (due != null && !due.isAfter(now)) return const Color(0xffef3e36);
+  return const Color(0xffffb62e);
 }
 
 String _todayLabel(BuildContext context, DateTime date) {
@@ -1367,6 +1395,20 @@ class MedicinePage extends StatelessWidget {
       title: Text(med.name),
       actions: [
         IconButton(
+          tooltip: tx(c, 'Redaguoti', 'Edit'),
+          onPressed: () => Navigator.push(
+            c,
+            MaterialPageRoute(
+              builder: (_) => MedicineEditor(
+                data: data,
+                medicine: med,
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.edit_outlined),
+        ),
+        IconButton(
           onPressed: () {
             data.meds.removeWhere((x) => x.id == med.id);
             data.reminders.removeWhere((x) => x.medId == med.id);
@@ -1380,6 +1422,16 @@ class MedicinePage extends StatelessWidget {
     body: ListView(
       padding: const EdgeInsets.all(18),
       children: [
+        if (med.imagePath.isNotEmpty)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(22),
+            child: Image.file(
+              File(med.imagePath),
+              height: 210,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+            ),
+          ),
         card(
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1403,6 +1455,12 @@ class MedicinePage extends StatelessWidget {
               ),
               const Divider(),
               Text(med.purpose),
+              if (med.manufacturer.isNotEmpty)
+                Text('${tx(c, 'Gamintojas', 'Manufacturer')}: ${med.manufacturer}'),
+              if (med.dosageForm.isNotEmpty)
+                Text('${tx(c, 'Vaisto forma', 'Dosage form')}: ${med.dosageForm}'),
+              if (med.category.isNotEmpty)
+                Text('${tx(c, 'Kategorija', 'Category')}: ${med.category}'),
             ],
           ),
         ),
@@ -1432,9 +1490,29 @@ class MedicinePage extends StatelessWidget {
                 ],
               ),
               Text('${tx(c, 'Galioja iki', 'Expires')}: ${med.expiry}'),
+              if (med.batchNumber.isNotEmpty)
+                Text('${tx(c, 'Partijos numeris', 'Batch number')}: ${med.batchNumber}'),
+              if (med.barcode.isNotEmpty)
+                Text('${tx(c, 'Brūkšninis kodas', 'Barcode')}: ${med.barcode}'),
+              if (med.storageLocation.isNotEmpty)
+                Text('${tx(c, 'Laikymo vieta', 'Storage location')}: ${med.storageLocation}'),
             ],
           ),
         ),
+        if (med.leaflet.isNotEmpty || med.notes.isNotEmpty)
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (med.leaflet.isNotEmpty)
+                  Text('${tx(c, 'Informacinis lapelis', 'Leaflet')}: ${med.leaflet}'),
+                if (med.notes.isNotEmpty) ...[
+                  if (med.leaflet.isNotEmpty) const Divider(),
+                  Text('${tx(c, 'Pastabos', 'Notes')}: ${med.notes}'),
+                ],
+              ],
+            ),
+          ),
       ],
     ),
   );
@@ -1444,39 +1522,124 @@ class MedicineEditor extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
   final String sourceText;
+  final Med? medicine;
   const MedicineEditor({
     super.key,
     required this.data,
     required this.onChanged,
     this.sourceText = '',
+    this.medicine,
   });
   State<MedicineEditor> createState() => _MedicineEditor();
 }
 
 class _MedicineEditor extends State<MedicineEditor> {
-  late final name = TextEditingController(text: _guessName(widget.sourceText)),
-      sub = TextEditingController(),
-      strength = TextEditingController(text: _guessStrength(widget.sourceText)),
-      expiry = TextEditingController(
-        text: MedicineMatcher.expiry(widget.sourceText) ?? '',
+  late final name = TextEditingController(
+        text: widget.medicine?.name ?? _guessName(widget.sourceText),
       ),
-      stock = TextEditingController(text: '1');
+      sub = TextEditingController(text: widget.medicine?.substance ?? ''),
+      strength = TextEditingController(
+        text: widget.medicine?.strength ?? _guessStrength(widget.sourceText),
+      ),
+      manufacturer = TextEditingController(text: widget.medicine?.manufacturer ?? ''),
+      dosageForm = TextEditingController(text: widget.medicine?.dosageForm ?? ''),
+      category = TextEditingController(text: widget.medicine?.category ?? ''),
+      purpose = TextEditingController(text: widget.medicine?.purpose ?? ''),
+      expiry = TextEditingController(
+        text: widget.medicine?.expiry ?? MedicineMatcher.expiry(widget.sourceText) ?? '',
+      ),
+      stock = TextEditingController(text: quantityLabel(widget.medicine?.stock ?? 1)),
+      batchNumber = TextEditingController(text: widget.medicine?.batchNumber ?? ''),
+      barcode = TextEditingController(text: widget.medicine?.barcode ?? ''),
+      storageLocation = TextEditingController(text: widget.medicine?.storageLocation ?? ''),
+      leaflet = TextEditingController(text: widget.medicine?.leaflet ?? ''),
+      notes = TextEditingController(text: widget.medicine?.notes ?? '');
+  late bool prescription = widget.medicine?.prescription ?? false;
+  late String imagePath = widget.medicine?.imagePath ?? '';
   late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
+
   @override
   void dispose() {
-    for (final x in [name, sub, strength, expiry, stock]) x.dispose();
+    for (final x in [
+      name, sub, strength, manufacturer, dosageForm, category, purpose, expiry,
+      stock, batchNumber, barcode, storageLocation, leaflet, notes,
+    ]) {
+      x.dispose();
+    }
     super.dispose();
+  }
+
+  Future<void> _pickPhoto(ImageSource source) async {
+    final picked = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 82,
+      maxWidth: 1600,
+    );
+    if (picked == null) return;
+    final directory = await getApplicationDocumentsDirectory();
+    final extension = picked.path.contains('.') ? picked.path.split('.').last : 'jpg';
+    final id = widget.medicine?.id ?? newId();
+    final saved = await File(picked.path).copy('${directory.path}/medicine_$id.$extension');
+    if (mounted) setState(() => imagePath = saved.path);
   }
 
   @override
   Widget build(c) => Scaffold(
-    appBar: AppBar(title: Text(tx(c, 'Pridėti vaistą', 'Add medicine'))),
+    appBar: AppBar(
+      title: Text(widget.medicine == null
+          ? tx(c, 'Pridėti vaistą', 'Add medicine')
+          : tx(c, 'Redaguoti vaistą', 'Edit medicine')),
+    ),
     body: ListView(
       padding: const EdgeInsets.all(18),
       children: [
+        if (imagePath.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Image.file(
+                File(imagePath),
+                height: 190,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              ),
+            ),
+          ),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _pickPhoto(ImageSource.camera),
+                icon: const Icon(Icons.photo_camera_outlined),
+                label: Text(tx(c, 'Fotografuoti', 'Take photo')),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _pickPhoto(ImageSource.gallery),
+                icon: const Icon(Icons.photo_library_outlined),
+                label: Text(tx(c, 'Galerija', 'Gallery')),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
         field(c, name, 'Pavadinimas', 'Name'),
         field(c, sub, 'Veiklioji medžiaga', 'Active ingredient'),
         field(c, strength, 'Stiprumas', 'Strength'),
+        field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
+        field(c, dosageForm, 'Vaisto forma (tabletės, sirupas...)', 'Dosage form'),
+        field(c, category, 'Kategorija', 'Category'),
+        field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: Text(tx(c, 'Receptinis vaistas', 'Prescription medicine')),
+          value: prescription,
+          onChanged: (value) => setState(() => prescription = value),
+        ),
         Text(
           tx(c, 'Galiojimo datos tikslumas', 'Expiry date precision'),
           style: const TextStyle(fontWeight: FontWeight.w700),
@@ -1514,6 +1677,11 @@ class _MedicineEditor extends State<MedicineEditor> {
           monthOnly: expiryMode == 'month',
         ),
         field(c, stock, 'Kiekis', 'Quantity', number: true),
+        field(c, batchNumber, 'Partijos numeris', 'Batch number'),
+        field(c, barcode, 'Brūkšninis kodas', 'Barcode', number: true),
+        field(c, storageLocation, 'Laikymo vieta', 'Storage location'),
+        field(c, leaflet, 'Informacinio lapelio nuoroda', 'Leaflet link'),
+        field(c, notes, 'Pastabos', 'Notes', lines: 3),
         if (widget.sourceText.isNotEmpty)
           ExpansionTile(
             title: Text(tx(c, 'Atpažintas tekstas', 'Recognized text')),
@@ -1542,24 +1710,48 @@ class _MedicineEditor extends State<MedicineEditor> {
               );
               return;
             }
-            widget.data.meds.add(
-              Med(
+            final parsedStock =
+                double.tryParse(stock.text.trim().replaceAll(',', '.')) ?? 1;
+            final existing = widget.medicine;
+            if (existing == null) {
+              widget.data.meds.add(Med(
                 id: newId(),
                 name: name.text.trim(),
                 substance: sub.text.trim(),
                 strength: strength.text.trim(),
-                purpose: tx(
-                  c,
-                  'Informaciją tikrinkite pakuotės lapelyje.',
-                  'Check the package leaflet.',
-                ),
-                category: 'Kita',
+                purpose: purpose.text.trim(),
+                category: category.text.trim().isEmpty ? 'Kita' : category.text.trim(),
                 expiry: expiry.text.trim(),
-                stock:
-                    double.tryParse(stock.text.trim().replaceAll(',', '.')) ??
-                    1,
-              ),
-            );
+                stock: parsedStock,
+                prescription: prescription,
+                leaflet: leaflet.text.trim(),
+                imagePath: imagePath,
+                manufacturer: manufacturer.text.trim(),
+                dosageForm: dosageForm.text.trim(),
+                batchNumber: batchNumber.text.trim(),
+                barcode: barcode.text.trim(),
+                storageLocation: storageLocation.text.trim(),
+                notes: notes.text.trim(),
+              ));
+            } else {
+              existing
+                ..name = name.text.trim()
+                ..substance = sub.text.trim()
+                ..strength = strength.text.trim()
+                ..manufacturer = manufacturer.text.trim()
+                ..dosageForm = dosageForm.text.trim()
+                ..category = category.text.trim().isEmpty ? 'Kita' : category.text.trim()
+                ..purpose = purpose.text.trim()
+                ..expiry = expiry.text.trim()
+                ..stock = parsedStock
+                ..prescription = prescription
+                ..batchNumber = batchNumber.text.trim()
+                ..barcode = barcode.text.trim()
+                ..storageLocation = storageLocation.text.trim()
+                ..leaflet = leaflet.text.trim()
+                ..notes = notes.text.trim()
+                ..imagePath = imagePath;
+            }
             widget.onChanged();
             Navigator.pop(c);
           },
