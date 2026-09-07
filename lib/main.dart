@@ -12,6 +12,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'models/models.dart';
 import 'services/medicine_matcher.dart';
@@ -2040,6 +2041,36 @@ class MedicinePage extends StatelessWidget {
             ],
           ),
         ),
+        card(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.health_and_safety_outlined, color: green, size: 30),
+              const SizedBox(height: 8),
+              Text(
+                tx(c, 'Vartojimas pasirinktam asmeniui', 'Use for a selected person'),
+                style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 6),
+              Text(tx(
+                c,
+                'Peržiūrėkite kortelėje ir lapelyje įrašytą vartojimą, asmens svorį bei svarbius perspėjimus.',
+                'Review the recorded and leaflet directions, the person\'s weight, and important warnings.',
+              )),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => PersonalizedMedicineGuidancePage(data: data, medicine: med),
+                  ),
+                ),
+                icon: const Icon(Icons.person_search_outlined),
+                label: Text(tx(c, 'Rodyti patarimus', 'Show guidance')),
+              ),
+            ],
+          ),
+        ),
         if (med.leaflet.isNotEmpty || med.notes.isNotEmpty)
           card(
             Column(
@@ -2084,6 +2115,234 @@ class MedicinePage extends StatelessWidget {
   ),
   ),
   );
+  }
+}
+
+class PersonalizedMedicineGuidancePage extends StatefulWidget {
+  final AppData data;
+  final Med medicine;
+  const PersonalizedMedicineGuidancePage({
+    super.key,
+    required this.data,
+    required this.medicine,
+  });
+
+  @override
+  State<PersonalizedMedicineGuidancePage> createState() =>
+      _PersonalizedMedicineGuidancePageState();
+}
+
+class _PersonalizedMedicineGuidancePageState
+    extends State<PersonalizedMedicineGuidancePage> {
+  late String selectedMemberId;
+
+  @override
+  void initState() {
+    super.initState();
+    final assigned = widget.data.members
+        .where((member) => widget.medicine.memberIds.contains(member.id))
+        .toList();
+    selectedMemberId = assigned.isNotEmpty
+        ? assigned.first.id
+        : (widget.data.members.isNotEmpty ? widget.data.members.first.id : '');
+  }
+
+  int? _age(String value) {
+    final birth = DateTime.tryParse(value);
+    if (birth == null) return null;
+    final now = DateTime.now();
+    var years = now.year - birth.year;
+    if (now.month < birth.month ||
+        (now.month == birth.month && now.day < birth.day)) {
+      years--;
+    }
+    return years >= 0 ? years : null;
+  }
+
+  bool _mentionsMedicine(String value) {
+    final text = value.toLowerCase();
+    if (text.trim().isEmpty) return false;
+    final candidates = <String>{
+      widget.medicine.name.toLowerCase().trim(),
+      widget.medicine.substance.toLowerCase().trim(),
+    }.where((item) => item.length >= 4);
+    return candidates.any(text.contains);
+  }
+
+  Future<void> _openLeaflet(BuildContext context) async {
+    final uri = Uri.tryParse(widget.medicine.leaflet.trim());
+    if (uri == null || !uri.hasScheme || !await launchUrl(uri)) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(tx(
+          context,
+          'Nepavyko atidaryti informacinio lapelio nuorodos.',
+          'The package leaflet link could not be opened.',
+        )),
+      ));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final members = widget.data.members;
+    final member = members.where((item) => item.id == selectedMemberId).firstOrNull;
+    final medicine = widget.medicine;
+    final age = member == null ? null : _age(member.birthDate);
+    final allergyAlert = member != null &&
+        (_mentionsMedicine(member.allergies) ||
+            _mentionsMedicine(member.intolerantMedicines));
+    return Scaffold(
+      backgroundColor: const Color(0xfff6fbfa),
+      appBar: AppBar(title: Text(tx(context, 'Vartojimo patarimai', 'Use guidance'))),
+      body: ListView(
+        padding: EdgeInsets.fromLTRB(
+          18,
+          18,
+          18,
+          MediaQuery.paddingOf(context).bottom + 30,
+        ),
+        children: [
+          card(Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${medicine.name} ${medicine.strength}'.trim(),
+                style: const TextStyle(color: navy, fontSize: 23, fontWeight: FontWeight.w800),
+              ),
+              if (medicine.substance.isNotEmpty)
+                Text('${tx(context, 'Veiklioji medžiaga', 'Active ingredient')}: ${medicine.substance}'),
+              if (medicine.dosageForm.isNotEmpty)
+                Text('${tx(context, 'Forma', 'Form')}: ${medicine.dosageForm}'),
+            ],
+          )),
+          if (members.isEmpty)
+            card(Text(tx(
+              context,
+              'Pirmiausia sukurkite šeimos narį ir jo kortelėje įrašykite amžių, svorį bei alergijas.',
+              'First create a family member and record age, weight, and allergies in their profile.',
+            )))
+          else ...[
+            Text(
+              tx(context, 'Kam skirtas patarimas?', 'Who is this guidance for?'),
+              style: const TextStyle(color: navy, fontSize: 19, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: members.map((item) => ChoiceChip(
+                selected: selectedMemberId == item.id,
+                onSelected: (_) => setState(() => selectedMemberId = item.id),
+                avatar: Text(_memberEmoji(item.gender, item.ageGroup)),
+                label: Text(item.name),
+              )).toList(),
+            ),
+            const SizedBox(height: 12),
+            card(Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  member!.name,
+                  style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                Text([
+                  member.ageGroup == 'child'
+                      ? tx(context, 'Vaikas', 'Child')
+                      : tx(context, 'Suaugęs', 'Adult'),
+                  if (age != null) tx(context, '$age m.', 'Age $age'),
+                  if (member.weight.trim().isNotEmpty) '${member.weight.trim()} kg',
+                ].join(' • ')),
+                if (member.weight.trim().isEmpty)
+                  Text(
+                    tx(context, 'Svoris neįvestas asmens kortelėje.', 'Weight is missing from the profile.'),
+                    style: const TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w700),
+                  ),
+              ],
+            )),
+            if (allergyAlert)
+              Card(
+                color: const Color(0xffffe8e8),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Icon(Icons.warning_amber_rounded, color: Colors.red),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(
+                      tx(
+                        context,
+                        'Dėmesio: asmens alergijų arba netoleruojamų vaistų įraše aptiktas šio vaisto pavadinimas ar veiklioji medžiaga. Nevartokite nepasitarę su gydytoju ar vaistininku.',
+                        'Warning: this medicine or its active ingredient appears in the person\'s allergy or intolerance record. Do not use it without consulting a doctor or pharmacist.',
+                      ),
+                      style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700),
+                    )),
+                  ]),
+                ),
+              ),
+          ],
+          card(Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                tx(context, 'Kaip vartoti', 'How to use'),
+                style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Text(medicine.dosage.trim().isEmpty
+                  ? tx(
+                      context,
+                      'Vartojimo informacija kortelėje neįvesta. Vadovaukitės receptu ir oficialiu informaciniu lapeliu.',
+                      'No use directions are recorded. Follow the prescription and official package leaflet.',
+                    )
+                  : medicine.dosage.trim()),
+              const SizedBox(height: 10),
+              Text(
+                tx(
+                  context,
+                  'Automatinė dozė pagal svorį neskaičiuojama, kol nėra oficialios struktūrizuotos mg/kg taisyklės. Vaikui, nėštumo metu, sergant lėtinėmis ligomis ar vartojant kitus vaistus dozę patvirtinkite su gydytoju arba vaistininku.',
+                  'A weight-based dose is not calculated without an official structured mg/kg rule. Confirm dosing with a doctor or pharmacist for children, pregnancy, chronic conditions, or other medicines.',
+                ),
+                style: const TextStyle(color: Color(0xff5b6870)),
+              ),
+            ],
+          )),
+          if (medicine.warnings.isNotEmpty || medicine.interactions.isNotEmpty)
+            card(Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx(context, 'Svarbu prieš vartojant', 'Important before use'),
+                  style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                if (medicine.warnings.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(medicine.warnings),
+                ],
+                if (medicine.interactions.isNotEmpty) ...[
+                  const Divider(),
+                  Text('${tx(context, 'Sąveikos', 'Interactions')}: ${medicine.interactions}'),
+                ],
+              ],
+            )),
+          if (medicine.leaflet.trim().isNotEmpty)
+            OutlinedButton.icon(
+              onPressed: () => _openLeaflet(context),
+              icon: const Icon(Icons.description_outlined),
+              label: Text(tx(context, 'Atidaryti oficialų lapelį', 'Open official leaflet')),
+            ),
+          const SizedBox(height: 10),
+          Text(
+            tx(
+              context,
+              'Ši informacija yra pagalbinė ir nepakeičia gydytojo, vaistininko, recepto ar oficialaus informacinio lapelio nurodymų.',
+              'This information is supportive and does not replace advice from a doctor or pharmacist, the prescription, or the official package leaflet.',
+            ),
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Color(0xff5b6870), fontSize: 13),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -4857,7 +5116,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.17.2'),
+                const Text('MediBox v0.17.3'),
                 Text(
                   tx(
                     c,
