@@ -174,6 +174,7 @@ class _App extends State<App> {
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: ThemeData(
         brightness: Brightness.light,
+        fontFamily: 'sans-serif',
         colorScheme: ColorScheme.fromSeed(
           seedColor: green,
           brightness: Brightness.light,
@@ -741,8 +742,11 @@ Widget title(String s) => Text(
   s,
   style: const TextStyle(
     fontSize: 28,
-    fontWeight: FontWeight.bold,
+    height: 1.15,
+    fontFamily: 'sans-serif',
+    fontWeight: FontWeight.w700,
     color: navy,
+    decoration: TextDecoration.none,
   ),
 );
 
@@ -3003,7 +3007,10 @@ Widget _familyGroupTitle(BuildContext c, String lt, String en) => Padding(
     style: const TextStyle(
       color: navy,
       fontSize: 17,
-      fontWeight: FontWeight.w800,
+      height: 1.25,
+      fontFamily: 'sans-serif',
+      fontWeight: FontWeight.w700,
+      decoration: TextDecoration.none,
     ),
   ),
 );
@@ -4826,7 +4833,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.16.1'),
+                const Text('MediBox v0.16.2'),
                 Text(
                   tx(
                     c,
