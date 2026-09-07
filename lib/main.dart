@@ -40,6 +40,20 @@ String quantityLabel(num value) => value == value.roundToDouble()
     ? value.toInt().toString()
     : value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '');
 
+bool reminderMatchesMember(AppData data, Reminder reminder, String memberId) {
+  if (memberId.isEmpty) return true;
+  if (reminder.memberId == memberId) return true;
+  if (reminder.memberId.isNotEmpty) return false;
+
+  final medicine = data.meds.where((item) => item.id == reminder.medId).firstOrNull;
+  if (medicine != null && medicine.memberIds.contains(memberId)) return true;
+
+  final member = data.members.where((item) => item.id == memberId).firstOrNull;
+  return medicine != null &&
+      medicine.memberIds.isEmpty &&
+      member?.relation == 'self';
+}
+
 class DateDashFormatter extends TextInputFormatter {
   final bool monthOnly;
   DateDashFormatter({this.monthOnly = false});
@@ -796,7 +810,7 @@ class HomePage extends StatelessWidget {
     final active =
         data.reminders
             .where((x) => reminderAppliesOn(x, now) &&
-                (memberId.isEmpty || x.memberId == memberId))
+                reminderMatchesMember(data, x, memberId))
             .toList()
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
@@ -4842,7 +4856,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.16.3'),
+                const Text('MediBox v0.16.4'),
                 Text(
                   tx(
                     c,
