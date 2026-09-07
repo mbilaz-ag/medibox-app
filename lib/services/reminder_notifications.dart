@@ -19,7 +19,7 @@ class ReminderNotifications {
     tz_data.initializeTimeZones();
     tz.setLocalLocation(tz.getLocation('Europe/Vilnius'));
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const ios = DarwinInitializationSettings(
+    final ios = DarwinInitializationSettings(
       requestAlertPermission: false,
       requestBadgePermission: false,
       requestSoundPermission: false,
@@ -35,7 +35,7 @@ class ReminderNotifications {
       ],
     );
     await _plugin.initialize(
-      const InitializationSettings(android: android, iOS: ios),
+      InitializationSettings(android: android, iOS: ios),
       onDidReceiveNotificationResponse: _notificationResponse,
     );
   }
@@ -156,8 +156,9 @@ class ReminderNotifications {
     if (parts == null || parts.length != 2) return;
     final occurrence = DateTime.tryParse(parts[1]);
     if (occurrence == null) return;
+    final action = response.actionId;
     onAction?.call(
-      response.actionId.isEmpty ? 'open' : response.actionId,
+      action == null || action.isEmpty ? 'open' : action,
       parts[0],
       occurrence,
     );
