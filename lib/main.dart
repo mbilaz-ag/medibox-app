@@ -9,10 +9,16 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'models/models.dart';
 import 'services/medicine_matcher.dart';
+import 'services/reminder_logic.dart';
+import 'services/reminder_notifications.dart';
 import 'services/expiry_status.dart';
 import 'services/store.dart';
 
-void main() => runApp(const App());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ReminderNotifications.initialize();
+  runApp(const App());
+}
 const green = Color(0xff079b7a),
     navy = Color(0xff102a43),
     mint = Color(0xffe9f8f4);
@@ -23,6 +29,9 @@ String dateKey([DateTime? value]) {
   final d = value ?? DateTime.now();
   return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 }
+String quantityLabel(num value) => value == value.roundToDouble()
+    ? value.toInt().toString()
+    : value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '');
 
 class DateDashFormatter extends TextInputFormatter {
   final bool monthOnly;
@@ -64,13 +73,39 @@ class _App extends State<App> {
       Future<void>.delayed(const Duration(milliseconds: 1400)),
     ]).then((values) {
       final v = values.first as AppData;
+      ReminderNotifications.onAction = _handleReminderAction;
+      ReminderNotifications.scheduleAll(v);
       if (mounted) setState(() => data = v);
     });
+  }
+
+  Future<void> _handleReminderAction(
+    String action,
+    String reminderId,
+    DateTime occurrence,
+  ) async {
+    final current = data;
+    if (current == null) return;
+    final matches = current.reminders.where((x) => x.id == reminderId);
+    if (matches.isEmpty) return;
+    final reminder = matches.first;
+    if (action == 'taken') {
+      markDoseTaken(current, reminder, occurrence);
+      await ReminderNotifications.cancelOccurrence(reminder, occurrence);
+    } else if (action == 'skip') {
+      markDoseSkipped(reminder, occurrence);
+      await ReminderNotifications.cancelOccurrence(reminder, occurrence);
+    } else if (action == 'snooze') {
+      await ReminderNotifications.snooze(reminder, current, occurrence);
+    }
+    await Store.save(current);
+    if (mounted) setState(() {});
   }
 
   void changed() {
     if (data != null) {
       Store.save(data!);
+      ReminderNotifications.scheduleAll(data!);
       setState(() {});
     }
   }
@@ -670,12 +705,23 @@ class HomePage extends StatelessWidget {
     final today = dateKey(now);
     final active =
         data.reminders
-            .where((x) => x.enabled && x.weekdays.contains(now.weekday))
+            .where((x) => reminderAppliesOn(x, now))
             .toList()
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
     final remaining = active.length - taken;
-    final lowStockMeds = data.meds.where((x) => x.stock < 10).toList();
+    final lowStockMeds = data.meds.where((medicine) {
+      final scheduled = data.reminders.where(
+        (reminder) => reminder.enabled && reminder.medId == medicine.id,
+      );
+      final threshold = scheduled.isEmpty
+          ? 10.0
+          : scheduled
+                    .map((reminder) => reminder.quantityPerDose)
+                    .reduce((a, b) => a > b ? a : b) *
+                7;
+      return medicine.stock < threshold;
+    }).toList();
     final expiringMeds = data.meds
         .where((x) => medicineNeedsExpiryAttention(x.expiry, now))
         .toList()
@@ -893,9 +939,9 @@ class HomePage extends StatelessWidget {
                             : tx(c, 'Pažymėti kaip išgertą', 'Mark as taken'),
                         onPressed: () {
                           if (r.takenDates.contains(today)) {
-                            r.takenDates.remove(today);
+                            undoDoseTaken(data, r, now);
                           } else {
-                            r.takenDates.add(today);
+                            markDoseTaken(data, r, now);
                           }
                           onChanged();
                         },
@@ -1075,8 +1121,8 @@ Widget _medicineStatusCard({
               ? _expiryDetail(context, medicine.expiry, days)
               : tx(
                   context,
-                  'liko ${medicine.stock} vnt.',
-                  '${medicine.stock} remaining',
+                  'liko ${quantityLabel(medicine.stock)} vnt.',
+                  '${quantityLabel(medicine.stock)} remaining',
                 );
           return Padding(
             padding: const EdgeInsets.only(left: 36, top: 4),
@@ -1217,7 +1263,7 @@ class ExpiringMedicinesPage extends StatelessWidget {
     body: ListView.separated(
       padding: const EdgeInsets.all(18),
       itemCount: medicines.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final medicine = medicines[index];
         final days = daysUntilMedicineExpiry(medicine.expiry, now);
@@ -1278,7 +1324,7 @@ class CabinetPage extends StatelessWidget {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             subtitle: Text(
-              '${m.substance}\n${tx(c, 'Liko', 'Stock')}: ${m.stock} • ${m.expiry}',
+              '${m.substance}\n${tx(c, 'Liko', 'Stock')}: ${quantityLabel(m.stock)} • ${m.expiry}',
             ),
             isThreeLine: true,
             onTap: () => Navigator.push(
@@ -1363,7 +1409,7 @@ class MedicinePage extends StatelessWidget {
         card(
           Column(
             children: [
-              Text('${tx(c, 'Likutis', 'Stock')}: ${med.stock}'),
+              Text('${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}'),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -1509,7 +1555,9 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ),
                 category: 'Kita',
                 expiry: expiry.text.trim(),
-                stock: int.tryParse(stock.text) ?? 1,
+                stock:
+                    double.tryParse(stock.text.trim().replaceAll(',', '.')) ??
+                    1,
               ),
             );
             widget.onChanged();
@@ -1887,12 +1935,20 @@ class ReminderEditor extends StatefulWidget {
 class _ReminderEditor extends State<ReminderEditor> {
   late final titleC = TextEditingController(text: widget.reminder?.title ?? ''),
       dose = TextEditingController(text: widget.reminder?.dose ?? ''),
+      quantity = TextEditingController(
+        text: '${widget.reminder?.quantityPerDose ?? 1}',
+      ),
+      startDate = TextEditingController(
+        text: widget.reminder?.startDate ?? dateKey(),
+      ),
+      endDate = TextEditingController(text: widget.reminder?.endDate ?? ''),
       instructions = TextEditingController(
         text: widget.reminder?.instructions ?? '',
       );
   late String medId = widget.reminder?.medId ?? '',
       memberId = widget.reminder?.memberId ?? '',
       time = widget.reminder?.time ?? '08:00';
+  late String doseUnit = widget.reminder?.doseUnit ?? 'vnt.';
   late List<int> days = [
     ...(widget.reminder?.weekdays ?? [1, 2, 3, 4, 5, 6, 7]),
   ];
@@ -1901,6 +1957,9 @@ class _ReminderEditor extends State<ReminderEditor> {
   void dispose() {
     titleC.dispose();
     dose.dispose();
+    quantity.dispose();
+    startDate.dispose();
+    endDate.dispose();
     instructions.dispose();
     super.dispose();
   }
@@ -1998,6 +2057,28 @@ class _ReminderEditor extends State<ReminderEditor> {
           },
         ),
         const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: dateField(
+                c,
+                startDate,
+                'Pradžios data YYYY-MM-DD',
+                'Start date YYYY-MM-DD',
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: dateField(
+                c,
+                endDate,
+                'Pabaigos data (nebūtina)',
+                'End date (optional)',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
         Text(
           tx(c, 'Savaitės dienos', 'Weekdays'),
           style: const TextStyle(fontWeight: FontWeight.bold),
@@ -2021,7 +2102,36 @@ class _ReminderEditor extends State<ReminderEditor> {
           ),
         ),
         const SizedBox(height: 12),
-        field(c, dose, 'Dozė / kiekis', 'Dose / amount'),
+        field(c, dose, 'Dozės aprašymas', 'Dose description'),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: quantity,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: InputDecoration(
+                  labelText: tx(c, 'Kiekis vienai dozei', 'Amount per dose'),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                initialValue: doseUnit,
+                decoration: InputDecoration(
+                  labelText: tx(c, 'Vienetas', 'Unit'),
+                ),
+                items: const ['vnt.', 'tabletė', 'kapsulė', 'ml', 'dozė']
+                    .map((x) => DropdownMenuItem(value: x, child: Text(x)))
+                    .toList(),
+                onChanged: (value) => setState(() => doseUnit = value!),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
         field(
           c,
           instructions,
@@ -2035,15 +2145,28 @@ class _ReminderEditor extends State<ReminderEditor> {
           title: Text(tx(c, 'Priminimas įjungtas', 'Reminder enabled')),
         ),
         FilledButton(
-          onPressed: () {
-            if (titleC.text.trim().isEmpty || days.isEmpty) {
+          onPressed: () async {
+            final amount = double.tryParse(
+              quantity.text.trim().replaceAll(',', '.'),
+            );
+            final start = DateTime.tryParse(startDate.text);
+            final end = DateTime.tryParse(endDate.text);
+            if (titleC.text.trim().isEmpty ||
+                days.isEmpty ||
+                amount == null ||
+                amount <= 0 ||
+                (startDate.text.isNotEmpty &&
+                    start == null) ||
+                (endDate.text.isNotEmpty &&
+                    end == null) ||
+                (start != null && end != null && end.isBefore(start))) {
               ScaffoldMessenger.of(c).showSnackBar(
                 SnackBar(
                   content: Text(
                     tx(
                       c,
-                      'Įrašyk pavadinimą ir pasirink bent vieną dieną.',
-                      'Enter a title and select at least one day.',
+                      'Patikrink pavadinimą, datas, kiekį ir pasirink bent vieną dieną.',
+                      'Check the title, dates, amount and select at least one day.',
                     ),
                   ),
                 ),
@@ -2057,11 +2180,18 @@ class _ReminderEditor extends State<ReminderEditor> {
             r.memberId = memberId;
             r.time = time;
             r.dose = dose.text.trim();
+            r.doseUnit = doseUnit;
+            r.quantityPerDose = amount;
             r.instructions = instructions.text.trim();
+            r.startDate = startDate.text.trim();
+            r.endDate = endDate.text.trim();
             r.weekdays = [...days];
             r.enabled = enabled;
             if (widget.reminder == null) widget.data.reminders.add(r);
+            await ReminderNotifications.requestPermissions();
             widget.onChanged();
+            await ReminderNotifications.scheduleAll(widget.data);
+            if (!c.mounted) return;
             Navigator.pop(c);
           },
           child: Text(tx(c, 'Išsaugoti', 'Save')),
