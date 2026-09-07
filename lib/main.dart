@@ -1937,7 +1937,7 @@ class MedicinePage extends StatelessWidget {
                 Text(tx(
                   c,
                   'Pagal priminimus užteks maždaug $daysRemaining d. (iki ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
-                  'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
+                  'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd)})',
                 )),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
