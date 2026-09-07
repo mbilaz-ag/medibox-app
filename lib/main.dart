@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -1435,6 +1436,14 @@ class CabinetPage extends StatefulWidget {
 
 class _CabinetPageState extends State<CabinetPage> {
   String selectedCategory = '';
+  String sortOrder = 'name';
+  final search = TextEditingController();
+
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(c) {
@@ -1446,14 +1455,25 @@ class _CabinetPageState extends State<CabinetPage> {
     final activeCategory = categories.contains(selectedCategory)
         ? selectedCategory
         : '';
-    final medicines = activeCategory.isEmpty
+    final query = search.text.trim().toLowerCase();
+    final medicines = (activeCategory.isEmpty
         ? widget.data.meds
         : widget.data.meds
             .where(
               (medicine) =>
                   _splitCategories(medicine.category).contains(activeCategory),
             )
-            .toList();
+            .toList())
+        .where((medicine) => query.isEmpty ||
+            '${medicine.name} ${medicine.substance} ${medicine.purpose} ${medicine.barcode}'
+                .toLowerCase()
+                .contains(query))
+        .toList()
+      ..sort((a, b) => switch (sortOrder) {
+        'expiry' => a.expiry.compareTo(b.expiry),
+        'stock' => a.stock.compareTo(b.stock),
+        _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      });
     return ColoredBox(
     color: const Color(0xfff6fbfa),
     child: ListView(
@@ -1461,6 +1481,35 @@ class _CabinetPageState extends State<CabinetPage> {
       children: [
       title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
       const SizedBox(height: 16),
+      TextField(
+        controller: search,
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          labelText: tx(c, 'Ieškoti vaisto', 'Search medicines'),
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: search.text.isEmpty
+              ? null
+              : IconButton(
+                  onPressed: () {
+                    search.clear();
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.clear),
+                ),
+        ),
+      ),
+      const SizedBox(height: 10),
+      DropdownButtonFormField<String>(
+        initialValue: sortOrder,
+        decoration: InputDecoration(labelText: tx(c, 'Rikiavimas', 'Sort by')),
+        items: [
+          DropdownMenuItem(value: 'name', child: Text(tx(c, 'Pagal pavadinimą', 'Name'))),
+          DropdownMenuItem(value: 'expiry', child: Text(tx(c, 'Pagal galiojimą', 'Expiry'))),
+          DropdownMenuItem(value: 'stock', child: Text(tx(c, 'Pagal likutį', 'Stock'))),
+        ],
+        onChanged: (value) => setState(() => sortOrder = value!),
+      ),
+      const SizedBox(height: 12),
       if (categories.isNotEmpty) ...[
         Text(
           tx(c, 'Filtruoti pagal kategoriją', 'Filter by category'),
@@ -1708,6 +1757,23 @@ class MedicinePage extends StatelessWidget {
                 Text('${tx(c, 'Brūkšninis kodas', 'Barcode')}: ${med.barcode}'),
               if (med.storageLocation.isNotEmpty)
                 Text('${tx(c, 'Laikymo vieta', 'Storage location')}: ${med.storageLocation}'),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await Navigator.push(
+                    c,
+                    MaterialPageRoute(
+                      builder: (_) => MedicineInventoryPage(
+                        medicine: med,
+                        onChanged: onChanged,
+                      ),
+                    ),
+                  );
+                  setPageState(() {});
+                },
+                icon: const Icon(Icons.inventory_2_outlined),
+                label: Text(tx(c, 'Pakuotės ir laikymo vietos', 'Packages and storage')),
+              ),
             ],
           ),
         ),
@@ -1754,6 +1820,120 @@ class MedicinePage extends StatelessWidget {
     ),
   ),
   ),
+  );
+}
+
+class MedicineInventoryPage extends StatefulWidget {
+  final Med medicine;
+  final VoidCallback onChanged;
+  const MedicineInventoryPage({
+    super.key,
+    required this.medicine,
+    required this.onChanged,
+  });
+  @override
+  State<MedicineInventoryPage> createState() => _MedicineInventoryPageState();
+}
+
+class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
+  Future<void> _addBatch() async {
+    final quantity = TextEditingController();
+    final expiry = TextEditingController();
+    final batch = TextEditingController();
+    final location = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(tx(context, 'Pridėti pakuotę', 'Add package')),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            field(context, quantity, 'Kiekis', 'Quantity', number: true),
+            dateField(context, expiry, 'Galioja iki YYYY-MM-DD', 'Expiry YYYY-MM-DD'),
+            field(context, batch, 'Partijos numeris', 'Batch number'),
+            field(context, location, 'Laikymo vieta', 'Storage location'),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(tx(context, 'Atšaukti', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: () {
+              final parsed = double.tryParse(quantity.text.replaceAll(',', '.'));
+              if (parsed == null || parsed <= 0) return;
+              widget.medicine.batches.add(MedicineStockBatch(
+                id: newId(),
+                quantity: parsed,
+                expiry: expiry.text.trim(),
+                batchNumber: batch.text.trim(),
+                storageLocation: location.text.trim(),
+              ));
+              widget.medicine.stock = widget.medicine.batches
+                  .fold(0, (total, item) => total + item.quantity);
+              widget.onChanged();
+              Navigator.pop(dialogContext);
+              setState(() {});
+            },
+            child: Text(tx(context, 'Išsaugoti', 'Save')),
+          ),
+        ],
+      ),
+    );
+    quantity.dispose();
+    expiry.dispose();
+    batch.dispose();
+    location.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(tx(context, 'Vaisto pakuotės', 'Medicine packages'))),
+    body: ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        card(Text(
+          '${widget.medicine.name} ${widget.medicine.strength}\n'
+          '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)}',
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        )),
+        if (widget.medicine.batches.isEmpty)
+          card(Text(tx(
+            context,
+            'Atskiros pakuotės dar nesuvestos. Dabartinis bendras likutis išsaugotas.',
+            'No individual packages yet. The current total stock is preserved.',
+          ))),
+        ...widget.medicine.batches.map((item) => Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              backgroundColor: mint,
+              child: Icon(Icons.inventory_2_outlined, color: green),
+            ),
+            title: Text('${quantityLabel(item.quantity)} ${tx(context, 'vnt.', 'units')}'),
+            subtitle: Text([
+              if (item.expiry.isNotEmpty) '${tx(context, 'Galioja iki', 'Expires')}: ${item.expiry}',
+              if (item.batchNumber.isNotEmpty) '${tx(context, 'Partija', 'Batch')}: ${item.batchNumber}',
+              if (item.storageLocation.isNotEmpty) '${tx(context, 'Vieta', 'Location')}: ${item.storageLocation}',
+            ].join('\n')),
+            trailing: IconButton(
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () {
+                widget.medicine.batches.remove(item);
+                widget.medicine.stock = widget.medicine.batches
+                    .fold(0, (total, batch) => total + batch.quantity);
+                widget.onChanged();
+                setState(() {});
+              },
+            ),
+          ),
+        )),
+        FilledButton.icon(
+          onPressed: _addBatch,
+          icon: const Icon(Icons.add),
+          label: Text(tx(context, 'Pridėti pakuotę', 'Add package')),
+        ),
+      ],
+    ),
   );
 }
 
@@ -1864,6 +2044,10 @@ class _MedicineEditor extends State<MedicineEditor> {
         widget.registryMedicine?.atcCode ?? '',
         '${widget.registryMedicine?.name ?? ''} ${widget.registryMedicine?.substance ?? ''} ${widget.sourceText}',
       ),
+  };
+  late final Set<String> selectedMemberIds = {
+    ...?widget.medicine?.memberIds,
+    if (widget.initialMemberId.isNotEmpty) widget.initialMemberId,
   };
   final newCategory = TextEditingController();
   Timer? _vvktDebounce;
@@ -2095,6 +2279,58 @@ class _MedicineEditor extends State<MedicineEditor> {
     );
   }
 
+  Widget _memberPicker(BuildContext c) {
+    if (widget.data.members.isEmpty) return const SizedBox.shrink();
+    final medicineTerms = '${name.text} ${sub.text}'.toLowerCase();
+    final warningsForMembers = widget.data.members.where((member) {
+      if (!selectedMemberIds.contains(member.id)) return false;
+      final risks = '${member.allergies} ${member.intolerantMedicines}'
+          .toLowerCase()
+          .split(RegExp(r'[,;\n]'))
+          .map((value) => value.trim())
+          .where((value) => value.length >= 3);
+      return risks.any(medicineTerms.contains);
+    }).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          tx(c, 'Kam skirtas vaistas?', 'Who is this medicine for?'),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: widget.data.members.map((member) => FilterChip(
+            avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
+            label: Text(member.name),
+            selected: selectedMemberIds.contains(member.id),
+            onSelected: (selected) => setState(() {
+              if (selected) {
+                selectedMemberIds.add(member.id);
+              } else {
+                selectedMemberIds.remove(member.id);
+              }
+            }),
+          )).toList(),
+        ),
+        if (warningsForMembers.isNotEmpty)
+          Card(
+            color: const Color(0xffffe9e8),
+            child: ListTile(
+              leading: const Icon(Icons.warning_amber_rounded, color: Color(0xffc62828)),
+              title: Text(
+                tx(c, 'Patikrinkite alergijas ir netoleravimą', 'Check allergies and intolerances'),
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(warningsForMembers.map((member) => member.name).join(', ')),
+            ),
+          ),
+        const SizedBox(height: 8),
+      ],
+    );
+  }
+
   @override
   Widget build(c) => Scaffold(
     appBar: AppBar(
@@ -2154,6 +2390,7 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, dosageForm, 'Vaisto forma (tabletės, sirupas...)', 'Dosage form'),
         field(c, packageSize, 'Pakuotės dydis', 'Package size'),
         _categoryPicker(c),
+        _memberPicker(c),
         field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
         field(c, dosage, 'Kaip vartoti', 'How to use', lines: 3),
         field(c, warnings, 'Svarbūs įspėjimai', 'Important warnings', lines: 3),
@@ -2265,19 +2502,14 @@ class _MedicineEditor extends State<MedicineEditor> {
                     _registryMedicine?.registrationNumber ?? '',
                 supplyStatus: _registryMedicine?.supplyStatus ?? '',
                 registryVerified: _registryMedicine != null,
-                memberIds: widget.initialMemberId.isEmpty
-                    ? null
-                    : [widget.initialMemberId],
+                memberIds: selectedMemberIds.toList(),
                 batchNumber: batchNumber.text.trim(),
                 barcode: barcode.text.trim(),
                 storageLocation: storageLocation.text.trim(),
                 notes: notes.text.trim(),
               ));
             } else {
-              if (widget.initialMemberId.isNotEmpty &&
-                  !existing.memberIds.contains(widget.initialMemberId)) {
-                existing.memberIds.add(widget.initialMemberId);
-              }
+              existing.memberIds = selectedMemberIds.toList();
               existing
                 ..name = name.text.trim()
                 ..substance = sub.text.trim()
@@ -2945,6 +3177,26 @@ class RemindersPage extends StatelessWidget {
           title(tx(c, 'Priminimai', 'Reminders')),
           const SizedBox(height: 10),
         ],
+        Row(children: [
+          Expanded(child: OutlinedButton.icon(
+            onPressed: () async {
+              await ReminderNotifications.requestPermissions();
+              await ReminderNotifications.scheduleAll(data);
+              await ReminderNotifications.showTest();
+            },
+            icon: const Icon(Icons.notifications_active_outlined),
+            label: Text(tx(c, 'Patikrinti pranešimus', 'Test notifications')),
+          )),
+          const SizedBox(width: 8),
+          IconButton.filledTonal(
+            tooltip: tx(c, 'Vartojimo istorija', 'Dose history'),
+            onPressed: () => Navigator.push(c, MaterialPageRoute(
+              builder: (_) => DoseHistoryPage(data: data, onChanged: onChanged),
+            )),
+            icon: const Icon(Icons.history),
+          ),
+        ]),
+        const SizedBox(height: 8),
         if (rs.isEmpty)
           card(
             Text(
@@ -3319,6 +3571,376 @@ class _ReminderEditor extends State<ReminderEditor> {
   );
 }
 
+Widget _profileToolTile(
+  BuildContext c,
+  IconData icon,
+  String lt,
+  String en,
+  VoidCallback onTap,
+) => Card(
+  child: ListTile(
+    leading: CircleAvatar(
+      backgroundColor: mint,
+      child: Icon(icon, color: green),
+    ),
+    title: Text(tx(c, lt, en), style: const TextStyle(fontWeight: FontWeight.w700)),
+    trailing: const Icon(Icons.chevron_right_rounded),
+    onTap: onTap,
+  ),
+);
+
+class DoseHistoryPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const DoseHistoryPage({super.key, required this.data, required this.onChanged});
+  @override
+  State<DoseHistoryPage> createState() => _DoseHistoryPageState();
+}
+
+class _DoseHistoryPageState extends State<DoseHistoryPage> {
+  @override
+  Widget build(BuildContext c) {
+    final now = DateTime.now();
+    final entries = <(DateTime, Reminder, DoseStatus)>[];
+    for (var offset = 0; offset < 30; offset++) {
+      final day = DateTime(now.year, now.month, now.day - offset);
+      for (final reminder in widget.data.reminders) {
+        if (!reminderAppliesOn(reminder, day)) continue;
+        final key = dateKey(day);
+        final status = reminder.takenDates.contains(key)
+            ? DoseStatus.taken
+            : reminder.skippedDates.contains(key)
+                ? DoseStatus.skipped
+                : day.isBefore(DateTime(now.year, now.month, now.day))
+                    ? DoseStatus.missed
+                    : reminderStatus(reminder, now);
+        entries.add((day, reminder, status));
+      }
+    }
+    final taken = entries.where((entry) => entry.$3 == DoseStatus.taken).length;
+    final completed = entries.where((entry) =>
+        entry.$3 == DoseStatus.taken || entry.$3 == DoseStatus.skipped ||
+        entry.$3 == DoseStatus.missed).length;
+    final percent = completed == 0 ? 0 : (taken * 100 / completed).round();
+    return Scaffold(
+      appBar: AppBar(title: Text(tx(c, 'Vartojimo istorija', 'Dose history'))),
+      body: ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          card(Row(children: [
+            const Icon(Icons.insights, color: green, size: 34),
+            const SizedBox(width: 12),
+            Expanded(child: Text(
+              tx(c, 'Per 30 dienų išgerta $taken iš $completed dozių ($percent %).',
+                  '$taken of $completed doses taken in 30 days ($percent%).'),
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            )),
+          ])),
+          ...entries.map((entry) {
+            final (day, reminder, status) = entry;
+            final statusText = switch (status) {
+              DoseStatus.taken => tx(c, 'Išgerta', 'Taken'),
+              DoseStatus.skipped => tx(c, 'Praleista', 'Skipped'),
+              DoseStatus.missed => tx(c, 'Neišgerta', 'Missed'),
+              DoseStatus.late => tx(c, 'Vėluoja', 'Late'),
+              _ => tx(c, 'Suplanuota', 'Scheduled'),
+            };
+            final color = status == DoseStatus.taken
+                ? green
+                : status == DoseStatus.upcoming
+                    ? const Color(0xff7b8ba1)
+                    : const Color(0xffc62828);
+            return Card(child: ListTile(
+              leading: Icon(status == DoseStatus.taken
+                  ? Icons.check_circle : Icons.schedule, color: color),
+              title: Text('${DateFormat('yyyy-MM-dd').format(day)} • ${reminder.time} • ${reminder.title}'),
+              subtitle: Text(statusText),
+              trailing: status == DoseStatus.taken
+                  ? IconButton(
+                      tooltip: tx(c, 'Atšaukti pažymėjimą', 'Undo'),
+                      icon: const Icon(Icons.undo),
+                      onPressed: () {
+                        undoDoseTaken(widget.data, reminder, day);
+                        widget.onChanged();
+                        setState(() {});
+                      },
+                    )
+                  : null,
+            ));
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class ShoppingPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const ShoppingPage({super.key, required this.data, required this.onChanged});
+  @override
+  State<ShoppingPage> createState() => _ShoppingPageState();
+}
+
+class _ShoppingPageState extends State<ShoppingPage> {
+  Future<void> _addCustomItem() async {
+    final name = TextEditingController();
+    final quantity = TextEditingController(text: '1');
+    var prescription = false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(tx(context, 'Pridėti į sąrašą', 'Add to list')),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            field(context, name, 'Vaistas ar prekė', 'Medicine or item'),
+            field(context, quantity, 'Kiekis', 'Quantity', number: true),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: prescription,
+              title: Text(tx(context, 'Reikalingas receptas', 'Prescription required')),
+              onChanged: (value) => setDialogState(() => prescription = value),
+            ),
+          ]),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(tx(context, 'Atšaukti', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = double.tryParse(quantity.text.replaceAll(',', '.'));
+                if (name.text.trim().isEmpty || value == null || value <= 0) return;
+                widget.data.shopping.add(ShoppingItem(
+                  id: newId(),
+                  name: name.text.trim(),
+                  quantity: value,
+                  prescription: prescription,
+                ));
+                widget.onChanged();
+                Navigator.pop(dialogContext);
+                setState(() {});
+              },
+              child: Text(tx(context, 'Pridėti', 'Add')),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    quantity.dispose();
+  }
+
+  void _addLowStock() {
+    for (final medicine in widget.data.meds.where((medicine) => medicine.stock <= 10)) {
+      if (widget.data.shopping.any((item) => item.medId == medicine.id && !item.purchased)) continue;
+      widget.data.shopping.add(ShoppingItem(
+        id: newId(),
+        medId: medicine.id,
+        name: '${medicine.name} ${medicine.strength}'.trim(),
+        prescription: medicine.prescription,
+      ));
+    }
+    widget.onChanged();
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext c) => Scaffold(
+    appBar: AppBar(title: Text(tx(c, 'Pirkinių sąrašas', 'Shopping list'))),
+    body: ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        OutlinedButton.icon(
+          onPressed: _addLowStock,
+          icon: const Icon(Icons.playlist_add),
+          label: Text(tx(c, 'Įtraukti mažo likučio vaistus', 'Add low-stock medicines')),
+        ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: _addCustomItem,
+          icon: const Icon(Icons.add_shopping_cart),
+          label: Text(tx(c, 'Pridėti rankiniu būdu', 'Add manually')),
+        ),
+        if (widget.data.shopping.isEmpty)
+          card(Text(tx(c, 'Pirkinių sąrašas tuščias.', 'Shopping list is empty.'))),
+        ...widget.data.shopping.map((item) => Card(child: CheckboxListTile(
+          value: item.purchased,
+          title: Text(item.name),
+          subtitle: Text([
+            '${tx(c, 'Kiekis', 'Quantity')}: ${quantityLabel(item.quantity)}',
+            if (item.prescription) tx(c, 'Reikalingas receptas', 'Prescription required'),
+          ].join(' • ')),
+          secondary: IconButton(
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () {
+              widget.data.shopping.remove(item);
+              widget.onChanged();
+              setState(() {});
+            },
+          ),
+          onChanged: (checked) {
+            final wasPurchased = item.purchased;
+            item.purchased = checked ?? false;
+            final medicine = widget.data.meds.where((med) => med.id == item.medId).firstOrNull;
+            if (medicine != null && !wasPurchased && item.purchased) {
+              medicine.stock += item.quantity;
+            }
+            widget.onChanged();
+            setState(() {});
+          },
+        ))),
+      ],
+    ),
+  );
+}
+
+String _doctorSummary(AppData data) {
+  final p = data.profile;
+  final buffer = StringBuffer('MEDIBOX – SVEIKATOS SANTRAUKA\n\n')
+    ..writeln('Vardas: ${p.name}')
+    ..writeln('Gimimo data: ${p.birthDate}')
+    ..writeln('Kraujo grupė: ${p.bloodType}')
+    ..writeln('Alergijos: ${p.allergies}')
+    ..writeln('Sveikatos būklės: ${p.conditions}')
+    ..writeln('Skubios pagalbos kontaktas: ${p.emergencyName} ${p.emergencyPhone}')
+    ..writeln('\nVARTOJAMI VAISTAI');
+  for (final medicine in data.meds) {
+    buffer.writeln('• ${medicine.name} ${medicine.strength} – ${medicine.dosage}');
+  }
+  buffer.writeln('\nSukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}');
+  return buffer.toString();
+}
+
+class DoctorSummaryPage extends StatelessWidget {
+  final AppData data;
+  const DoctorSummaryPage({super.key, required this.data});
+  @override
+  Widget build(BuildContext c) {
+    final summary = _doctorSummary(data);
+    return Scaffold(
+      appBar: AppBar(title: Text(tx(c, 'Santrauka gydytojui', 'Doctor summary'))),
+      body: ListView(padding: const EdgeInsets.all(18), children: [
+        card(SelectableText(summary)),
+        FilledButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: summary));
+            if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
+              SnackBar(content: Text(tx(c, 'Santrauka nukopijuota.', 'Summary copied.'))),
+            );
+          },
+          icon: const Icon(Icons.copy),
+          label: Text(tx(c, 'Kopijuoti santrauką', 'Copy summary')),
+        ),
+      ]),
+    );
+  }
+}
+
+class EmergencyInfoPage extends StatelessWidget {
+  final AppData data;
+  const EmergencyInfoPage({super.key, required this.data});
+  @override
+  Widget build(BuildContext c) {
+    final p = data.profile;
+    return Scaffold(
+      appBar: AppBar(title: Text(tx(c, 'Kritinė informacija', 'Emergency information'))),
+      body: ListView(padding: const EdgeInsets.all(18), children: [
+        card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(p.name, style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w800, color: navy)),
+          const Divider(),
+          Text('${tx(c, 'Kraujo grupė', 'Blood type')}: ${p.bloodType}'),
+          Text('${tx(c, 'Alergijos', 'Allergies')}: ${p.allergies}'),
+          Text('${tx(c, 'Būklės', 'Conditions')}: ${p.conditions}'),
+          Text('${tx(c, 'Vaistai', 'Medicines')}: ${data.meds.map((m) => '${m.name} ${m.strength}').join(', ')}'),
+          const Divider(),
+          Text('${tx(c, 'Kontaktas', 'Contact')}: ${p.emergencyName}'),
+          SelectableText(p.emergencyPhone, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800)),
+        ])),
+      ]),
+    );
+  }
+}
+
+Map<String, dynamic> _backupMap(AppData data) => {
+  'format': 'medibox-backup-v1',
+  'createdAt': DateTime.now().toIso8601String(),
+  'meds': data.meds.map((item) => item.toJson()).toList(),
+  'members': data.members.map((item) => item.toJson()).toList(),
+  'reminders': data.reminders.map((item) => item.toJson()).toList(),
+  'shopping': data.shopping.map((item) => item.toJson()).toList(),
+  'profile': data.profile.toJson(),
+  'language': data.language,
+};
+
+class DataTransferPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const DataTransferPage({super.key, required this.data, required this.onChanged});
+  @override
+  State<DataTransferPage> createState() => _DataTransferPageState();
+}
+
+class _DataTransferPageState extends State<DataTransferPage> {
+  final importController = TextEditingController();
+  @override
+  void dispose() {
+    importController.dispose();
+    super.dispose();
+  }
+  @override
+  Widget build(BuildContext c) => Scaffold(
+    appBar: AppBar(title: Text(tx(c, 'Atsarginė kopija', 'Backup and restore'))),
+    body: ListView(padding: const EdgeInsets.all(18), children: [
+      card(Text(tx(c,
+        'Kopijoje yra vaistai, šeimos nariai, priminimai, istorija, profilis ir pirkinių sąrašas. Saugokite ją privačiai.',
+        'The backup contains medicines, family, reminders, history, profile and shopping data. Keep it private.'))),
+      FilledButton.icon(
+        onPressed: () async {
+          await Clipboard.setData(ClipboardData(text: jsonEncode(_backupMap(widget.data))));
+          if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
+            SnackBar(content: Text(tx(c, 'Atsarginė kopija nukopijuota.', 'Backup copied.'))),
+          );
+        },
+        icon: const Icon(Icons.copy_all),
+        label: Text(tx(c, 'Kopijuoti atsarginę kopiją', 'Copy backup')),
+      ),
+      const SizedBox(height: 18),
+      TextField(
+        controller: importController,
+        minLines: 4,
+        maxLines: 8,
+        decoration: InputDecoration(labelText: tx(c, 'Įklijuokite atsarginę kopiją', 'Paste backup')),
+      ),
+      const SizedBox(height: 10),
+      OutlinedButton.icon(
+        onPressed: () async {
+          try {
+            final decoded = Map<String, dynamic>.from(jsonDecode(importController.text));
+            if (decoded['format'] != 'medibox-backup-v1') throw const FormatException();
+            widget.data.meds = (decoded['meds'] as List).map((x) => Med.fromJson(Map<String, dynamic>.from(x))).toList();
+            widget.data.members = (decoded['members'] as List).map((x) => Member.fromJson(Map<String, dynamic>.from(x))).toList();
+            widget.data.reminders = (decoded['reminders'] as List).map((x) => Reminder.fromJson(Map<String, dynamic>.from(x))).toList();
+            widget.data.shopping = (decoded['shopping'] as List? ?? []).map((x) => ShoppingItem.fromJson(Map<String, dynamic>.from(x))).toList();
+            widget.data.profile = UserProfile.fromJson(Map<String, dynamic>.from(decoded['profile']));
+            widget.data.language = '${decoded['language'] ?? 'system'}';
+            widget.onChanged();
+            if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
+              SnackBar(content: Text(tx(c, 'Duomenys atkurti.', 'Data restored.'))),
+            );
+          } catch (_) {
+            if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
+              SnackBar(content: Text(tx(c, 'Netinkama atsarginė kopija.', 'Invalid backup.'))),
+            );
+          }
+        },
+        icon: const Icon(Icons.restore),
+        label: Text(tx(c, 'Atkurti duomenis', 'Restore data')),
+      ),
+    ]),
+  );
+}
+
 class ProfilePage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -3410,6 +4032,52 @@ class _ProfilePage extends State<ProfilePage> {
               );
             },
             child: Text(tx(c, 'Išsaugoti profilį', 'Save profile')),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            tx(c, 'Sveikata ir duomenys', 'Health and data'),
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          _profileToolTile(
+            c,
+            Icons.history,
+            'Vartojimo istorija',
+            'Dose history',
+            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                DoseHistoryPage(data: widget.data, onChanged: widget.onChanged))),
+          ),
+          _profileToolTile(
+            c,
+            Icons.shopping_cart_outlined,
+            'Pirkinių sąrašas',
+            'Shopping list',
+            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                ShoppingPage(data: widget.data, onChanged: widget.onChanged))),
+          ),
+          _profileToolTile(
+            c,
+            Icons.medical_information_outlined,
+            'Santrauka gydytojui',
+            'Doctor summary',
+            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                DoctorSummaryPage(data: widget.data))),
+          ),
+          _profileToolTile(
+            c,
+            Icons.emergency_outlined,
+            'Kritinė informacija',
+            'Emergency information',
+            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                EmergencyInfoPage(data: widget.data))),
+          ),
+          _profileToolTile(
+            c,
+            Icons.backup_outlined,
+            'Atsarginė kopija',
+            'Backup and restore',
+            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                DataTransferPage(data: widget.data, onChanged: widget.onChanged))),
           ),
           const SizedBox(height: 18),
           Text(

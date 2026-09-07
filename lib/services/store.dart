@@ -8,6 +8,7 @@ class Store {
   static const _meds = 'medibox_meds_v2',
       _members = 'medibox_members_v1',
       _reminders = 'medibox_reminders_v1',
+      _shopping = 'medibox_shopping_v1',
       _profile = 'medibox_profile_v1',
       _language = 'medibox_language_v1',
       _onboarded = 'medibox_onboarded_v1';
@@ -28,6 +29,7 @@ class Store {
     final meds = list(_meds, Med.fromJson),
         members = list(_members, Member.fromJson),
         reminders = list(_reminders, Reminder.fromJson);
+    final shopping = list(_shopping, ShoppingItem.fromJson);
     var profile = UserProfile();
     try {
       final raw = p.getString(_profile);
@@ -42,6 +44,7 @@ class Store {
           : meds,
       members: members,
       reminders: reminders,
+      shopping: shopping,
       profile: profile,
       language: p.getString(_language) ?? 'system',
       onboarded: p.getBool(_onboarded) ?? false,
@@ -59,6 +62,10 @@ class Store {
       p.setString(
         _reminders,
         jsonEncode(d.reminders.map((x) => x.toJson()).toList()),
+      ),
+      p.setString(
+        _shopping,
+        jsonEncode(d.shopping.map((x) => x.toJson()).toList()),
       ),
       p.setString(_profile, jsonEncode(d.profile.toJson())),
       p.setString(_language, d.language),

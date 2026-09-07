@@ -1,3 +1,31 @@
+class MedicineStockBatch {
+  final String id;
+  double quantity;
+  String expiry, batchNumber, storageLocation;
+  MedicineStockBatch({
+    required this.id,
+    required this.quantity,
+    this.expiry = '',
+    this.batchNumber = '',
+    this.storageLocation = '',
+  });
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'quantity': quantity,
+    'expiry': expiry,
+    'batchNumber': batchNumber,
+    'storageLocation': storageLocation,
+  };
+  factory MedicineStockBatch.fromJson(Map<String, dynamic> json) =>
+      MedicineStockBatch(
+        id: '${json['id']}',
+        quantity: (json['quantity'] as num?)?.toDouble() ?? 0,
+        expiry: '${json['expiry'] ?? ''}',
+        batchNumber: '${json['batchNumber'] ?? ''}',
+        storageLocation: '${json['storageLocation'] ?? ''}',
+      );
+}
+
 class Med {
   final String id;
   String name,
@@ -26,6 +54,7 @@ class Med {
   bool prescription;
   bool registryVerified;
   List<String> memberIds;
+  List<MedicineStockBatch> batches;
   Med({
     required this.id,
     required this.name,
@@ -54,7 +83,9 @@ class Med {
     this.supplyStatus = '',
     this.registryVerified = false,
     List<String>? memberIds,
-  }) : memberIds = memberIds ?? [];
+    List<MedicineStockBatch>? batches,
+  }) : memberIds = memberIds ?? [],
+       batches = batches ?? [];
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
@@ -83,6 +114,7 @@ class Med {
     'registrationNumber': registrationNumber,
     'supplyStatus': supplyStatus,
     'registryVerified': registryVerified,
+    'batches': batches.map((batch) => batch.toJson()).toList(),
   };
   factory Med.fromJson(Map<String, dynamic> j) => Med(
     id: '${j['id']}',
@@ -112,6 +144,10 @@ class Med {
     registrationNumber: '${j['registrationNumber'] ?? ''}',
     supplyStatus: '${j['supplyStatus'] ?? ''}',
     registryVerified: j['registryVerified'] == true,
+    batches: (j['batches'] as List?)
+        ?.map((item) => MedicineStockBatch.fromJson(
+            Map<String, dynamic>.from(item)))
+        .toList(),
   );
 }
 
@@ -332,10 +368,42 @@ class UserProfile {
   );
 }
 
+class ShoppingItem {
+  final String id;
+  String medId, name;
+  double quantity;
+  bool prescription, purchased;
+  ShoppingItem({
+    required this.id,
+    this.medId = '',
+    required this.name,
+    this.quantity = 1,
+    this.prescription = false,
+    this.purchased = false,
+  });
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'medId': medId,
+    'name': name,
+    'quantity': quantity,
+    'prescription': prescription,
+    'purchased': purchased,
+  };
+  factory ShoppingItem.fromJson(Map<String, dynamic> json) => ShoppingItem(
+    id: '${json['id']}',
+    medId: '${json['medId'] ?? ''}',
+    name: '${json['name'] ?? ''}',
+    quantity: (json['quantity'] as num?)?.toDouble() ?? 1,
+    prescription: json['prescription'] == true,
+    purchased: json['purchased'] == true,
+  );
+}
+
 class AppData {
   List<Med> meds;
   List<Member> members;
   List<Reminder> reminders;
+  List<ShoppingItem> shopping;
   UserProfile profile;
   String language;
   bool onboarded;
@@ -343,8 +411,9 @@ class AppData {
     required this.meds,
     required this.members,
     required this.reminders,
+    List<ShoppingItem>? shopping,
     required this.profile,
     this.language = 'system',
     this.onboarded = false,
-  });
+  }) : shopping = shopping ?? [];
 }

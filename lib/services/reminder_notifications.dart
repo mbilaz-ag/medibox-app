@@ -56,6 +56,25 @@ class ReminderNotifications {
         ?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
+  static Future<void> showTest() async {
+    if (!_initialized) return;
+    await _plugin.show(
+      2147483000,
+      'MediBox priminimas veikia',
+      'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'medicine_reminders',
+          'Vaistų priminimai',
+          channelDescription: 'Priminimai apie suplanuotą vaistų vartojimą',
+          importance: Importance.max,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+    );
+  }
+
   static Future<void> scheduleAll(AppData data) async {
     if (!_initialized) return;
     await _plugin.cancelAll();

@@ -65,4 +65,19 @@ void main() {
     expect(reminderStatus(value, DateTime(2026, 9, 7, 8, 20)), DoseStatus.waiting);
     expect(reminderStatus(value, DateTime(2026, 9, 7, 8, 31)), DoseStatus.late);
   });
+
+  test('uses the package with the nearest expiry first', () {
+    final value = reminder();
+    final app = data(value);
+    app.meds.single
+      ..stock = 5
+      ..batches = [
+        MedicineStockBatch(id: 'later', quantity: 3, expiry: '2027-12-01'),
+        MedicineStockBatch(id: 'first', quantity: 2, expiry: '2026-10-01'),
+      ];
+    markDoseTaken(app, value, DateTime(2026, 9, 7, 8, 5));
+    expect(app.meds.single.stock, 4);
+    expect(app.meds.single.batches.firstWhere((x) => x.id == 'first').quantity, 1);
+    expect(app.meds.single.batches.firstWhere((x) => x.id == 'later').quantity, 3);
+  });
 }

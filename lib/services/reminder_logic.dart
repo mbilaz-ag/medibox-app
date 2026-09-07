@@ -40,6 +40,20 @@ void markDoseTaken(AppData data, Reminder reminder, DateTime when) {
   reminder.takenTimes[key] = when.toIso8601String();
   final medicine = _medicine(data, reminder.medId);
   if (medicine != null) {
+    var remaining = reminder.quantityPerDose;
+    final batches = [...medicine.batches]
+      ..sort((a, b) {
+        if (a.expiry.isEmpty) return 1;
+        if (b.expiry.isEmpty) return -1;
+        return a.expiry.compareTo(b.expiry);
+      });
+    for (final batch in batches) {
+      if (remaining <= 0) break;
+      final used = remaining.clamp(0, batch.quantity).toDouble();
+      batch.quantity -= used;
+      remaining -= used;
+    }
+    medicine.batches.removeWhere((batch) => batch.quantity <= 0);
     medicine.stock = (medicine.stock - reminder.quantityPerDose)
         .clamp(0, medicine.stock)
         .toDouble();
@@ -51,7 +65,12 @@ void undoDoseTaken(AppData data, Reminder reminder, DateTime when) {
   if (!reminder.takenDates.remove(key)) return;
   reminder.takenTimes.remove(key);
   final medicine = _medicine(data, reminder.medId);
-  if (medicine != null) medicine.stock += reminder.quantityPerDose;
+  if (medicine != null) {
+    medicine.stock += reminder.quantityPerDose;
+    if (medicine.batches.isNotEmpty) {
+      medicine.batches.first.quantity += reminder.quantityPerDose;
+    }
+  }
 }
 
 void markDoseSkipped(Reminder reminder, DateTime when) {
