@@ -1429,7 +1429,8 @@ class MedicinePage extends StatelessWidget {
               File(med.imagePath),
               height: 210,
               fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              errorBuilder: (context, error, stackTrace) =>
+                  const SizedBox.shrink(),
             ),
           ),
         card(
@@ -1603,7 +1604,8 @@ class _MedicineEditor extends State<MedicineEditor> {
                 height: 190,
                 width: double.infinity,
                 fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                errorBuilder: (context, error, stackTrace) =>
+                    const SizedBox.shrink(),
               ),
             ),
           ),
