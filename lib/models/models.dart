@@ -178,11 +178,13 @@ class AppData {
   List<Reminder> reminders;
   UserProfile profile;
   String language;
+  bool onboarded;
   AppData({
     required this.meds,
     required this.members,
     required this.reminders,
     required this.profile,
     this.language = 'system',
+    this.onboarded = false,
   });
 }

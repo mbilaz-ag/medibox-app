@@ -5,6 +5,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'models/models.dart';
+import 'services/medicine_matcher.dart';
 import 'services/store.dart';
 
 void main() => runApp(const App());
@@ -55,12 +56,273 @@ class _App extends State<App> {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: green),
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xfff7faf9),
+        scaffoldBackgroundColor: const Color(0xfff6fbfa),
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Color(0xffe0eeeb)),
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xff078b71),
+            minimumSize: const Size.fromHeight(54),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+        ),
         inputDecorationTheme: const InputDecorationTheme(
           border: OutlineInputBorder(),
         ),
       ),
-      home: Shell(data: d, onChanged: changed),
+      home: d.onboarded
+          ? Shell(data: d, onChanged: changed)
+          : OnboardingPage(data: d, onChanged: changed),
+    );
+  }
+}
+
+class MediBoxLogo extends StatelessWidget {
+  final double size;
+  const MediBoxLogo({super.key, this.size = 64});
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(
+      gradient: const LinearGradient(
+        begin: Alignment.topRight,
+        end: Alignment.bottomLeft,
+        colors: [Color(0xff56d7ad), Color(0xff078b71)],
+      ),
+      borderRadius: BorderRadius.circular(size * .24),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x33078b71),
+          blurRadius: 18,
+          offset: Offset(0, 8),
+        ),
+      ],
+    ),
+    child: Icon(Icons.add_rounded, color: Colors.white, size: size * .72),
+  );
+}
+
+class OnboardingPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const OnboardingPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
+  @override
+  State<OnboardingPage> createState() => _OnboardingPageState();
+}
+
+class _OnboardingPageState extends State<OnboardingPage> {
+  int step = 0;
+  String choice = 'self';
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: SafeArea(
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 250),
+        child: step == 0 ? _welcome(context) : _choice(context),
+      ),
+    ),
+  );
+
+  Widget _welcome(BuildContext context) => Padding(
+    key: const ValueKey('welcome'),
+    padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
+    child: Column(
+      children: [
+        const MediBoxLogo(size: 76),
+        const SizedBox(height: 14),
+        const Text(
+          'MediBox',
+          style: TextStyle(
+            fontSize: 38,
+            fontWeight: FontWeight.w800,
+            color: navy,
+          ),
+        ),
+        Text(
+          tx(
+            context,
+            'Tavo išmani šeimos vaistinėlė.',
+            'Your smart family medicine cabinet.',
+          ),
+          style: const TextStyle(fontSize: 17, color: navy),
+        ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: Image.asset(
+            'assets/images/medibox_family.webp',
+            fit: BoxFit.contain,
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Column(
+            children: [
+              _benefit(
+                Icons.inventory_2_outlined,
+                tx(context, 'Mažiau rūpesčių', 'Less worry'),
+              ),
+              _benefit(
+                Icons.verified_user_outlined,
+                tx(context, 'Daugiau saugumo', 'More safety'),
+              ),
+              _benefit(
+                Icons.people_outline,
+                tx(context, 'Sveikesnė šeima', 'A healthier family'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        FilledButton(
+          onPressed: () => setState(() => step = 1),
+          child: Text(tx(context, 'Pradėti', 'Get started')),
+        ),
+      ],
+    ),
+  );
+
+  Widget _benefit(IconData icon, String label) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 5),
+    child: Row(
+      children: [
+        Icon(icon, color: green),
+        const SizedBox(width: 12),
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+      ],
+    ),
+  );
+
+  Widget _choice(BuildContext context) {
+    final options = [
+      (
+        'self',
+        Icons.person_outline,
+        tx(context, 'Aš pats / Aš pati', 'Myself'),
+      ),
+      ('child', Icons.child_care, tx(context, 'Mano vaikas', 'My child')),
+      (
+        'family',
+        Icons.family_restroom,
+        tx(context, 'Kitas šeimos narys', 'Another family member'),
+      ),
+      (
+        'shared',
+        Icons.home_outlined,
+        tx(context, 'Bendra vaistinėlė', 'Shared cabinet'),
+      ),
+    ];
+    return ListView(
+      key: const ValueKey('choice'),
+      padding: const EdgeInsets.all(24),
+      children: [
+        Row(
+          children: [
+            IconButton(
+              onPressed: () => setState(() => step = 0),
+              icon: const Icon(Icons.arrow_back),
+            ),
+            const MediBoxLogo(size: 42),
+            const SizedBox(width: 10),
+            const Text(
+              'MediBox',
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.w800,
+                color: navy,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 30),
+        Text(
+          tx(context, 'Kas naudosis „MediBox“?', 'Who will use MediBox?'),
+          style: const TextStyle(
+            fontSize: 25,
+            fontWeight: FontWeight.w800,
+            color: navy,
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...options.map(
+          (o) => Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => setState(() => choice = o.$1),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: choice == o.$1
+                      ? const Color(0xffe6f7f2)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: choice == o.$1 ? green : const Color(0xffe0eeeb),
+                    width: choice == o.$1 ? 2 : 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: mint,
+                      child: Icon(o.$2, color: green),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Text(
+                        o.$3,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (choice == o.$1)
+                      const Icon(Icons.check_circle, color: green),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton(
+          onPressed: () {
+            widget.data.onboarded = true;
+            if (choice == 'self' &&
+                !widget.data.members.any((x) => x.relation == 'self')) {
+              widget.data.members.add(
+                Member(
+                  id: newId(),
+                  name: widget.data.profile.name.isEmpty
+                      ? tx(context, 'Aš', 'Me')
+                      : widget.data.profile.name,
+                  relation: 'self',
+                ),
+              );
+            }
+            widget.onChanged();
+          },
+          child: Text(tx(context, 'Tęsti', 'Continue')),
+        ),
+      ],
     );
   }
 }
@@ -430,19 +692,23 @@ class MedicinePage extends StatelessWidget {
 class MedicineEditor extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
+  final String sourceText;
   const MedicineEditor({
     super.key,
     required this.data,
     required this.onChanged,
+    this.sourceText = '',
   });
   State<MedicineEditor> createState() => _MedicineEditor();
 }
 
 class _MedicineEditor extends State<MedicineEditor> {
-  final name = TextEditingController(),
+  late final name = TextEditingController(text: _guessName(widget.sourceText)),
       sub = TextEditingController(),
-      strength = TextEditingController(),
-      expiry = TextEditingController(),
+      strength = TextEditingController(text: _guessStrength(widget.sourceText)),
+      expiry = TextEditingController(
+        text: MedicineMatcher.expiry(widget.sourceText) ?? '',
+      ),
       stock = TextEditingController(text: '1');
   @override
   void dispose() {
@@ -461,6 +727,17 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, strength, 'Stiprumas', 'Strength'),
         field(c, expiry, 'Galioja iki (YYYY-MM)', 'Expiry (YYYY-MM)'),
         field(c, stock, 'Kiekis', 'Quantity', number: true),
+        if (widget.sourceText.isNotEmpty)
+          ExpansionTile(
+            title: Text(tx(c, 'Atpažintas tekstas', 'Recognized text')),
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: SelectableText(widget.sourceText),
+              ),
+            ],
+          ),
+        const SizedBox(height: 8),
         FilledButton(
           onPressed: () {
             if (name.text.trim().isEmpty) return;
@@ -489,6 +766,31 @@ class _MedicineEditor extends State<MedicineEditor> {
     ),
   );
 }
+
+String _guessName(String source) {
+  if (source.trim().isEmpty) return '';
+  final lines = source
+      .split('\n')
+      .map((x) => x.trim())
+      .where((x) => x.length >= 3 && x.length <= 90 && !x.contains('http'))
+      .toList();
+  final dose = RegExp(
+    r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|g|ml)\b',
+    caseSensitive: false,
+  );
+  final selected =
+      lines.where((x) => dose.hasMatch(x)).firstOrNull ??
+      lines.firstOrNull ??
+      '';
+  return selected.replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+String _guessStrength(String source) =>
+    RegExp(
+      r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|g|ml)\b',
+      caseSensitive: false,
+    ).firstMatch(source)?.group(0) ??
+    '';
 
 class FamilyPage extends StatelessWidget {
   final AppData data;
@@ -542,6 +844,7 @@ class FamilyPage extends StatelessWidget {
 }
 
 const relations = [
+  'self',
   'child',
   'partner',
   'mother',
@@ -553,6 +856,7 @@ const relations = [
 ];
 String relationName(BuildContext c, String r) {
   final lt = {
+    'self': 'Aš pats / Aš pati',
     'child': 'Vaikas',
     'partner': 'Partneris / partnerė',
     'mother': 'Mama',
@@ -563,6 +867,7 @@ String relationName(BuildContext c, String r) {
     'other': 'Kitas asmuo',
   };
   final en = {
+    'self': 'Myself',
     'child': 'Child',
     'partner': 'Partner',
     'mother': 'Mother',
@@ -596,7 +901,7 @@ class _MemberEditor extends State<MemberEditor> {
       allergies = TextEditingController(text: widget.member?.allergies ?? ''),
       conditions = TextEditingController(text: widget.member?.conditions ?? ''),
       notes = TextEditingController(text: widget.member?.notes ?? '');
-  late String relation = widget.member?.relation ?? 'child';
+  late String relation = widget.member?.relation ?? 'self';
   @override
   void dispose() {
     for (final x in [name, birth, allergies, conditions, notes]) x.dispose();
@@ -666,6 +971,30 @@ class _MemberEditor extends State<MemberEditor> {
             m.allergies = allergies.text.trim();
             m.conditions = conditions.text.trim();
             m.notes = notes.text.trim();
+            if (relation == 'self') {
+              final duplicate = widget.data.members.any(
+                (x) => x.relation == 'self' && x.id != m.id,
+              );
+              if (duplicate) {
+                ScaffoldMessenger.of(c).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      tx(
+                        c,
+                        'Asmuo „Aš pats / Aš pati“ jau yra pridėtas.',
+                        'A “Myself” member already exists.',
+                      ),
+                    ),
+                  ),
+                );
+                return;
+              }
+              widget.data.profile.name = m.name;
+              widget.data.profile.birthDate = m.birthDate;
+              widget.data.profile.allergies = m.allergies;
+              widget.data.profile.conditions = m.conditions;
+              widget.data.profile.notes = m.notes;
+            }
             if (widget.member == null) widget.data.members.add(m);
             widget.onChanged();
             Navigator.pop(c);
@@ -1164,20 +1493,60 @@ class _ScanPage extends State<ScanPage> {
         OutlinedButton.icon(
           onPressed: () => Navigator.push(
             c,
-            MaterialPageRoute(builder: (_) => const BarcodePage()),
+            MaterialPageRoute(
+              builder: (_) =>
+                  BarcodePage(data: widget.data, onChanged: widget.onChanged),
+            ),
           ),
           icon: const Icon(Icons.qr_code_scanner),
           label: Text(tx(c, 'Skenuoti kodą', 'Scan code')),
         ),
         if (busy) const Center(child: CircularProgressIndicator()),
-        if (text.isNotEmpty) card(SelectableText(text)),
+        if (text.isNotEmpty) ...[
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx(c, 'Atpažintas tekstas', 'Recognized text'),
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                SelectableText(text),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            onPressed: () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MedicineEditor(
+                  data: widget.data,
+                  onChanged: widget.onChanged,
+                  sourceText: text,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.add_circle_outline),
+            label: Text(
+              tx(
+                c,
+                'Patikrinti ir pridėti į vaistinėlę',
+                'Review and add to medicine cabinet',
+              ),
+            ),
+          ),
+        ],
       ],
     ),
   );
 }
 
 class BarcodePage extends StatefulWidget {
-  const BarcodePage({super.key});
+  final AppData data;
+  final VoidCallback onChanged;
+  const BarcodePage({super.key, required this.data, required this.onChanged});
   State<BarcodePage> createState() => _BarcodePage();
 }
 
@@ -1192,8 +1561,16 @@ class _BarcodePage extends State<BarcodePage> {
         final v = x.barcodes.firstOrNull?.rawValue;
         if (v == null) return;
         done = true;
-        Navigator.pop(c);
-        ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(v)));
+        Navigator.pushReplacement(
+          c,
+          MaterialPageRoute(
+            builder: (_) => MedicineEditor(
+              data: widget.data,
+              onChanged: widget.onChanged,
+              sourceText: v,
+            ),
+          ),
+        );
       },
     ),
   );

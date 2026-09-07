@@ -9,7 +9,8 @@ class Store {
       _members = 'medibox_members_v1',
       _reminders = 'medibox_reminders_v1',
       _profile = 'medibox_profile_v1',
-      _language = 'medibox_language_v1';
+      _language = 'medibox_language_v1',
+      _onboarded = 'medibox_onboarded_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
     List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
@@ -43,6 +44,7 @@ class Store {
       reminders: reminders,
       profile: profile,
       language: p.getString(_language) ?? 'system',
+      onboarded: p.getBool(_onboarded) ?? false,
     );
   }
 
@@ -60,6 +62,7 @@ class Store {
       ),
       p.setString(_profile, jsonEncode(d.profile.toJson())),
       p.setString(_language, d.language),
+      p.setBool(_onboarded, d.onboarded),
     ]);
   }
 
