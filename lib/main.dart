@@ -1445,6 +1445,68 @@ class _CabinetPageState extends State<CabinetPage> {
     super.dispose();
   }
 
+  Future<void> _chooseAddMethod(BuildContext context) async {
+    final method = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                tx(sheetContext, 'Kaip norite pridėti vaistą?', 'How would you like to add it?'),
+                style: const TextStyle(
+                  color: navy,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(sheetContext, 'camera'),
+                icon: const Icon(Icons.camera_alt_outlined),
+                label: Text(tx(sheetContext, 'Fotografuoti arba nuskaityti', 'Photograph or scan')),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => Navigator.pop(sheetContext, 'manual'),
+                icon: const Icon(Icons.edit_note_outlined),
+                label: Text(tx(sheetContext, 'Įvesti ranka', 'Enter manually')),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || method == null) return;
+    if (method == 'manual') {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MedicineEditor(
+            data: widget.data,
+            onChanged: widget.onChanged,
+          ),
+        ),
+      );
+    } else {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ScanPage(
+            data: widget.data,
+            onChanged: widget.onChanged,
+            openCameraImmediately: true,
+          ),
+        ),
+      );
+    }
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(c) {
     final categories = widget.data.meds
@@ -1592,20 +1654,8 @@ class _CabinetPageState extends State<CabinetPage> {
       ),
       const SizedBox(height: 8),
       FilledButton.icon(
-        onPressed: () async {
-          await Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => ScanPage(
-                data: widget.data,
-                onChanged: widget.onChanged,
-                openCameraImmediately: true,
-              ),
-            ),
-          );
-          if (mounted) setState(() {});
-        },
-        icon: const Icon(Icons.camera_alt_outlined),
+        onPressed: () => _chooseAddMethod(c),
+        icon: const Icon(Icons.add_rounded),
         label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
       ),
       ],
