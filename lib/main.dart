@@ -138,87 +138,161 @@ class LaunchScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: const Color(0xfff6fbfa),
-    body: SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(28, 26, 28, 22),
-        child: Column(
-          children: [
-            const MediBoxLogo(size: 76),
-            const SizedBox(height: 12),
-            const Text(
-              'MediBox',
-              style: TextStyle(
-                fontSize: 42,
-                height: 1,
-                fontWeight: FontWeight.w900,
-                color: navy,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              tx(
-                context,
-                'Tavo išmani šeimos vaistinėlė.',
-                'Your smart family medicine cabinet.',
-              ),
-              style: const TextStyle(fontSize: 17, color: navy),
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: Image.asset(
-                'assets/images/medibox_family.webp',
-                fit: BoxFit.contain,
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.all(15),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: .94),
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: const [
-                  BoxShadow(color: Color(0x14000000), blurRadius: 16),
-                ],
-              ),
-              child: const Column(
-                children: [
-                  _LaunchBenefit(
-                    Icons.inventory_2_outlined,
-                    'Mažiau rūpesčių',
-                    'Less worry',
+    backgroundColor: const Color(0xfff8fcfb),
+    body: Stack(
+      children: [
+        const Positioned(
+          top: 170,
+          right: -55,
+          child: _SoftLeaf(size: 150, angle: -.35),
+        ),
+        const Positioned(
+          top: 370,
+          left: -65,
+          child: _SoftLeaf(size: 170, angle: .45),
+        ),
+        const Positioned(
+          bottom: 135,
+          right: -45,
+          child: _SoftLeaf(size: 125, angle: .8),
+        ),
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(28, 24, 28, 14),
+            child: Column(
+              children: [
+                const MediBoxLogo(size: 82),
+                const SizedBox(height: 10),
+                const Text(
+                  'MediBox',
+                  style: TextStyle(
+                    fontSize: 43,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                    color: navy,
                   ),
-                  _LaunchBenefit(
-                    Icons.verified_user_outlined,
-                    'Daugiau saugumo',
-                    'More safety',
+                ),
+                const SizedBox(height: 9),
+                Text(
+                  tx(
+                    context,
+                    'Tavo išmani šeimos vaistinėlė.',
+                    'Your smart family medicine cabinet.',
                   ),
-                  _LaunchBenefit(
-                    Icons.people_outline,
-                    'Sveikesnė šeima',
-                    'A healthier family',
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    color: navy,
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: green,
-                minimumSize: const Size.fromHeight(54),
-              ),
-              onPressed: onStart,
-              child: ready
-                  ? Text(tx(context, 'Pradėti', 'Get started'))
-                  : const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: Colors.white,
+                ),
+                const SizedBox(height: 2),
+                Expanded(
+                  child: Transform.translate(
+                    offset: const Offset(0, 8),
+                    child: Image.asset(
+                      'assets/images/medibox_family.webp',
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
+                Transform.translate(
+                  offset: const Offset(0, -4),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(17, 12, 17, 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: .92),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xffe5efec)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x18082f29),
+                          blurRadius: 20,
+                          offset: Offset(0, 7),
+                        ),
+                      ],
+                    ),
+                    child: const Column(
+                      children: [
+                        _LaunchBenefit(
+                          Icons.inventory_2_outlined,
+                          'Mažiau rūpesčių',
+                          'Less worry',
+                        ),
+                        _LaunchBenefit(
+                          Icons.verified_user_outlined,
+                          'Daugiau saugumo',
+                          'More safety',
+                        ),
+                        _LaunchBenefit(
+                          Icons.people_outline,
+                          'Sveikesnė šeima',
+                          'A healthier family',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 7),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: green,
+                    minimumSize: const Size.fromHeight(54),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                  onPressed: onStart,
+                  child: ready
+                      ? Text(tx(context, 'Pradėti', 'Get started'))
+                      : const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: Colors.white,
+                          ),
+                        ),
+                ),
+                SizedBox(
+                  height: 36,
+                  child: TextButton(
+                    onPressed: ready ? onStart : null,
+                    child: Text(
+                      tx(
+                        context,
+                        'Turi paskyrą? Prisijungti',
+                        'Have an account? Sign in',
+                      ),
+                      style: const TextStyle(
+                        color: green,
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _SoftLeaf extends StatelessWidget {
+  final double size, angle;
+  const _SoftLeaf({required this.size, required this.angle});
+
+  @override
+  Widget build(BuildContext context) => Transform.rotate(
+    angle: angle,
+    child: Container(
+      width: size,
+      height: size * .46,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.all(Radius.elliptical(size, size * .46)),
+        gradient: const RadialGradient(
+          colors: [Color(0x3659bd75), Color(0x0059bd75)],
         ),
       ),
     ),
@@ -249,26 +323,54 @@ class _LaunchBenefit extends StatelessWidget {
 class MediBoxLogo extends StatelessWidget {
   final double size;
   const MediBoxLogo({super.key, this.size = 64});
+
   @override
-  Widget build(BuildContext context) => Container(
-    width: size,
+  Widget build(BuildContext context) => SizedBox(
+    width: size * 1.14,
     height: size,
-    decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topRight,
-        end: Alignment.bottomLeft,
-        colors: [Color(0xff56d7ad), Color(0xff078b71)],
-      ),
-      borderRadius: BorderRadius.circular(size * .24),
-      boxShadow: const [
-        BoxShadow(
-          color: Color(0x33078b71),
-          blurRadius: 18,
-          offset: Offset(0, 8),
+    child: Stack(
+      children: [
+        Positioned(
+          left: 0,
+          top: size * .28,
+          child: _logoSquare(size * .68, const [
+            Color(0xff079b7a),
+            Color(0xff057c65),
+          ]),
+        ),
+        Positioned(
+          right: 0,
+          top: 0,
+          child: _logoSquare(size * .72, const [
+            Color(0xff59ddb4),
+            Color(0xff14aa86),
+          ]),
+        ),
+        Center(
+          child: Icon(Icons.add_rounded, color: Colors.white, size: size * .62),
         ),
       ],
     ),
-    child: Icon(Icons.add_rounded, color: Colors.white, size: size * .72),
+  );
+
+  Widget _logoSquare(double side, List<Color> colors) => Container(
+    width: side,
+    height: side,
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topRight,
+        end: Alignment.bottomLeft,
+        colors: colors,
+      ),
+      borderRadius: BorderRadius.circular(side * .25),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x28078b71),
+          blurRadius: 14,
+          offset: Offset(0, 6),
+        ),
+      ],
+    ),
   );
 }
 
@@ -1962,7 +2064,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.6.2'),
+                const Text('MediBox v0.6.3'),
                 Text(
                   tx(
                     c,
