@@ -22,7 +22,27 @@ manifest.write_text(text)
 gradle = root / 'android/app/build.gradle.kts'
 if gradle.exists():
     text = gradle.read_text().replace('minSdk = flutter.minSdkVersion', 'minSdk = 23')
+    if 'medibox-r8-rules' not in text:
+        text += '''
+
+// medibox-r8-rules: ML Kit exposes optional scripts which are not bundled.
+android {
+    buildTypes {
+        getByName("release") {
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+}
+'''
     gradle.write_text(text)
+(root / 'android/app/proguard-rules.pro').write_text('''# MediBox uses only TextRecognitionScript.latin.
+# The Flutter bridge references optional recognizers in its switch, so R8 must
+# tolerate their absence when the optional language artifacts are not bundled.
+-dontwarn com.google.mlkit.vision.text.chinese.**
+-dontwarn com.google.mlkit.vision.text.devanagari.**
+-dontwarn com.google.mlkit.vision.text.japanese.**
+-dontwarn com.google.mlkit.vision.text.korean.**
+''')
 
 info = root / 'ios/Runner/Info.plist'
 with info.open('rb') as f:

@@ -17,6 +17,9 @@ Dart 3.13.3 sėkmingai suformatavo visus Dart failus. Keturi parserio patikrinim
 ## Prieiga
 GitHub create_tree grąžino 403 Resource not accessible by integration. GitHub list_installations grąžino tuščią sąrašą. Todėl negalima tiksliai teigti, kad problema yra vien konkretaus repozitoriumo pasirinkimas: reikia atkurti GitHub App ryšį ir suteikti jam prieigą prie mbilaz-ag/medibox-app bei failų ir workflow keitimo teises.
 
+## CI rezultatas ir Android tęsinys
+Commit cd0b6ee sėkmingai praėjo iOS analyze, test ir unsigned release kompiliavimą. Android analyze ir test taip pat praėjo, bet R8 sustojo dėl nebundlintų papildomų ML Kit kinų, devanagari, japonų ir korėjiečių atpažintuvų klasių. MediBox naudoja tik lotynišką atpažintuvą; pridėtos siauros R8 `-dontwarn` taisyklės šioms keturioms neprivalomoms vardų erdvėms ir paleidžiamas pakartotinis build.
+
 ## Dar neįgyvendinta
 Šeimos profiliai ir priminimų ekranai demonstraciniai. Pranešimų planavimo, vartojimo istorijos, HealthKit / Health Connect ir debesų sinchronizacijos nėra. Dabartinis pradinis vaistų sąrašas ir šiandienos dozės yra demonstraciniai duomenys. Tai nėra baigtas produktas.
 
