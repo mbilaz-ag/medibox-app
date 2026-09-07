@@ -34,29 +34,155 @@ class Med {
     'leaflet': leaflet,
   };
   factory Med.fromJson(Map<String, dynamic> j) => Med(
-    id: j['id'],
-    name: j['name'],
-    substance: j['substance'],
-    strength: j['strength'],
-    purpose: j['purpose'],
-    category: j['category'],
-    expiry: j['expiry'],
-    stock: j['stock'],
-    prescription: j['prescription'] ?? false,
-    leaflet: j['leaflet'] ?? '',
+    id: '${j['id']}',
+    name: '${j['name']}',
+    substance: '${j['substance'] ?? ''}',
+    strength: '${j['strength'] ?? ''}',
+    purpose: '${j['purpose'] ?? ''}',
+    category: '${j['category'] ?? 'Kita'}',
+    expiry: '${j['expiry'] ?? ''}',
+    stock: (j['stock'] as num?)?.toInt() ?? 0,
+    prescription: j['prescription'] == true,
+    leaflet: '${j['leaflet'] ?? ''}',
   );
 }
 
-class Dose {
-  final String id, medId, time;
-  bool taken;
-  Dose(this.id, this.medId, this.time, {this.taken = false});
+class Member {
+  final String id;
+  String name, relation, birthDate, allergies, conditions, notes;
+  Member({
+    required this.id,
+    required this.name,
+    required this.relation,
+    this.birthDate = '',
+    this.allergies = '',
+    this.conditions = '',
+    this.notes = '',
+  });
   Map<String, dynamic> toJson() => {
     'id': id,
-    'medId': medId,
-    'time': time,
-    'taken': taken,
+    'name': name,
+    'relation': relation,
+    'birthDate': birthDate,
+    'allergies': allergies,
+    'conditions': conditions,
+    'notes': notes,
   };
-  factory Dose.fromJson(Map<String, dynamic> j) =>
-      Dose(j['id'], j['medId'], j['time'], taken: j['taken'] ?? false);
+  factory Member.fromJson(Map<String, dynamic> j) => Member(
+    id: '${j['id']}',
+    name: '${j['name']}',
+    relation: '${j['relation']}',
+    birthDate: '${j['birthDate'] ?? ''}',
+    allergies: '${j['allergies'] ?? ''}',
+    conditions: '${j['conditions'] ?? ''}',
+    notes: '${j['notes'] ?? ''}',
+  );
+}
+
+class Reminder {
+  final String id;
+  String title, medId, memberId, time, dose, instructions;
+  List<int> weekdays;
+  bool enabled;
+  Reminder({
+    required this.id,
+    required this.title,
+    this.medId = '',
+    this.memberId = '',
+    required this.time,
+    this.dose = '',
+    this.instructions = '',
+    List<int>? weekdays,
+    this.enabled = true,
+  }) : weekdays = weekdays ?? [1, 2, 3, 4, 5, 6, 7];
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'medId': medId,
+    'memberId': memberId,
+    'time': time,
+    'dose': dose,
+    'instructions': instructions,
+    'weekdays': weekdays,
+    'enabled': enabled,
+  };
+  factory Reminder.fromJson(Map<String, dynamic> j) => Reminder(
+    id: '${j['id']}',
+    title: '${j['title']}',
+    medId: '${j['medId'] ?? ''}',
+    memberId: '${j['memberId'] ?? ''}',
+    time: '${j['time'] ?? '08:00'}',
+    dose: '${j['dose'] ?? ''}',
+    instructions: '${j['instructions'] ?? ''}',
+    weekdays: (j['weekdays'] as List?)?.map((x) => (x as num).toInt()).toList(),
+    enabled: j['enabled'] != false,
+  );
+}
+
+class UserProfile {
+  String name,
+      birthDate,
+      phone,
+      email,
+      bloodType,
+      allergies,
+      conditions,
+      medications,
+      emergencyName,
+      emergencyPhone,
+      notes;
+  UserProfile({
+    this.name = '',
+    this.birthDate = '',
+    this.phone = '',
+    this.email = '',
+    this.bloodType = '',
+    this.allergies = '',
+    this.conditions = '',
+    this.medications = '',
+    this.emergencyName = '',
+    this.emergencyPhone = '',
+    this.notes = '',
+  });
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'birthDate': birthDate,
+    'phone': phone,
+    'email': email,
+    'bloodType': bloodType,
+    'allergies': allergies,
+    'conditions': conditions,
+    'medications': medications,
+    'emergencyName': emergencyName,
+    'emergencyPhone': emergencyPhone,
+    'notes': notes,
+  };
+  factory UserProfile.fromJson(Map<String, dynamic> j) => UserProfile(
+    name: '${j['name'] ?? ''}',
+    birthDate: '${j['birthDate'] ?? ''}',
+    phone: '${j['phone'] ?? ''}',
+    email: '${j['email'] ?? ''}',
+    bloodType: '${j['bloodType'] ?? ''}',
+    allergies: '${j['allergies'] ?? ''}',
+    conditions: '${j['conditions'] ?? ''}',
+    medications: '${j['medications'] ?? ''}',
+    emergencyName: '${j['emergencyName'] ?? ''}',
+    emergencyPhone: '${j['emergencyPhone'] ?? ''}',
+    notes: '${j['notes'] ?? ''}',
+  );
+}
+
+class AppData {
+  List<Med> meds;
+  List<Member> members;
+  List<Reminder> reminders;
+  UserProfile profile;
+  String language;
+  AppData({
+    required this.meds,
+    required this.members,
+    required this.reminders,
+    required this.profile,
+    this.language = 'system',
+  });
 }

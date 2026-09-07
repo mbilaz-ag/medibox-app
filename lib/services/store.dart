@@ -5,17 +5,62 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/models.dart';
 
 class Store {
-  static const key = 'medibox_meds_v2';
-  static Future<List<Med>> load() async {
+  static const _meds = 'medibox_meds_v2',
+      _members = 'medibox_members_v1',
+      _reminders = 'medibox_reminders_v1',
+      _profile = 'medibox_profile_v1',
+      _language = 'medibox_language_v1';
+  static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
-    final s = p.getString(key);
-    if (s == null) return seed.map((x) => Med.fromJson(x.toJson())).toList();
-    return (jsonDecode(s) as List).map((x) => Med.fromJson(x)).toList();
+    List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
+      try {
+        final raw = p.getString(key);
+        if (raw == null) return [];
+        return (jsonDecode(raw) as List)
+            .map((x) => parse(Map<String, dynamic>.from(x)))
+            .toList();
+      } catch (_) {
+        return [];
+      }
+    }
+
+    final meds = list(_meds, Med.fromJson),
+        members = list(_members, Member.fromJson),
+        reminders = list(_reminders, Reminder.fromJson);
+    var profile = UserProfile();
+    try {
+      final raw = p.getString(_profile);
+      if (raw != null)
+        profile = UserProfile.fromJson(
+          Map<String, dynamic>.from(jsonDecode(raw)),
+        );
+    } catch (_) {}
+    return AppData(
+      meds: meds.isEmpty
+          ? seed.map((x) => Med.fromJson(x.toJson())).toList()
+          : meds,
+      members: members,
+      reminders: reminders,
+      profile: profile,
+      language: p.getString(_language) ?? 'system',
+    );
   }
 
-  static Future<void> save(List<Med> m) async {
+  static Future<void> save(AppData d) async {
     final p = await SharedPreferences.getInstance();
-    await p.setString(key, jsonEncode(m.map((x) => x.toJson()).toList()));
+    await Future.wait([
+      p.setString(_meds, jsonEncode(d.meds.map((x) => x.toJson()).toList())),
+      p.setString(
+        _members,
+        jsonEncode(d.members.map((x) => x.toJson()).toList()),
+      ),
+      p.setString(
+        _reminders,
+        jsonEncode(d.reminders.map((x) => x.toJson()).toList()),
+      ),
+      p.setString(_profile, jsonEncode(d.profile.toJson())),
+      p.setString(_language, d.language),
+    ]);
   }
 
   static final seed = <Med>[
