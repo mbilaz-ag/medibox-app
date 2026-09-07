@@ -5891,7 +5891,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => MedicinePage(data: widget.data, med: medicine, onChanged: widget.onChanged))),
           ),
-        ));
+        );
         }),
         const SizedBox(height: 10),
         OutlinedButton.icon(
