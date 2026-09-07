@@ -654,7 +654,7 @@ class _Shell extends State<Shell> {
     final pages = [
       HomePage(data: d, onChanged: widget.onChanged),
       CabinetPage(data: d, onChanged: widget.onChanged),
-      SymptomsPage(meds: d.meds),
+      SymptomsPage(data: d, onChanged: widget.onChanged),
       FamilyPage(data: d, onChanged: widget.onChanged),
       RemindersPage(data: d, onChanged: widget.onChanged),
     ];
@@ -1094,7 +1094,10 @@ class HomePage extends StatelessWidget {
                 onPressed: () => Navigator.push(
                   c,
                   MaterialPageRoute(
-                    builder: (_) => SymptomsPage(meds: data.meds),
+                    builder: (_) => SymptomsPage(
+                      data: data,
+                      onChanged: onChanged,
+                    ),
                   ),
                 ),
                 icon: const Icon(Icons.health_and_safety),
@@ -1421,19 +1424,91 @@ String _who(AppData d, Reminder r, String me) {
       me;
 }
 
-class CabinetPage extends StatelessWidget {
+class CabinetPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
   const CabinetPage({super.key, required this.data, required this.onChanged});
+
   @override
-  Widget build(c) => ColoredBox(
+  State<CabinetPage> createState() => _CabinetPageState();
+}
+
+class _CabinetPageState extends State<CabinetPage> {
+  String selectedCategory = '';
+
+  @override
+  Widget build(c) {
+    final categories = widget.data.meds
+        .expand((medicine) => _splitCategories(medicine.category))
+        .toSet()
+        .toList()
+      ..sort();
+    final activeCategory = categories.contains(selectedCategory)
+        ? selectedCategory
+        : '';
+    final medicines = activeCategory.isEmpty
+        ? widget.data.meds
+        : widget.data.meds
+            .where(
+              (medicine) =>
+                  _splitCategories(medicine.category).contains(activeCategory),
+            )
+            .toList();
+    return ColoredBox(
     color: const Color(0xfff6fbfa),
     child: ListView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
       children: [
       title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
       const SizedBox(height: 16),
-      ...data.meds.map(
+      if (categories.isNotEmpty) ...[
+        Text(
+          tx(c, 'Filtruoti pagal kategoriją', 'Filter by category'),
+          style: const TextStyle(fontWeight: FontWeight.w700, color: navy),
+        ),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              ChoiceChip(
+                label: Text(tx(c, 'Visi', 'All')),
+                selected: activeCategory.isEmpty,
+                onSelected: (_) => setState(() => selectedCategory = ''),
+              ),
+              const SizedBox(width: 8),
+              ...categories.map(
+                (category) => Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(category),
+                    selected: activeCategory == category,
+                    onSelected: (_) =>
+                        setState(() => selectedCategory = category),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          tx(c, 'Rasta: ${medicines.length}', 'Found: ${medicines.length}'),
+          style: const TextStyle(color: Color(0xff526572)),
+        ),
+        const SizedBox(height: 8),
+      ],
+      if (medicines.isEmpty)
+        card(
+          Text(
+            tx(
+              c,
+              'Šioje kategorijoje vaistų nėra.',
+              'There are no medicines in this category.',
+            ),
+          ),
+        ),
+      ...medicines.map(
         (m) => Card(
           child: ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1450,34 +1525,44 @@ class CabinetPage extends StatelessWidget {
               '${m.substance}\n${tx(c, 'Liko', 'Stock')}: ${quantityLabel(m.stock)} • ${m.expiry}',
             ),
             isThreeLine: true,
-            onTap: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) =>
-                    MedicinePage(data: data, med: m, onChanged: onChanged),
-              ),
-            ),
+            onTap: () async {
+              await Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) => MedicinePage(
+                    data: widget.data,
+                    med: m,
+                    onChanged: widget.onChanged,
+                  ),
+                ),
+              );
+              if (mounted) setState(() {});
+            },
           ),
         ),
       ),
       const SizedBox(height: 8),
       FilledButton.icon(
-        onPressed: () => Navigator.push(
-          c,
-          MaterialPageRoute(
-            builder: (_) => ScanPage(
-              data: data,
-              onChanged: onChanged,
-              openCameraImmediately: true,
+        onPressed: () async {
+          await Navigator.push(
+            c,
+            MaterialPageRoute(
+              builder: (_) => ScanPage(
+                data: widget.data,
+                onChanged: widget.onChanged,
+                openCameraImmediately: true,
+              ),
             ),
-          ),
-        ),
+          );
+          if (mounted) setState(() {});
+        },
         icon: const Icon(Icons.camera_alt_outlined),
         label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
       ),
       ],
     ),
   );
+  }
 }
 
 class MedicinePage extends StatelessWidget {
@@ -4079,8 +4164,13 @@ class _BarcodePage extends State<BarcodePage> {
 }
 
 class SymptomsPage extends StatelessWidget {
-  final List<Med> meds;
-  const SymptomsPage({super.key, required this.meds});
+  final AppData data;
+  final VoidCallback onChanged;
+  const SymptomsPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
   @override
   Widget build(c) {
     final cats = [
@@ -4113,7 +4203,11 @@ class SymptomsPage extends StatelessWidget {
                 onTap: () => Navigator.push(
                   c,
                   MaterialPageRoute(
-                    builder: (_) => MatchesPage(meds: meds, category: x[0]),
+                    builder: (_) => MatchesPage(
+                      data: data,
+                      category: x[0],
+                      onChanged: onChanged,
+                    ),
                   ),
                 ),
               ),
@@ -4126,12 +4220,18 @@ class SymptomsPage extends StatelessWidget {
 }
 
 class MatchesPage extends StatelessWidget {
-  final List<Med> meds;
+  final AppData data;
   final String category;
-  const MatchesPage({super.key, required this.meds, required this.category});
+  final VoidCallback onChanged;
+  const MatchesPage({
+    super.key,
+    required this.data,
+    required this.category,
+    required this.onChanged,
+  });
   @override
   Widget build(c) {
-    final m = meds
+    final m = data.meds
         .where((x) => _matchesSymptomCategory(x, category) && !x.prescription)
         .toList();
     return Scaffold(
@@ -4159,8 +4259,22 @@ class MatchesPage extends StatelessWidget {
           ...m.map(
             (x) => Card(
               child: ListTile(
-                title: Text('${x.name} ${x.strength}'),
+                title: Text(
+                  '${x.name} ${x.strength}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
                 subtitle: Text(x.purpose),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => MedicinePage(
+                      data: data,
+                      med: x,
+                      onChanged: onChanged,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
