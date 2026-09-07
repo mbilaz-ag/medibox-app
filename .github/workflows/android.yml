@@ -35,7 +35,7 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - name: Build universal Android APK
+      - name: Build MediBox v0.17.0 universal Android APK
         run: |
           flutter build apk --release
           cp build/app/outputs/flutter-apk/app-release.apk MediBox-v0.17.0-universal.apk
