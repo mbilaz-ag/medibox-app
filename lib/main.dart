@@ -1406,10 +1406,14 @@ class CabinetPage extends StatelessWidget {
         onPressed: () => Navigator.push(
           c,
           MaterialPageRoute(
-            builder: (_) => MedicineEditor(data: data, onChanged: onChanged),
+            builder: (_) => ScanPage(
+              data: data,
+              onChanged: onChanged,
+              openCameraImmediately: true,
+            ),
           ),
         ),
-        icon: const Icon(Icons.add),
+        icon: const Icon(Icons.camera_alt_outlined),
         label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
       ),
       ],
@@ -3162,7 +3166,13 @@ class ScanCaptureResult {
 class ScanPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const ScanPage({super.key, required this.data, required this.onChanged});
+  final bool openCameraImmediately;
+  const ScanPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+    this.openCameraImmediately = false,
+  });
   State<ScanPage> createState() => _ScanPage();
 }
 
@@ -3175,6 +3185,16 @@ class _ScanPage extends State<ScanPage> {
   String vvktError = '';
   VvktMedicine? vvktMatch;
   List<VvktMedicine> vvktMatches = [];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.openCameraImmediately) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) openCamera();
+      });
+    }
+  }
 
   Future<void> _lookupVvkt(String recognizedText) async {
     final query = _guessRegistryName(recognizedText);
