@@ -5116,7 +5116,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.17.3'),
+                const Text('MediBox v0.17.4'),
                 Text(
                   tx(
                     c,
@@ -6082,7 +6082,32 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             children: [
               Padding(
                 padding: const EdgeInsets.all(7),
-                child: Image.asset(bodyMapAsset, fit: BoxFit.contain),
+                child: Image.asset(
+                  bodyMapAsset,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                  errorBuilder: (context, error, stackTrace) => Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.image_not_supported_outlined,
+                          color: green,
+                          size: 48,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          tx(
+                            context,
+                            'Kūno vaizdo nepavyko įkelti',
+                            'Body image could not be loaded',
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
               CustomPaint(painter: _BodyMapPainter(location: location)),
             ],
