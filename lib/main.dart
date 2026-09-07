@@ -5731,12 +5731,31 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   bool blood = false;
   bool breathingProblem = false;
   bool faintingOrConfusion = false;
+  bool rash = false;
+  bool swelling = false;
+  bool cannotDrink = false;
+  bool neurologicDeficit = false;
+  final Set<String> selectedSymptoms = {};
 
   List<String> get locations => switch (widget.category) {
     'Pilvo problemos' => ['Viršutinėje pilvo dalyje', 'Dešinėje', 'Kairėje', 'Apatinėje dalyje', 'Visą pilvą', 'Sunku pasakyti'],
     'Skausmas' => ['Galva', 'Gerklė', 'Krūtinė', 'Pilvas', 'Nugara', 'Sąnariai / raumenys', 'Kita vieta'],
-    'Odos problemos' => ['Veidas', 'Rankos', 'Kojos', 'Liemuo', 'Kelios kūno vietos'],
-    _ => ['Galva / veidas', 'Krūtinė', 'Pilvas', 'Visa savijauta', 'Kita / sunku pasakyti'],
+    'Odos problemos' => ['Galva / veidas', 'Krūtinė / liemuo', 'Pilvas', 'Nugara', 'Rankos', 'Kojos', 'Kelios kūno vietos'],
+    _ => const [],
+  };
+
+  bool get usesBodyMap =>
+      widget.category == 'Skausmas' ||
+      widget.category == 'Pilvo problemos' ||
+      widget.category == 'Odos problemos';
+
+  List<String> get symptomOptions => switch (widget.category) {
+    'Peršalimas' => ['Sloga', 'Užgulta nosis', 'Gerklės skausmas', 'Kosulys', 'Užkimimas', 'Bendras silpnumas'],
+    'Karščiavimas' => ['Iki 38 °C', '38–39 °C', '39 °C ar daugiau', 'Šaltkrėtis', 'Prakaitavimas', 'Silpnumas'],
+    'Alergija' => ['Sloga / čiaudulys', 'Akių niežėjimas', 'Odos bėrimas', 'Niežėjimas', 'Veido ar lūpų tinimas', 'Sunku kvėpuoti'],
+    'Viduriavimas / užkietėjimas' => ['Viduriavimas', 'Užkietėjimas', 'Pilvo pūtimas', 'Pilvo spazmai', 'Pykinimas', 'Vėmimas'],
+    'Galvos svaigimas' => ['Sukasi aplinka', 'Silpnumas / aptemimas', 'Pusiausvyros sutrikimas', 'Pykinimas', 'Galvos skausmas', 'Ūžimas ausyse'],
+    _ => ['Kitas simptomas'],
   };
 
   bool get dangerous =>
@@ -5744,8 +5763,11 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       blood ||
       breathingProblem ||
       faintingOrConfusion ||
+      neurologicDeficit ||
       persistentVomiting ||
+      cannotDrink ||
       highFever ||
+      (widget.category == 'Alergija' && swelling) ||
       (widget.category == 'Pilvo problemos' && location == 'Dešinėje' && fever && vomiting);
 
   @override
@@ -5753,22 +5775,32 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
     appBar: AppBar(title: Text(step == 0 ? widget.category : tx(c, 'Simptomų įvertinimas', 'Symptom assessment'))),
     body: AnimatedSwitcher(
       duration: const Duration(milliseconds: 220),
-      child: step == 0 ? _locationStep(c) : step == 1 ? _questionsStep(c) : _resultStep(c),
+      child: step == 0 ? _firstStep(c) : step == 1 ? _questionsStep(c) : _resultStep(c),
     ),
   );
+
+  Widget _firstStep(BuildContext c) => usesBodyMap ? _locationStep(c) : _symptomStep(c);
 
   Widget _locationStep(BuildContext c) => ListView(
     key: const ValueKey('location'),
     padding: const EdgeInsets.all(18),
     children: [
-      title(tx(c, 'Kur jaučiate problemą?', 'Where do you feel the problem?')),
+      title(tx(
+        c,
+        widget.category == 'Pilvo problemos' ? 'Kurioje pilvo vietoje jaučiate problemą?' : 'Kurioje vietoje jaučiate problemą?',
+        widget.category == 'Pilvo problemos' ? 'Where in the abdomen is the problem?' : 'Where do you feel the problem?',
+      )),
       const SizedBox(height: 12),
       Center(
         child: Container(
-          width: 132,
-          height: 180,
-          decoration: BoxDecoration(color: const Color(0xffffeeee), borderRadius: BorderRadius.circular(28)),
-          child: const Icon(Icons.accessibility_new_rounded, size: 112, color: Color(0xffef9a9a)),
+          width: 210,
+          height: 270,
+          decoration: BoxDecoration(
+            color: const Color(0xfff2fbf8),
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: const Color(0xffd7ebe5)),
+          ),
+          child: CustomPaint(painter: _BodyMapPainter(location: location)),
         ),
       ),
       const SizedBox(height: 12),
@@ -5787,6 +5819,52 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       ),
     ],
   );
+
+  Widget _symptomStep(BuildContext c) => ListView(
+    key: const ValueKey('symptoms'),
+    padding: const EdgeInsets.all(18),
+    children: [
+      title(tx(c, 'Ką jaučiate?', 'What are you experiencing?')),
+      const SizedBox(height: 6),
+      Text(tx(c, 'Galite pasirinkti kelis simptomus.', 'You can select more than one symptom.')),
+      const SizedBox(height: 14),
+      ...symptomOptions.map((item) {
+        final selected = selectedSymptoms.contains(item);
+        return Card(
+          color: selected ? mint : Colors.white,
+          child: CheckboxListTile(
+            value: selected,
+            activeColor: green,
+            secondary: Icon(_symptomIcon(item), color: selected ? green : navy),
+            title: Text(item),
+            onChanged: (_) => setState(() {
+              selected ? selectedSymptoms.remove(item) : selectedSymptoms.add(item);
+              if (item == '39 °C ar daugiau') highFever = selectedSymptoms.contains(item);
+              if (item == 'Sunku kvėpuoti') breathingProblem = selectedSymptoms.contains(item);
+              if (item == 'Veido ar lūpų tinimas') swelling = selectedSymptoms.contains(item);
+              if (item == 'Vėmimas') vomiting = selectedSymptoms.contains(item);
+            }),
+          ),
+        );
+      }),
+      const SizedBox(height: 10),
+      FilledButton(
+        onPressed: selectedSymptoms.isEmpty ? null : () => setState(() => step = 1),
+        child: Text(tx(c, 'Tęsti', 'Continue')),
+      ),
+    ],
+  );
+
+  IconData _symptomIcon(String item) {
+    if (item.contains('Kosul') || item.contains('Gerkl')) return Icons.record_voice_over_outlined;
+    if (item.contains('nos') || item.contains('Sloga')) return Icons.air_rounded;
+    if (item.contains('39') || item.contains('38') || item.contains('Šaltkr')) return Icons.thermostat_rounded;
+    if (item.contains('Odos') || item.contains('Niež')) return Icons.water_drop_outlined;
+    if (item.contains('Viduri') || item.contains('Užkiet')) return Icons.wc_rounded;
+    if (item.contains('Vėm') || item.contains('Pykin')) return Icons.sick_outlined;
+    if (item.contains('kvėpuoti') || item.contains('tinimas')) return Icons.warning_amber_rounded;
+    return Icons.health_and_safety_outlined;
+  }
 
   Widget _questionsStep(BuildContext c) => ListView(
     key: const ValueKey('questions'),
@@ -5809,13 +5887,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             ['spazminis', 'degina', 'maudžia', 'aštrus'], painType, (v) => painType = v),
       ],
       const SizedBox(height: 14),
-      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
-      if (fever) _yesNo(c, tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'), highFever, (v) => highFever = v),
-      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
-      if (vomiting) _yesNo(c, tx(c, 'Ar vėmimas kartojasi ir nepavyksta gerti?', 'Persistent vomiting or unable to drink?'), persistentVomiting, (v) => persistentVomiting = v),
-      _yesNo(c, tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'), blood, (v) => blood = v),
-      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
-      _yesNo(c, tx(c, 'Ar alpstate, esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+      ..._categoryQuestions(c),
       const SizedBox(height: 14),
       FilledButton(
         onPressed: duration.isEmpty ? null : () => setState(() => step = 2),
@@ -5823,6 +5895,54 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       ),
     ],
   );
+
+  List<Widget> _categoryQuestions(BuildContext c) => switch (widget.category) {
+    'Peršalimas' => [
+      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
+      if (fever) _yesNo(c, tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'), highFever, (v) => highFever = v),
+      _yesNo(c, tx(c, 'Ar sunku kvėpuoti arba jaučiate dusulį?', 'Difficulty breathing or shortness of breath?'), breathingProblem, (v) => breathingProblem = v),
+    ],
+    'Karščiavimas' => [
+      _yesNo(c, tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'), highFever, (v) => highFever = v),
+      _yesNo(c, tx(c, 'Ar yra neįprastas bėrimas?', 'Is there an unusual rash?'), rash, (v) => rash = v),
+      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
+      _yesNo(c, tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+    ],
+    'Alergija' => [
+      _yesNo(c, tx(c, 'Ar tinsta veidas, lūpos arba liežuvis?', 'Swelling of the face, lips or tongue?'), swelling, (v) => swelling = v),
+      _yesNo(c, tx(c, 'Ar sunku kvėpuoti arba ryti?', 'Difficulty breathing or swallowing?'), breathingProblem, (v) => breathingProblem = v),
+      _yesNo(c, tx(c, 'Ar bėrimas greitai plinta?', 'Is the rash spreading quickly?'), rash, (v) => rash = v),
+    ],
+    'Viduriavimas / užkietėjimas' => [
+      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
+      if (vomiting) _yesNo(c, tx(c, 'Ar vėmimas kartojasi?', 'Is vomiting persistent?'), persistentVomiting, (v) => persistentVomiting = v),
+      _yesNo(c, tx(c, 'Ar nepavyksta gerti arba išlaikyti skysčių?', 'Unable to drink or keep fluids down?'), cannotDrink, (v) => cannotDrink = v),
+      _yesNo(c, tx(c, 'Ar išmatose pastebėjote kraujo?', 'Have you noticed blood in stool?'), blood, (v) => blood = v),
+    ],
+    'Pilvo problemos' => [
+      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
+      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
+      if (vomiting) _yesNo(c, tx(c, 'Ar vėmimas kartojasi ir nepavyksta gerti?', 'Persistent vomiting or unable to drink?'), persistentVomiting, (v) => persistentVomiting = v),
+      _yesNo(c, tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'), blood, (v) => blood = v),
+    ],
+    'Odos problemos' => [
+      _yesNo(c, tx(c, 'Ar bėrimas arba paraudimas greitai plinta?', 'Is the rash or redness spreading quickly?'), rash, (v) => rash = v),
+      _yesNo(c, tx(c, 'Ar tinsta veidas arba lūpos?', 'Swelling of the face or lips?'), swelling, (v) => swelling = v),
+      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
+      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
+    ],
+    'Galvos svaigimas' => [
+      _yesNo(c, tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+      _yesNo(c, tx(c, 'Ar sunku kalbėti, matyti arba valdyti galūnes?', 'Difficulty speaking, seeing or controlling a limb?'), neurologicDeficit, (v) => neurologicDeficit = v),
+      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
+    ],
+    _ => [
+      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
+      _yesNo(c, tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'), blood, (v) => blood = v),
+      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
+      _yesNo(c, tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+    ],
+  };
 
   Widget _choice(BuildContext c, String label, List<String> values, String selected, ValueChanged<String> onSelect) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -5908,9 +6028,12 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       if (severity == 'labai stiprus') tx(c, 'Labai stiprūs simptomai', 'Very severe symptoms'),
       if (highFever) tx(c, 'Temperatūra 39 °C ar aukštesnė', 'Temperature of 39°C or higher'),
       if (persistentVomiting) tx(c, 'Nuolatinis vėmimas arba nepavyksta gerti', 'Persistent vomiting or unable to drink'),
+      if (cannotDrink) tx(c, 'Nepavyksta gerti arba išlaikyti skysčių', 'Unable to drink or keep fluids down'),
       if (blood) tx(c, 'Pastebėtas kraujas', 'Blood reported'),
       if (breathingProblem) tx(c, 'Sunku kvėpuoti', 'Difficulty breathing'),
+      if (swelling) tx(c, 'Tinsta veidas, lūpos arba liežuvis', 'Swelling of the face, lips or tongue'),
       if (faintingOrConfusion) tx(c, 'Alpimas arba sumišimas', 'Fainting or confusion'),
+      if (neurologicDeficit) tx(c, 'Kalbos, regėjimo arba galūnių valdymo sutrikimas', 'Speech, vision or limb control problem'),
       if (widget.category == 'Pilvo problemos' && location == 'Dešinėje' && fever && vomiting)
         tx(c, 'Pilvo skausmas dešinėje su temperatūra ir vėmimu', 'Right-sided abdominal pain with fever and vomiting'),
     ];
@@ -5948,6 +6071,77 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       ],
     );
   }
+}
+
+class _BodyMapPainter extends CustomPainter {
+  final String location;
+  const _BodyMapPainter({required this.location});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final skin = Paint()..color = const Color(0xffffd7ca);
+    final outline = Paint()
+      ..color = const Color(0xffd99082)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round;
+    final bodyFill = Paint()..color = const Color(0xffffe8e1);
+    final cx = size.width / 2;
+
+    canvas.drawCircle(Offset(cx, 38), 24, skin);
+    canvas.drawCircle(Offset(cx, 38), 24, outline);
+    final torso = RRect.fromRectAndRadius(
+      Rect.fromCenter(center: Offset(cx, 111), width: 68, height: 105),
+      const Radius.circular(28),
+    );
+    canvas.drawRRect(torso, bodyFill);
+    canvas.drawRRect(torso, outline);
+    canvas.drawLine(Offset(cx - 29, 78), Offset(cx - 69, 155), outline..strokeWidth = 18);
+    canvas.drawLine(Offset(cx + 29, 78), Offset(cx + 69, 155), outline);
+    canvas.drawLine(Offset(cx - 19, 157), Offset(cx - 28, 244), outline..strokeWidth = 21);
+    canvas.drawLine(Offset(cx + 19, 157), Offset(cx + 28, 244), outline);
+    final soft = Paint()
+      ..color = const Color(0xffffd7ca)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 14
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(Offset(cx - 29, 78), Offset(cx - 69, 155), soft);
+    canvas.drawLine(Offset(cx + 29, 78), Offset(cx + 69, 155), soft);
+    canvas.drawLine(Offset(cx - 19, 157), Offset(cx - 28, 244), soft..strokeWidth = 16);
+    canvas.drawLine(Offset(cx + 19, 157), Offset(cx + 28, 244), soft);
+
+    final marker = _markerFor(size, location);
+    if (marker != null) {
+      canvas.drawCircle(marker.$1, marker.$2 + 7, Paint()..color = green.withValues(alpha: .18));
+      canvas.drawCircle(marker.$1, marker.$2, Paint()..color = green.withValues(alpha: .72));
+      canvas.drawCircle(marker.$1, marker.$2, Paint()
+        ..color = green
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5);
+      canvas.drawCircle(marker.$1, 3, Paint()..color = navy);
+    }
+  }
+
+  (Offset, double)? _markerFor(Size size, String value) {
+    final cx = size.width / 2;
+    if (value.contains('Galva') || value == 'Veidas') return (Offset(cx, 38), 20);
+    if (value.contains('Gerkl')) return (Offset(cx, 66), 12);
+    if (value.contains('Krūtin')) return (Offset(cx, 96), 27);
+    if (value == 'Viršutinėje pilvo dalyje') return (Offset(cx, 118), 27);
+    if (value == 'Dešinėje') return (Offset(cx - 20, 138), 24);
+    if (value == 'Kairėje') return (Offset(cx + 20, 138), 24);
+    if (value == 'Apatinėje dalyje') return (Offset(cx, 151), 27);
+    if (value.contains('Visą pilvą') || value == 'Pilvas') return (Offset(cx, 135), 38);
+    if (value.contains('Nugara')) return (Offset(cx, 116), 35);
+    if (value.contains('Rank')) return (Offset(cx - 57, 133), 22);
+    if (value.contains('Koj')) return (Offset(cx + 25, 209), 26);
+    if (value.contains('Liemuo')) return (Offset(cx, 120), 38);
+    if (value.contains('Sąnariai') || value.contains('Kelios')) return (Offset(cx, 137), 54);
+    return null;
+  }
+
+  @override
+  bool shouldRepaint(covariant _BodyMapPainter oldDelegate) => oldDelegate.location != location;
 }
 
 String _matchReason(BuildContext c, String category) => switch (category) {
