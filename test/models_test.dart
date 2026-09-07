@@ -19,10 +19,12 @@ void main() {
       time: '08:30',
       dose: '1',
       weekdays: [1, 3, 5],
+      takenDates: ['2026-09-07'],
     );
     final restoredReminder = Reminder.fromJson(reminder.toJson());
     expect(restoredReminder.weekdays, [1, 3, 5]);
     expect(restoredReminder.memberId, 'm1');
+    expect(restoredReminder.takenDates, ['2026-09-07']);
   });
 
   test('profile survives JSON round trip', () {
