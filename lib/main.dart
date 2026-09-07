@@ -3361,7 +3361,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.13.0'),
+                const Text('MediBox v0.14.0'),
                 Text(
                   tx(
                     c,
