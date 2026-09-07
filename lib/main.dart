@@ -593,8 +593,10 @@ class HomePage extends StatelessWidget {
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
     final remaining = active.length - taken;
-    final lowStock = data.meds.where((x) => x.stock < 10).length;
-    final expiring = data.meds.where((x) => _expiresSoon(x.expiry, now)).length;
+    final lowStockMeds = data.meds.where((x) => x.stock < 10).toList();
+    final expiringMeds = data.meds
+        .where((x) => _expiresSoon(x.expiry, now))
+        .toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
@@ -842,29 +844,35 @@ class HomePage extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        if (lowStock > 0) ...[
-          _statusStrip(
+        if (lowStockMeds.isNotEmpty) ...[
+          _medicineStatusCard(
+            context: c,
+            medicines: lowStockMeds,
             icon: Icons.warning_amber_rounded,
             color: const Color(0xffff9f1c),
             background: const Color(0xfffff3df),
-            text: tx(
+            title: tx(
               c,
-              '$lowStock preparatų atsargos mažos',
-              '$lowStock medicines are low in stock',
+              '${lowStockMeds.length} preparatų atsargos mažos',
+              '${lowStockMeds.length} medicines are low in stock',
             ),
           ),
           const SizedBox(height: 8),
         ],
-        if (expiring > 0) ...[
-          _statusStrip(
+        if (expiringMeds.isNotEmpty) ...[
+          _medicineStatusCard(
+            context: c,
+            medicines: expiringMeds,
             icon: Icons.event_busy_outlined,
             color: const Color(0xffe53935),
             background: const Color(0xffffe9e8),
-            text: tx(
+            title: tx(
               c,
-              '$expiring preparatų baigs galioti per 30 dienų',
-              '$expiring medicines expire within 30 days',
+              '${expiringMeds.length} preparatų greitai baigs galioti',
+              '${expiringMeds.length} medicines expire soon',
             ),
+            expiry: true,
+            now: now,
           ),
           const SizedBox(height: 8),
         ],
@@ -936,19 +944,77 @@ Widget _statusStrip({
 );
 
 bool _expiresSoon(String value, DateTime now) {
+  final days = _daysUntilExpiry(value, now);
+  return days != null && days >= 0 && days <= 30;
+}
+
+int? _daysUntilExpiry(String value, DateTime now) {
   try {
     final parts = value.split('-').map(int.parse).toList();
     final expiry = parts.length == 2
         ? DateTime(parts[0], parts[1] + 1, 0)
         : DateTime(parts[0], parts[1], parts[2]);
-    final days = expiry
-        .difference(DateTime(now.year, now.month, now.day))
-        .inDays;
-    return days >= 0 && days <= 30;
+    return expiry.difference(DateTime(now.year, now.month, now.day)).inDays;
   } catch (_) {
-    return false;
+    return null;
   }
 }
+
+Widget _medicineStatusCard({
+  required BuildContext context,
+  required List<Med> medicines,
+  required IconData icon,
+  required Color color,
+  required Color background,
+  required String title,
+  bool expiry = false,
+  DateTime? now,
+}) => Container(
+  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+  decoration: BoxDecoration(
+    color: background,
+    borderRadius: BorderRadius.circular(14),
+  ),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Row(
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 8),
+      ...medicines.take(4).map((medicine) {
+        final days = expiry ? _daysUntilExpiry(medicine.expiry, now!) : null;
+        final detail = expiry
+            ? tx(
+                context,
+                'galioja iki ${medicine.expiry} • liko ${days ?? 0} d.',
+                'expires ${medicine.expiry} • ${days ?? 0} days left',
+              )
+            : tx(
+                context,
+                'liko ${medicine.stock} vnt.',
+                '${medicine.stock} remaining',
+              );
+        return Padding(
+          padding: const EdgeInsets.only(left: 36, top: 4),
+          child: Text(
+            '${medicine.name} ${medicine.strength} — $detail',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+        );
+      }),
+    ],
+  ),
+);
 
 String _who(AppData d, Reminder r, String me) {
   if (r.memberId.isEmpty) return me;
@@ -1896,7 +1962,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.6.1'),
+                const Text('MediBox v0.6.2'),
                 Text(
                   tx(
                     c,
