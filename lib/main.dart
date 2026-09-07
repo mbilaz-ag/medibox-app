@@ -1647,7 +1647,22 @@ class _CabinetPageState extends State<CabinetPage> {
         MediaQuery.paddingOf(c).bottom + 36,
       ),
       children: [
-      title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
+      Row(
+        children: [
+          Expanded(child: title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet'))),
+          const SizedBox(width: 12),
+          IconButton.filled(
+            onPressed: () => _chooseAddMethod(c),
+            tooltip: tx(c, 'Pridėti vaistą', 'Add medicine'),
+            style: IconButton.styleFrom(
+              backgroundColor: green,
+              foregroundColor: Colors.white,
+              minimumSize: const Size(52, 52),
+            ),
+            icon: const Icon(Icons.add_rounded, size: 30),
+          ),
+        ],
+      ),
       const SizedBox(height: 16),
       TextField(
         controller: search,
@@ -1768,12 +1783,6 @@ class _CabinetPageState extends State<CabinetPage> {
             },
           ),
         ),
-      ),
-      const SizedBox(height: 8),
-      FilledButton.icon(
-        onPressed: () => _chooseAddMethod(c),
-        icon: const Icon(Icons.add_rounded),
-        label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
       ),
       ],
     ),
@@ -4833,7 +4842,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.16.2'),
+                const Text('MediBox v0.16.3'),
                 Text(
                   tx(
                     c,
