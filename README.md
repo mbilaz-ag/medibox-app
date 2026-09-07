@@ -2,9 +2,7 @@
 
 Flutter šeimos vaistinėlė. Dabartinė versija dar nėra baigtas produktas.
 
-Veikia / įgyvendinta kode: vietinė vaistų saugykla, rankinis pridėjimas, likučio mažinimas, kameros / galerijos OCR ir kodų nuskaitymas. Native funkcijas būtina išbandyti telefone.
-
-Šeimos ir priminimų ekranai bei šiandienos dozės yra demonstraciniai. HealthKit, Health Connect, pranešimų planavimas, vartojimo istorija ir VVKT importas neįgyvendinti.
+Veikia / įgyvendinta kode: vietinė vaistų saugykla, vaistų ir šeimos narių redagavimas, vartojimo priminimai, likučių bei galiojimo stebėjimas, kameros / galerijos OCR, kodų nuskaitymas, pasirenkamos kategorijos ir nuskaityto vaisto tikrinimas oficialiame VVKT atvirų duomenų rinkinyje. Native funkcijas būtina išbandyti telefone.
 
 ## Kūrimas
 
@@ -12,4 +10,4 @@ GitHub Actions turi Android APK ir atskirą iOS kompiliavimo workflow. Native pr
 
 Android artifact: `MediBox-Android-APK`. iOS artifact: `MediBox-iOS-unsigned` — nepasirašyta programa, netinkama tiesiogiai diegti iPhone. TestFlight reikės Apple pasirašymo.
 
-Sėkmingas build dar nepatvirtintas. Pataisymų, atliktų patikrų ir prieigos kliūties informacija: [BUILD_STATUS.md](BUILD_STATUS.md).
+Pataisymų, atliktų patikrų ir prieigos informacija: [BUILD_STATUS.md](BUILD_STATUS.md).
