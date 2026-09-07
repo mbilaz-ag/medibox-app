@@ -105,6 +105,40 @@ class ReminderNotifications {
         scheduledCount++;
       }
     }
+    for (final appointment in data.appointments.where((x) => !x.completed)) {
+      final at = DateTime.tryParse('${appointment.date}T${appointment.time}');
+      if (at == null) continue;
+      final notifyAt = at.subtract(
+        Duration(minutes: appointment.remindBeforeMinutes),
+      );
+      if (!notifyAt.isAfter(now)) continue;
+      final member = data.members
+          .where((x) => x.id == appointment.memberId)
+          .map((x) => x.name)
+          .firstOrNull;
+      await _plugin.zonedSchedule(
+        ('appointment-${appointment.id}').hashCode & 0x7fffffff,
+        'Artėja vizitas: ${appointment.title}',
+        [
+          if (member != null) member,
+          '${appointment.date} ${appointment.time}',
+          if (appointment.doctor.isNotEmpty) appointment.doctor,
+          if (appointment.facility.isNotEmpty) appointment.facility,
+        ].join(' • '),
+        tz.TZDateTime.from(notifyAt, tz.local),
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'health_appointments',
+            'Gydytojų vizitai',
+            channelDescription: 'Priminimai apie suplanuotus vizitus',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      );
+    }
   }
 
   static Future<void> snooze(

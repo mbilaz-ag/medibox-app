@@ -9,9 +9,11 @@ class Store {
       _members = 'medibox_members_v1',
       _reminders = 'medibox_reminders_v1',
       _shopping = 'medibox_shopping_v1',
+      _appointments = 'medibox_appointments_v1',
       _profile = 'medibox_profile_v1',
       _language = 'medibox_language_v1',
       _onboarded = 'medibox_onboarded_v1';
+  static const _privacyLock = 'medibox_privacy_lock_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
     List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
@@ -30,6 +32,7 @@ class Store {
         members = list(_members, Member.fromJson),
         reminders = list(_reminders, Reminder.fromJson);
     final shopping = list(_shopping, ShoppingItem.fromJson);
+    final appointments = list(_appointments, HealthAppointment.fromJson);
     var profile = UserProfile();
     try {
       final raw = p.getString(_profile);
@@ -45,9 +48,11 @@ class Store {
       members: members,
       reminders: reminders,
       shopping: shopping,
+      appointments: appointments,
       profile: profile,
       language: p.getString(_language) ?? 'system',
       onboarded: p.getBool(_onboarded) ?? false,
+      privacyLock: p.getBool(_privacyLock) ?? false,
     );
   }
 
@@ -67,9 +72,14 @@ class Store {
         _shopping,
         jsonEncode(d.shopping.map((x) => x.toJson()).toList()),
       ),
+      p.setString(
+        _appointments,
+        jsonEncode(d.appointments.map((x) => x.toJson()).toList()),
+      ),
       p.setString(_profile, jsonEncode(d.profile.toJson())),
       p.setString(_language, d.language),
       p.setBool(_onboarded, d.onboarded),
+      p.setBool(_privacyLock, d.privacyLock),
     ]);
   }
 

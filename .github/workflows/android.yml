@@ -37,10 +37,17 @@ jobs:
       - run: flutter test
       - name: Build installable test APK
         run: flutter build apk --release
+      - name: Build smaller APKs by phone architecture
+        run: flutter build apk --release --split-per-abi
       - uses: actions/upload-artifact@v4
         with:
           name: MediBox-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediBox-smaller-APKs
+          path: build/app/outputs/flutter-apk/app-*-release.apk
           if-no-files-found: error
       - name: Preserve generated native source and dependency resolution
         uses: actions/upload-artifact@v4

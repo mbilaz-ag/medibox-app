@@ -46,6 +46,15 @@ if 'ScheduledNotificationReceiver' not in text:
     text = text.replace('</application>', receivers + '    </application>', 1)
 manifest.write_text(text)
 
+# local_auth requires FragmentActivity on Android.
+for activity in (root / 'android/app/src/main').rglob('MainActivity.kt'):
+    activity_text = activity.read_text()
+    activity_text = activity_text.replace(
+        'import io.flutter.embedding.android.FlutterActivity',
+        'import io.flutter.embedding.android.FlutterFragmentActivity',
+    ).replace('FlutterActivity()', 'FlutterFragmentActivity()')
+    activity.write_text(activity_text)
+
 # Install the MediBox launcher icon generated from the approved brand mark.
 android_icons = {
     'mipmap-mdpi': 'mdpi.png',
@@ -100,6 +109,7 @@ data.update({
     'CFBundleDisplayName': 'MediBox',
     'NSCameraUsageDescription': 'Kamera naudojama vaistų pakuotėms, čekiams ir kodams nuskaityti.',
     'NSPhotoLibraryUsageDescription': 'Pasirinkta nuotrauka naudojama vaisto arba čekio tekstui atpažinti.',
+    'NSFaceIDUsageDescription': 'Face ID naudojamas MediBox sveikatos duomenims apsaugoti.',
 })
 with info.open('wb') as f:
     plistlib.dump(data, f, sort_keys=False)

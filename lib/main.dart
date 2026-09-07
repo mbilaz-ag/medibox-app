@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
@@ -71,6 +72,31 @@ class App extends StatefulWidget {
 class _App extends State<App> {
   AppData? data;
   bool launchAccepted = false;
+  bool authenticating = false;
+
+  Future<void> _openApp() async {
+    final current = data;
+    if (current == null || authenticating) return;
+    if (!current.privacyLock) {
+      setState(() => launchAccepted = true);
+      return;
+    }
+    setState(() => authenticating = true);
+    try {
+      final accepted = await LocalAuthentication().authenticate(
+        localizedReason: 'Atrakinkite MediBox sveikatos duomenis',
+        options: const AuthenticationOptions(
+          biometricOnly: false,
+          stickyAuth: true,
+        ),
+      );
+      if (mounted && accepted) setState(() => launchAccepted = true);
+    } catch (_) {
+      // The app remains locked if the device cannot authenticate.
+    } finally {
+      if (mounted) setState(() => authenticating = false);
+    }
+  }
   @override
   void initState() {
     super.initState();
@@ -129,7 +155,7 @@ class _App extends State<App> {
           ready: d != null,
           onStart: d == null
               ? null
-              : () => setState(() => launchAccepted = true),
+              : _openApp,
         ),
       );
     }
@@ -649,15 +675,21 @@ class RoleAvatar extends StatelessWidget {
 
 class _Shell extends State<Shell> {
   int index = 0;
+  String selectedMemberId = '';
   @override
   Widget build(c) {
     final d = widget.data;
     final pages = [
-      HomePage(data: d, onChanged: widget.onChanged),
+      HomePage(
+        data: d,
+        onChanged: widget.onChanged,
+        memberId: selectedMemberId,
+        onMemberChanged: (value) => setState(() => selectedMemberId = value),
+      ),
       CabinetPage(data: d, onChanged: widget.onChanged),
       SymptomsPage(data: d, onChanged: widget.onChanged),
       FamilyPage(data: d, onChanged: widget.onChanged),
-      RemindersPage(data: d, onChanged: widget.onChanged),
+      HealthCalendarPage(data: d, onChanged: widget.onChanged),
     ];
     return Scaffold(
       backgroundColor: const Color(0xfff6fbfa),
@@ -686,8 +718,8 @@ class _Shell extends State<Shell> {
             label: tx(c, 'Šeima', 'Family'),
           ),
           NavigationDestination(
-            icon: const Icon(Icons.notifications_outlined),
-            label: tx(c, 'Priminimai', 'Reminders'),
+            icon: const Icon(Icons.calendar_month_outlined),
+            label: tx(c, 'Kalendorius', 'Calendar'),
           ),
         ],
       ),
@@ -738,7 +770,15 @@ Future<bool> confirmDelete(BuildContext c, String item) async =>
 class HomePage extends StatelessWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const HomePage({super.key, required this.data, required this.onChanged});
+  final String memberId;
+  final ValueChanged<String> onMemberChanged;
+  const HomePage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+    this.memberId = '',
+    required this.onMemberChanged,
+  });
 
   @override
   Widget build(BuildContext c) {
@@ -746,30 +786,33 @@ class HomePage extends StatelessWidget {
     final today = dateKey(now);
     final active =
         data.reminders
-            .where((x) => reminderAppliesOn(x, now))
+            .where((x) => reminderAppliesOn(x, now) &&
+                (memberId.isEmpty || x.memberId == memberId))
             .toList()
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
     final remaining = active.length - taken;
     final lowStockMeds = data.meds.where((medicine) {
-      final scheduled = data.reminders.where(
-        (reminder) => reminder.enabled && reminder.medId == medicine.id,
-      );
-      final threshold = scheduled.isEmpty
-          ? 10.0
-          : scheduled
-                    .map((reminder) => reminder.quantityPerDose)
-                    .reduce((a, b) => a > b ? a : b) *
-                7;
-      return medicine.stock < threshold;
+      return (memberId.isEmpty || medicine.memberIds.isEmpty ||
+              medicine.memberIds.contains(memberId)) &&
+          medicine.stock < medicine.lowStockThreshold;
     }).toList();
     final expiringMeds = data.meds
-        .where((x) => medicineNeedsExpiryAttention(x.expiry, now))
+        .where((x) =>
+            (memberId.isEmpty || x.memberIds.isEmpty || x.memberIds.contains(memberId)) &&
+            medicineNeedsExpiryAttention(x.expiry, now))
         .toList()
       ..sort((a, b) =>
           (daysUntilMedicineExpiry(a.expiry, now) ?? 999999).compareTo(
             daysUntilMedicineExpiry(b.expiry, now) ?? 999999,
           ));
+    final upcomingAppointments = data.appointments.where((item) {
+      final at = DateTime.tryParse('${item.date}T${item.time}');
+      return !item.completed && at != null && !at.isBefore(now) &&
+          (memberId.isEmpty || item.memberId == memberId);
+    }).toList()
+      ..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
+    final nextAppointment = upcomingAppointments.firstOrNull;
 
     return Stack(
       children: [
@@ -849,6 +892,29 @@ class HomePage extends StatelessWidget {
           ],
         ),
             const SizedBox(height: 14),
+            if (data.members.isNotEmpty) ...[
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: [
+                  ChoiceChip(
+                    label: Text(tx(c, 'Visa šeima', 'Whole family')),
+                    selected: memberId.isEmpty,
+                    onSelected: (_) => onMemberChanged(''),
+                  ),
+                  const SizedBox(width: 7),
+                  ...data.members.map((member) => Padding(
+                    padding: const EdgeInsets.only(right: 7),
+                    child: ChoiceChip(
+                      avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
+                      label: Text(member.name),
+                      selected: memberId == member.id,
+                      onSelected: (_) => onMemberChanged(member.id),
+                    ),
+                  )),
+                ]),
+              ),
+              const SizedBox(height: 10),
+            ],
             Card(
           color: Colors.white.withValues(alpha: .94),
           shape: RoundedRectangleBorder(
@@ -1026,6 +1092,32 @@ class HomePage extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
+            if (nextAppointment != null) ...[
+              Card(
+                color: const Color(0xffe8f7f3),
+                child: ListTile(
+                  leading: const CircleAvatar(
+                    backgroundColor: Colors.white,
+                    child: Icon(Icons.medical_services_outlined, color: green),
+                  ),
+                  title: Text(
+                    tx(c, 'Artimiausias vizitas', 'Next appointment'),
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: navy),
+                  ),
+                  subtitle: Text(
+                    '${nextAppointment.date} ${nextAppointment.time} • ${nextAppointment.title}',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                    AppointmentEditor(
+                      data: data,
+                      appointment: nextAppointment,
+                      onChanged: onChanged,
+                    ))),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             if (lowStockMeds.isNotEmpty) ...[
           _medicineStatusCard(
             context: c,
@@ -1675,7 +1767,17 @@ class MedicinePage extends StatelessWidget {
     required this.onChanged,
   });
   @override
-  Widget build(c) => StatefulBuilder(
+  Widget build(c) {
+    final weeklyUse = data.reminders
+        .where((item) => item.enabled && item.medId == med.id)
+        .fold<double>(0, (total, item) =>
+            total + item.quantityPerDose * item.weekdays.length);
+    final dailyUse = weeklyUse / 7;
+    final daysRemaining = dailyUse > 0 ? (med.stock / dailyUse).floor() : null;
+    final estimatedEnd = daysRemaining == null
+        ? null
+        : DateTime.now().add(Duration(days: daysRemaining));
+    return StatefulBuilder(
     builder: (c, setPageState) => DefaultTabController(
     length: 5,
     child: Scaffold(
@@ -1775,10 +1877,68 @@ class MedicinePage extends StatelessWidget {
             ],
           ),
         ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton.tonalIcon(
+              onPressed: () async {
+                final today = data.reminders.where((item) =>
+                    item.medId == med.id && reminderAppliesOn(item, DateTime.now()) &&
+                    !item.takenDates.contains(dateKey())).firstOrNull;
+                if (today == null) {
+                  ScaffoldMessenger.of(c).showSnackBar(SnackBar(
+                    content: Text(tx(c, 'Šiandien nepažymėtų dozių nėra.', 'No untaken doses today.')),
+                  ));
+                  return;
+                }
+                markDoseTaken(data, today, DateTime.now());
+                onChanged();
+                setPageState(() {});
+              },
+              icon: const Icon(Icons.check_circle_outline),
+              label: Text(tx(c, 'Išgėriau', 'Taken')),
+            ),
+            FilledButton.tonalIcon(
+              onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
+                ReminderEditor(
+                  data: data,
+                  initialMedId: med.id,
+                  onChanged: onChanged,
+                ))),
+              icon: const Icon(Icons.add_alarm),
+              label: Text(tx(c, 'Priminimas', 'Reminder')),
+            ),
+            FilledButton.tonalIcon(
+              onPressed: () {
+                if (!data.shopping.any((item) => item.medId == med.id && !item.purchased)) {
+                  data.shopping.add(ShoppingItem(
+                    id: newId(), medId: med.id,
+                    name: '${med.name} ${med.strength}'.trim(),
+                    prescription: med.prescription,
+                  ));
+                  onChanged();
+                }
+                ScaffoldMessenger.of(c).showSnackBar(SnackBar(
+                  content: Text(tx(c, 'Įtraukta į pirkinių sąrašą.', 'Added to shopping list.')),
+                ));
+              },
+              icon: const Icon(Icons.add_shopping_cart),
+              label: Text(tx(c, 'Pirkti', 'Buy')),
+            ),
+          ],
+        ),
         card(
           Column(
             children: [
               Text('${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}'),
+              Text('${tx(c, 'Perspėjimo riba', 'Warning threshold')}: ${quantityLabel(med.lowStockThreshold)}'),
+              if (daysRemaining != null)
+                Text(tx(
+                  c,
+                  'Pagal priminimus užteks maždaug $daysRemaining d. (iki ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
+                  'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
+                )),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -1871,6 +2031,7 @@ class MedicinePage extends StatelessWidget {
   ),
   ),
   );
+  }
 }
 
 class MedicineInventoryPage extends StatefulWidget {
@@ -2080,6 +2241,9 @@ class _MedicineEditor extends State<MedicineEditor> {
         text: widget.medicine?.expiry ?? MedicineMatcher.expiry(widget.sourceText) ?? '',
       ),
       stock = TextEditingController(text: quantityLabel(widget.medicine?.stock ?? 1)),
+      lowStockThreshold = TextEditingController(
+        text: quantityLabel(widget.medicine?.lowStockThreshold ?? 10),
+      ),
       batchNumber = TextEditingController(text: widget.medicine?.batchNumber ?? ''),
       barcode = TextEditingController(text: widget.medicine?.barcode ?? ''),
       storageLocation = TextEditingController(text: widget.medicine?.storageLocation ?? ''),
@@ -2129,7 +2293,7 @@ class _MedicineEditor extends State<MedicineEditor> {
     for (final x in [
       name, sub, strength, manufacturer, dosageForm, packageSize, newCategory,
       purpose, dosage, warnings, sideEffects, interactions, expiry,
-      stock, batchNumber, barcode, storageLocation, leaflet, notes,
+      stock, lowStockThreshold, batchNumber, barcode, storageLocation, leaflet, notes,
     ]) {
       x.dispose();
     }
@@ -2489,6 +2653,13 @@ class _MedicineEditor extends State<MedicineEditor> {
           monthOnly: expiryMode == 'month',
         ),
         field(c, stock, 'Kiekis', 'Quantity', number: true),
+        field(
+          c,
+          lowStockThreshold,
+          'Perspėti, kai lieka mažiau nei',
+          'Warn when stock is below',
+          number: true,
+        ),
         field(c, batchNumber, 'Partijos numeris', 'Batch number'),
         field(c, barcode, 'Brūkšninis kodas', 'Barcode', number: true),
         field(c, storageLocation, 'Laikymo vieta', 'Storage location'),
@@ -2524,6 +2695,10 @@ class _MedicineEditor extends State<MedicineEditor> {
             }
             final parsedStock =
                 double.tryParse(stock.text.trim().replaceAll(',', '.')) ?? 1;
+            final parsedThreshold = double.tryParse(
+                  lowStockThreshold.text.trim().replaceAll(',', '.'),
+                ) ??
+                10;
             final existing = widget.medicine;
             if (existing == null) {
               widget.data.meds.add(Med(
@@ -2537,6 +2712,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                     : selectedCategories.join('; '),
                 expiry: expiry.text.trim(),
                 stock: parsedStock,
+                lowStockThreshold: parsedThreshold,
                 prescription: prescription,
                 leaflet: leaflet.text.trim(),
                 imagePath: imagePath,
@@ -2584,6 +2760,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                     _registryMedicine != null)
                 ..expiry = expiry.text.trim()
                 ..stock = parsedStock
+                ..lowStockThreshold = parsedThreshold
                 ..prescription = prescription
                 ..batchNumber = batchNumber.text.trim()
                 ..barcode = barcode.text.trim()
@@ -3207,6 +3384,309 @@ class _MemberEditor extends State<MemberEditor> {
   );
 }
 
+class HealthCalendarPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const HealthCalendarPage({super.key, required this.data, required this.onChanged});
+  @override
+  State<HealthCalendarPage> createState() => _HealthCalendarPageState();
+}
+
+class _HealthCalendarPageState extends State<HealthCalendarPage> {
+  DateTime selectedDay = DateTime.now();
+  String memberId = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final key = dateKey(selectedDay);
+    final doses = widget.data.reminders.where((item) =>
+        reminderAppliesOn(item, selectedDay) &&
+        (memberId.isEmpty || item.memberId == memberId)).toList()
+      ..sort((a, b) => a.time.compareTo(b.time));
+    final appointments = widget.data.appointments.where((item) =>
+        item.date == key && (memberId.isEmpty || item.memberId == memberId)).toList()
+      ..sort((a, b) => a.time.compareTo(b.time));
+    final days = List.generate(7, (index) {
+      final now = DateTime.now();
+      return DateTime(now.year, now.month, now.day + index - 2);
+    });
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+      children: [
+        Row(children: [
+          Expanded(child: title(tx(context, 'Šeimos kalendorius', 'Family calendar'))),
+          IconButton(
+            tooltip: tx(context, 'Pasirinkti datą', 'Choose date'),
+            onPressed: () async {
+              final value = await showDatePicker(
+                context: context,
+                initialDate: selectedDay,
+                firstDate: DateTime(2020),
+                lastDate: DateTime(2100),
+              );
+              if (value != null) setState(() => selectedDay = value);
+            },
+            icon: const Icon(Icons.date_range_outlined),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        if (widget.data.members.isNotEmpty)
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              ChoiceChip(
+                label: Text(tx(context, 'Visa šeima', 'Whole family')),
+                selected: memberId.isEmpty,
+                onSelected: (_) => setState(() => memberId = ''),
+              ),
+              const SizedBox(width: 7),
+              ...widget.data.members.map((member) => Padding(
+                padding: const EdgeInsets.only(right: 7),
+                child: ChoiceChip(
+                  avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
+                  label: Text(member.name),
+                  selected: memberId == member.id,
+                  onSelected: (_) => setState(() => memberId = member.id),
+                ),
+              )),
+            ]),
+          ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 78,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: days.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 7),
+            itemBuilder: (context, index) {
+              final day = days[index];
+              final selected = dateKey(day) == key;
+              return ChoiceChip(
+                selected: selected,
+                onSelected: (_) => setState(() => selectedDay = day),
+                label: SizedBox(
+                  width: 47,
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Text(DateFormat('E', Localizations.localeOf(context).languageCode).format(day)),
+                    Text('${day.day}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                  ]),
+                ),
+              );
+            },
+          ),
+        ),
+        Text(DateFormat('yyyy-MM-dd').format(selectedDay),
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: navy)),
+        const SizedBox(height: 8),
+        if (doses.isEmpty && appointments.isEmpty)
+          card(Text(tx(context, 'Šiai dienai įvykių nėra.', 'No events for this day.'))),
+        ...appointments.map((item) => Card(child: ListTile(
+          leading: const CircleAvatar(
+            backgroundColor: mint,
+            child: Icon(Icons.medical_services_outlined, color: green),
+          ),
+          title: Text('${item.time} • ${item.title}', style: const TextStyle(fontWeight: FontWeight.w800)),
+          subtitle: Text([
+            _memberName(widget.data, item.memberId),
+            item.doctor,
+            item.facility,
+          ].where((x) => x.isNotEmpty).join(' • ')),
+          trailing: Icon(item.completed ? Icons.check_circle : Icons.chevron_right,
+              color: item.completed ? green : null),
+          onTap: () async {
+            await Navigator.push(context, MaterialPageRoute(builder: (_) =>
+              AppointmentEditor(data: widget.data, appointment: item, onChanged: widget.onChanged)));
+            setState(() {});
+          },
+        ))),
+        ...doses.map((item) => Card(child: ListTile(
+          leading: Icon(
+            item.takenDates.contains(key) ? Icons.check_circle : Icons.medication_outlined,
+            color: item.takenDates.contains(key) ? green : const Color(0xffff9f1c),
+          ),
+          title: Text('${item.time} • ${item.title}', style: const TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: Text(_who(widget.data, item, tx(context, 'Aš', 'Me'))),
+          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+            ReminderEditor(data: widget.data, reminder: item, onChanged: widget.onChanged))),
+        ))),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: () async {
+            await Navigator.push(context, MaterialPageRoute(builder: (_) =>
+              AppointmentEditor(
+                data: widget.data,
+                initialDate: key,
+                initialMemberId: memberId,
+                onChanged: widget.onChanged,
+              )));
+            setState(() {});
+          },
+          icon: const Icon(Icons.add),
+          label: Text(tx(context, 'Planuoti vizitą', 'Schedule appointment')),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+            ReminderRoutePage(data: widget.data, onChanged: widget.onChanged))),
+          icon: const Icon(Icons.notifications_outlined),
+          label: Text(tx(context, 'Tvarkyti vaistų priminimus', 'Manage medicine reminders')),
+        ),
+      ],
+    );
+  }
+}
+
+String _memberName(AppData data, String id) => data.members
+    .where((member) => member.id == id)
+    .map((member) => member.name)
+    .firstOrNull ?? '';
+
+class AppointmentEditor extends StatefulWidget {
+  final AppData data;
+  final HealthAppointment? appointment;
+  final String initialDate, initialMemberId;
+  final VoidCallback onChanged;
+  const AppointmentEditor({
+    super.key,
+    required this.data,
+    this.appointment,
+    this.initialDate = '',
+    this.initialMemberId = '',
+    required this.onChanged,
+  });
+  @override
+  State<AppointmentEditor> createState() => _AppointmentEditorState();
+}
+
+class _AppointmentEditorState extends State<AppointmentEditor> {
+  late final titleC = TextEditingController(text: widget.appointment?.title ?? ''),
+      doctor = TextEditingController(text: widget.appointment?.doctor ?? ''),
+      facility = TextEditingController(text: widget.appointment?.facility ?? ''),
+      address = TextEditingController(text: widget.appointment?.address ?? ''),
+      date = TextEditingController(text: widget.appointment?.date ?? widget.initialDate),
+      reason = TextEditingController(text: widget.appointment?.reason ?? ''),
+      notes = TextEditingController(text: widget.appointment?.notes ?? '');
+  late String time = widget.appointment?.time ?? '09:00';
+  late String memberId = widget.appointment?.memberId ?? widget.initialMemberId;
+  late int remindBefore = widget.appointment?.remindBeforeMinutes ?? 1440;
+  late bool completed = widget.appointment?.completed ?? false;
+
+  @override
+  void dispose() {
+    for (final item in [titleC, doctor, facility, address, date, reason, notes]) {
+      item.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: Text(widget.appointment == null
+          ? tx(context, 'Naujas vizitas', 'New appointment')
+          : tx(context, 'Redaguoti vizitą', 'Edit appointment')),
+      actions: [
+        if (widget.appointment != null)
+          IconButton(
+            onPressed: () async {
+              if (!await confirmDelete(context, widget.appointment!.title) || !context.mounted) return;
+              widget.data.appointments.remove(widget.appointment);
+              widget.onChanged();
+              Navigator.pop(context);
+            },
+            icon: const Icon(Icons.delete_outline),
+          ),
+      ],
+    ),
+    body: ListView(
+      padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.paddingOf(context).bottom + 30),
+      children: [
+        field(context, titleC, 'Vizitas / specialistas', 'Appointment / specialist'),
+        if (widget.data.members.isNotEmpty)
+          DropdownButtonFormField<String>(
+            initialValue: widget.data.members.any((x) => x.id == memberId) ? memberId : null,
+            decoration: InputDecoration(labelText: tx(context, 'Šeimos narys', 'Family member')),
+            items: widget.data.members.map((member) => DropdownMenuItem(
+              value: member.id,
+              child: Text('${_memberEmoji(member.gender, member.ageGroup)} ${member.name}'),
+            )).toList(),
+            onChanged: (value) => setState(() => memberId = value ?? ''),
+          ),
+        const SizedBox(height: 12),
+        field(context, doctor, 'Gydytojas', 'Doctor'),
+        field(context, facility, 'Gydymo įstaiga', 'Healthcare facility'),
+        field(context, address, 'Adresas / kabinetas', 'Address / room'),
+        dateField(context, date, 'Vizito data YYYY-MM-DD', 'Appointment date YYYY-MM-DD'),
+        ListTile(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: Color(0xff808b89))),
+          leading: const Icon(Icons.schedule),
+          title: Text('${tx(context, 'Laikas', 'Time')}: $time'),
+          onTap: () async {
+            final parts = time.split(':');
+            final value = await showTimePicker(
+              context: context,
+              initialTime: TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1])),
+            );
+            if (value != null) setState(() => time = '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}');
+          },
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<int>(
+          initialValue: remindBefore,
+          decoration: InputDecoration(labelText: tx(context, 'Priminti prieš', 'Remind before')),
+          items: [
+            DropdownMenuItem(value: 60, child: Text(tx(context, '1 valandą', '1 hour'))),
+            DropdownMenuItem(value: 180, child: Text(tx(context, '3 valandas', '3 hours'))),
+            DropdownMenuItem(value: 1440, child: Text(tx(context, '1 dieną', '1 day'))),
+            DropdownMenuItem(value: 2880, child: Text(tx(context, '2 dienas', '2 days'))),
+            DropdownMenuItem(value: 10080, child: Text(tx(context, '1 savaitę', '1 week'))),
+          ],
+          onChanged: (value) => setState(() => remindBefore = value ?? 1440),
+        ),
+        const SizedBox(height: 12),
+        field(context, reason, 'Vizito priežastis', 'Reason', lines: 2),
+        field(context, notes, 'Ką pasiimti / pastabos', 'What to bring / notes', lines: 3),
+        if (widget.appointment != null)
+          SwitchListTile(
+            value: completed,
+            title: Text(tx(context, 'Vizitas įvyko', 'Appointment completed')),
+            onChanged: (value) => setState(() => completed = value),
+          ),
+        FilledButton(
+          onPressed: () {
+            if (titleC.text.trim().isEmpty || DateTime.tryParse(date.text) == null) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(tx(context, 'Įveskite vizitą ir teisingą datą.', 'Enter an appointment and valid date.')),
+              ));
+              return;
+            }
+            final item = widget.appointment ?? HealthAppointment(
+              id: newId(), title: titleC.text.trim(), date: date.text, time: time,
+            );
+            item
+              ..memberId = memberId
+              ..title = titleC.text.trim()
+              ..doctor = doctor.text.trim()
+              ..facility = facility.text.trim()
+              ..address = address.text.trim()
+              ..date = date.text.trim()
+              ..time = time
+              ..reason = reason.text.trim()
+              ..notes = notes.text.trim()
+              ..remindBeforeMinutes = remindBefore
+              ..completed = completed;
+            if (widget.appointment == null) widget.data.appointments.add(item);
+            ReminderNotifications.requestPermissions();
+            widget.onChanged();
+            Navigator.pop(context);
+          },
+          child: Text(tx(context, 'Išsaugoti vizitą', 'Save appointment')),
+        ),
+      ],
+    ),
+  );
+}
+
 class RemindersPage extends StatelessWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -3336,12 +3816,14 @@ class ReminderEditor extends StatefulWidget {
   final AppData data;
   final Reminder? reminder;
   final String initialMemberId;
+  final String initialMedId;
   final VoidCallback onChanged;
   const ReminderEditor({
     super.key,
     required this.data,
     this.reminder,
     this.initialMemberId = '',
+    this.initialMedId = '',
     required this.onChanged,
   });
   State<ReminderEditor> createState() => _ReminderEditor();
@@ -3360,7 +3842,7 @@ class _ReminderEditor extends State<ReminderEditor> {
       instructions = TextEditingController(
         text: widget.reminder?.instructions ?? '',
       );
-  late String medId = widget.reminder?.medId ?? '',
+  late String medId = widget.reminder?.medId ?? widget.initialMedId,
       memberId = widget.reminder?.memberId ?? widget.initialMemberId,
       time = widget.reminder?.time ?? '08:00';
   late String doseUnit = widget.reminder?.doseUnit ?? 'vnt.';
@@ -3648,13 +4130,19 @@ class DoseHistoryPage extends StatefulWidget {
 }
 
 class _DoseHistoryPageState extends State<DoseHistoryPage> {
+  String memberId = '';
+  String medicineId = '';
+  int periodDays = 30;
+
   @override
   Widget build(BuildContext c) {
     final now = DateTime.now();
     final entries = <(DateTime, Reminder, DoseStatus)>[];
-    for (var offset = 0; offset < 30; offset++) {
+    for (var offset = 0; offset < periodDays; offset++) {
       final day = DateTime(now.year, now.month, now.day - offset);
       for (final reminder in widget.data.reminders) {
+        if (memberId.isNotEmpty && reminder.memberId != memberId) continue;
+        if (medicineId.isNotEmpty && reminder.medId != medicineId) continue;
         if (!reminderAppliesOn(reminder, day)) continue;
         final key = dateKey(day);
         final status = reminder.takenDates.contains(key)
@@ -3677,12 +4165,49 @@ class _DoseHistoryPageState extends State<DoseHistoryPage> {
       body: ListView(
         padding: const EdgeInsets.all(18),
         children: [
+          DropdownButtonFormField<int>(
+            initialValue: periodDays,
+            decoration: InputDecoration(labelText: tx(c, 'Laikotarpis', 'Period')),
+            items: [7, 30, 90].map((days) => DropdownMenuItem(
+              value: days,
+              child: Text(tx(c, '$days dienų', '$days days')),
+            )).toList(),
+            onChanged: (value) => setState(() => periodDays = value ?? 30),
+          ),
+          const SizedBox(height: 8),
+          if (widget.data.members.isNotEmpty)
+            DropdownButtonFormField<String>(
+              initialValue: memberId,
+              decoration: InputDecoration(labelText: tx(c, 'Šeimos narys', 'Family member')),
+              items: [
+                DropdownMenuItem(value: '', child: Text(tx(c, 'Visa šeima', 'Whole family'))),
+                ...widget.data.members.map((member) => DropdownMenuItem(
+                  value: member.id, child: Text(member.name),
+                )),
+              ],
+              onChanged: (value) => setState(() => memberId = value ?? ''),
+            ),
+          const SizedBox(height: 8),
+          if (widget.data.meds.isNotEmpty)
+            DropdownButtonFormField<String>(
+              initialValue: medicineId,
+              decoration: InputDecoration(labelText: tx(c, 'Vaistas', 'Medicine')),
+              items: [
+                DropdownMenuItem(value: '', child: Text(tx(c, 'Visi vaistai', 'All medicines'))),
+                ...widget.data.meds.map((medicine) => DropdownMenuItem(
+                  value: medicine.id,
+                  child: Text('${medicine.name} ${medicine.strength}'),
+                )),
+              ],
+              onChanged: (value) => setState(() => medicineId = value ?? ''),
+            ),
+          const SizedBox(height: 12),
           card(Row(children: [
             const Icon(Icons.insights, color: green, size: 34),
             const SizedBox(width: 12),
             Expanded(child: Text(
-              tx(c, 'Per 30 dienų išgerta $taken iš $completed dozių ($percent %).',
-                  '$taken of $completed doses taken in 30 days ($percent%).'),
+              tx(c, 'Per $periodDays dienų išgerta $taken iš $completed dozių ($percent %).',
+                  '$taken of $completed doses taken in $periodDays days ($percent%).'),
               style: const TextStyle(fontWeight: FontWeight.w800),
             )),
           ])),
@@ -3858,6 +4383,17 @@ String _doctorSummary(AppData data) {
   for (final medicine in data.meds) {
     buffer.writeln('• ${medicine.name} ${medicine.strength} – ${medicine.dosage}');
   }
+  final upcomingAppointments = data.appointments.where((item) {
+    final at = DateTime.tryParse('${item.date}T${item.time}');
+    return !item.completed && at != null && at.isAfter(DateTime.now());
+  }).toList()..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
+  if (upcomingAppointments.isNotEmpty) {
+    buffer.writeln('\nARTĖJANTYS VIZITAI');
+    for (final item in upcomingAppointments) {
+      buffer.writeln('• ${item.date} ${item.time} – ${item.title}'
+          '${item.doctor.isEmpty ? '' : ', ${item.doctor}'}');
+    }
+  }
   buffer.writeln('\nSukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}');
   return buffer.toString();
 }
@@ -3919,8 +4455,10 @@ Map<String, dynamic> _backupMap(AppData data) => {
   'members': data.members.map((item) => item.toJson()).toList(),
   'reminders': data.reminders.map((item) => item.toJson()).toList(),
   'shopping': data.shopping.map((item) => item.toJson()).toList(),
+  'appointments': data.appointments.map((item) => item.toJson()).toList(),
   'profile': data.profile.toJson(),
   'language': data.language,
+  'privacyLock': data.privacyLock,
 };
 
 class DataTransferPage extends StatefulWidget {
@@ -3972,8 +4510,12 @@ class _DataTransferPageState extends State<DataTransferPage> {
             widget.data.members = (decoded['members'] as List).map((x) => Member.fromJson(Map<String, dynamic>.from(x))).toList();
             widget.data.reminders = (decoded['reminders'] as List).map((x) => Reminder.fromJson(Map<String, dynamic>.from(x))).toList();
             widget.data.shopping = (decoded['shopping'] as List? ?? []).map((x) => ShoppingItem.fromJson(Map<String, dynamic>.from(x))).toList();
+            widget.data.appointments = (decoded['appointments'] as List? ?? [])
+                .map((x) => HealthAppointment.fromJson(Map<String, dynamic>.from(x)))
+                .toList();
             widget.data.profile = UserProfile.fromJson(Map<String, dynamic>.from(decoded['profile']));
             widget.data.language = '${decoded['language'] ?? 'system'}';
+            widget.data.privacyLock = decoded['privacyLock'] == true;
             widget.onChanged();
             if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
               SnackBar(content: Text(tx(c, 'Duomenys atkurti.', 'Data restored.'))),
@@ -4128,6 +4670,26 @@ class _ProfilePage extends State<ProfilePage> {
             'Backup and restore',
             () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
                 DataTransferPage(data: widget.data, onChanged: widget.onChanged))),
+          ),
+          Card(
+            child: SwitchListTile(
+              secondary: const CircleAvatar(
+                backgroundColor: mint,
+                child: Icon(Icons.fingerprint, color: green),
+              ),
+              value: widget.data.privacyLock,
+              title: Text(tx(c, 'Programėlės užraktas', 'App lock'),
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text(tx(
+                c,
+                'Naudoti telefono PIN, piršto atspaudą arba veido atpažinimą',
+                'Use device PIN, fingerprint or face authentication',
+              )),
+              onChanged: (value) {
+                setState(() => widget.data.privacyLock = value);
+                widget.onChanged();
+              },
+            ),
           ),
           const SizedBox(height: 18),
           Text(

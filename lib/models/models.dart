@@ -51,6 +51,7 @@ class Med {
       registrationNumber,
       supplyStatus;
   double stock;
+  double lowStockThreshold;
   bool prescription;
   bool registryVerified;
   List<String> memberIds;
@@ -64,6 +65,7 @@ class Med {
     required this.category,
     required this.expiry,
     required this.stock,
+    this.lowStockThreshold = 10,
     this.prescription = false,
     this.leaflet = '',
     this.imagePath = '',
@@ -95,6 +97,7 @@ class Med {
     'category': category,
     'expiry': expiry,
     'stock': stock,
+    'lowStockThreshold': lowStockThreshold,
     'prescription': prescription,
     'leaflet': leaflet,
     'imagePath': imagePath,
@@ -125,6 +128,7 @@ class Med {
     category: '${j['category'] ?? 'Kita'}',
     expiry: '${j['expiry'] ?? ''}',
     stock: (j['stock'] as num?)?.toDouble() ?? 0,
+    lowStockThreshold: (j['lowStockThreshold'] as num?)?.toDouble() ?? 10,
     prescription: j['prescription'] == true,
     leaflet: '${j['leaflet'] ?? ''}',
     imagePath: '${j['imagePath'] ?? ''}',
@@ -399,21 +403,85 @@ class ShoppingItem {
   );
 }
 
+class HealthAppointment {
+  final String id;
+  String memberId,
+      title,
+      doctor,
+      facility,
+      address,
+      date,
+      time,
+      reason,
+      notes;
+  int remindBeforeMinutes;
+  bool completed;
+  HealthAppointment({
+    required this.id,
+    this.memberId = '',
+    required this.title,
+    this.doctor = '',
+    this.facility = '',
+    this.address = '',
+    required this.date,
+    required this.time,
+    this.reason = '',
+    this.notes = '',
+    this.remindBeforeMinutes = 1440,
+    this.completed = false,
+  });
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'memberId': memberId,
+    'title': title,
+    'doctor': doctor,
+    'facility': facility,
+    'address': address,
+    'date': date,
+    'time': time,
+    'reason': reason,
+    'notes': notes,
+    'remindBeforeMinutes': remindBeforeMinutes,
+    'completed': completed,
+  };
+  factory HealthAppointment.fromJson(Map<String, dynamic> json) =>
+      HealthAppointment(
+        id: '${json['id']}',
+        memberId: '${json['memberId'] ?? ''}',
+        title: '${json['title'] ?? ''}',
+        doctor: '${json['doctor'] ?? ''}',
+        facility: '${json['facility'] ?? ''}',
+        address: '${json['address'] ?? ''}',
+        date: '${json['date'] ?? ''}',
+        time: '${json['time'] ?? ''}',
+        reason: '${json['reason'] ?? ''}',
+        notes: '${json['notes'] ?? ''}',
+        remindBeforeMinutes:
+            (json['remindBeforeMinutes'] as num?)?.toInt() ?? 1440,
+        completed: json['completed'] == true,
+      );
+}
+
 class AppData {
   List<Med> meds;
   List<Member> members;
   List<Reminder> reminders;
   List<ShoppingItem> shopping;
+  List<HealthAppointment> appointments;
   UserProfile profile;
   String language;
   bool onboarded;
+  bool privacyLock;
   AppData({
     required this.meds,
     required this.members,
     required this.reminders,
     List<ShoppingItem>? shopping,
+    List<HealthAppointment>? appointments,
     required this.profile,
     this.language = 'system',
     this.onboarded = false,
-  }) : shopping = shopping ?? [];
+    this.privacyLock = false,
+  }) : shopping = shopping ?? [],
+       appointments = appointments ?? [];
 }

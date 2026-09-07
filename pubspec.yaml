@@ -20,6 +20,7 @@ dependencies:
   url_launcher: ^6.3.2
   intl: ^0.20.2
   flutter_local_notifications: ^19.5.0
+  local_auth: ^2.3.0
   timezone: ^0.10.1
 dev_dependencies:
   flutter_test:

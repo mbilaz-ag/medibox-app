@@ -38,4 +38,19 @@ void main() {
     expect(restored.bloodType, 'A+');
     expect(restored.emergencyPhone, '+370');
   });
+
+  test('medicine threshold and appointment survive JSON round trip', () {
+    final medicine = Med(
+      id: 'm1', name: 'Vaistas', substance: '', strength: '', purpose: '',
+      category: '', expiry: '2028-01', stock: 20, lowStockThreshold: 7,
+    );
+    expect(Med.fromJson(medicine.toJson()).lowStockThreshold, 7);
+    final appointment = HealthAppointment(
+      id: 'a1', title: 'Kardiologas', date: '2026-10-10', time: '09:30',
+      doctor: 'Gydytojas', remindBeforeMinutes: 2880,
+    );
+    final restored = HealthAppointment.fromJson(appointment.toJson());
+    expect(restored.title, 'Kardiologas');
+    expect(restored.remindBeforeMinutes, 2880);
+  });
 }
