@@ -164,6 +164,11 @@ class _App extends State<App> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'MediBox',
+      builder: (context, child) => MediaQuery.withClampedTextScaling(
+        minScaleFactor: 0.9,
+        maxScaleFactor: 1.2,
+        child: child!,
+      ),
       locale: locale,
       supportedLocales: const [Locale('lt'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
@@ -1631,7 +1636,12 @@ class _CabinetPageState extends State<CabinetPage> {
     return ColoredBox(
     color: const Color(0xfff6fbfa),
     child: ListView(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+      padding: EdgeInsets.fromLTRB(
+        18,
+        18,
+        18,
+        MediaQuery.paddingOf(c).bottom + 36,
+      ),
       children: [
       title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
       const SizedBox(height: 16),
@@ -1667,7 +1677,13 @@ class _CabinetPageState extends State<CabinetPage> {
       if (categories.isNotEmpty) ...[
         Text(
           tx(c, 'Filtruoti pagal kategoriją', 'Filter by category'),
-          style: const TextStyle(fontWeight: FontWeight.w700, color: navy),
+          style: const TextStyle(
+            fontSize: 16,
+            height: 1.25,
+            fontWeight: FontWeight.w700,
+            color: navy,
+            decoration: TextDecoration.none,
+          ),
         ),
         const SizedBox(height: 8),
         SingleChildScrollView(
@@ -1697,7 +1713,12 @@ class _CabinetPageState extends State<CabinetPage> {
         const SizedBox(height: 8),
         Text(
           tx(c, 'Rasta: ${medicines.length}', 'Found: ${medicines.length}'),
-          style: const TextStyle(color: Color(0xff526572)),
+          style: const TextStyle(
+            fontSize: 14,
+            height: 1.25,
+            color: Color(0xff526572),
+            decoration: TextDecoration.none,
+          ),
         ),
         const SizedBox(height: 8),
       ],
@@ -4805,7 +4826,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.16.0'),
+                const Text('MediBox v0.16.1'),
                 Text(
                   tx(
                     c,
