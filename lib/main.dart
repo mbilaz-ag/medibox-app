@@ -698,7 +698,7 @@ class HomePage extends StatelessWidget {
           ),
         ),
         ListView(
-          padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 22),
           children: [
             Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -716,7 +716,7 @@ class HomePage extends StatelessWidget {
                             '☀️ Hello, ${data.profile.name}! 👋',
                           ),
                     style: const TextStyle(
-                      fontSize: 24,
+                      fontSize: 26,
                       fontWeight: FontWeight.w800,
                       color: navy,
                     ),
@@ -759,31 +759,37 @@ class HomePage extends StatelessWidget {
             const SizedBox(height: 14),
             Card(
           color: Colors.white.withValues(alpha: .94),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+            side: const BorderSide(color: Color(0xffe5efec)),
+          ),
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
             child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
                   SizedBox(
-                    width: 88,
-                    height: 88,
+                    width: 112,
+                    height: 112,
                     child: Stack(
                       alignment: Alignment.center,
                       children: [
                         SizedBox.expand(
                           child: CircularProgressIndicator(
                             value: active.isEmpty ? 0 : taken / active.length,
-                            strokeWidth: 9,
-                            backgroundColor: const Color(0xffdbeee9),
+                            strokeWidth: 12,
+                            backgroundColor: const Color(0xffe1e8ec),
                             strokeCap: StrokeCap.round,
                           ),
                         ),
                         Text(
-                          '$taken/${active.length}\n${tx(c, 'išgerta', 'taken')}',
+                          '$taken/${active.length}\n${tx(c, 'vaistai\nišgerti', 'medicines\ntaken')}',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
+                            fontSize: 16,
+                            height: 1.05,
                             fontWeight: FontWeight.w800,
                             color: navy,
                           ),
@@ -796,36 +802,10 @@ class HomePage extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          tx(c, 'Šiandienos planas', 'Today’s plan'),
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          active.isEmpty
-                              ? tx(
-                                  c,
-                                  'Šiandien vaistų nėra',
-                                  'No medicines today',
-                                )
-                              : tx(
-                                  c,
-                                  'Liko išgerti: $remaining',
-                                  '$remaining remaining',
-                                ),
-                          style: const TextStyle(
-                            color: green,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
                         FilledButton(
                           style: FilledButton.styleFrom(
-                            minimumSize: const Size(0, 38),
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                            minimumSize: const Size.fromHeight(54),
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
                           ),
                           onPressed: () => Navigator.push(
                             c,
@@ -836,21 +816,27 @@ class HomePage extends StatelessWidget {
                               ),
                             ),
                           ),
-                          child: Text(tx(c, 'Rodyti visus', 'Show all')),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                tx(c, 'Rodyti visus', 'Show all'),
+                                style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Icon(Icons.chevron_right_rounded),
+                            ],
+                          ),
                         ),
                       ],
                     ),
                   ),
                 ],
               ),
-              const Divider(height: 28),
-              Text(
-                tx(c, 'Šiandienos priminimai', 'Today’s reminders'),
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
+              const Divider(height: 24),
               if (active.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 16),
@@ -871,7 +857,9 @@ class HomePage extends StatelessWidget {
                         width: 12,
                         height: 12,
                         decoration: BoxDecoration(
-                          color: _reminderColor(r, now, today),
+                          color: r.takenDates.contains(today)
+                              ? green
+                              : const Color(0xffcbd5df),
                           shape: BoxShape.circle,
                         ),
                       ),
@@ -895,7 +883,6 @@ class HomePage extends StatelessWidget {
                           ),
                         ],
                       ),
-                      subtitle: Text(_who(data, r, tx(c, 'Aš', 'Me'))),
                       trailing: IconButton(
                         tooltip: r.takenDates.contains(today)
                             ? tx(
@@ -916,7 +903,10 @@ class HomePage extends StatelessWidget {
                           r.takenDates.contains(today)
                               ? Icons.check_circle
                               : Icons.radio_button_unchecked,
-                          color: green,
+                          color: r.takenDates.contains(today)
+                              ? green
+                              : const Color(0xff7b8ba1),
+                          size: 34,
                         ),
                       ),
                     ),
@@ -935,8 +925,8 @@ class HomePage extends StatelessWidget {
             background: const Color(0xfffff3df),
             title: tx(
               c,
-              '${lowStockMeds.length} preparatų atsargos mažos',
-              '${lowStockMeds.length} medicines are low in stock',
+              'Mažas vaistų likutis',
+              'Low medicine stock',
             ),
             onTap: () => Navigator.push(
               c,
@@ -956,7 +946,7 @@ class HomePage extends StatelessWidget {
             background: const Color(0xffffe9e8),
             title: tx(
               c,
-              '${expiringMeds.length} preparatų greitai baigs galioti',
+              '${expiringMeds.length} ${expiringMeds.length == 1 ? 'vaistas greitai baigs' : 'vaistai greitai baigs'} galioti',
               '${expiringMeds.length} medicines expire soon',
             ),
             expiry: true,
@@ -964,7 +954,10 @@ class HomePage extends StatelessWidget {
             onTap: () => Navigator.push(
               c,
               MaterialPageRoute(
-                builder: (_) => CabinetPage(data: data, onChanged: onChanged),
+                builder: (_) => ExpiringMedicinesPage(
+                  medicines: expiringMeds,
+                  now: now,
+                ),
               ),
             ),
           ),
@@ -987,10 +980,6 @@ class HomePage extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xffdff4ef),
-                  foregroundColor: navy,
-                ),
                 onPressed: () => Navigator.push(
                   c,
                   MaterialPageRoute(
@@ -1010,20 +999,6 @@ class HomePage extends StatelessWidget {
       ],
     );
   }
-}
-
-Color _reminderColor(Reminder reminder, DateTime now, String today) {
-  if (reminder.takenDates.contains(today)) return green;
-  final parts = reminder.time.split(':');
-  if (parts.length == 2) {
-    final hour = int.tryParse(parts[0]);
-    final minute = int.tryParse(parts[1]);
-    if (hour != null && minute != null) {
-      final due = DateTime(now.year, now.month, now.day, hour, minute);
-      if (due.isBefore(now)) return const Color(0xffe53935);
-    }
-  }
-  return const Color(0xffffa51f);
 }
 
 String _todayLabel(BuildContext context, DateTime date) {
@@ -1170,14 +1145,26 @@ Widget _familyStatusCard(
                 ),
               ),
             ),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(28),
-              child: Image.asset(
-                'assets/images/medibox_family_equal.webp',
-                width: 92,
-                height: 62,
-                fit: BoxFit.cover,
-                alignment: Alignment.topCenter,
+            SizedBox(
+              width: 112,
+              height: 52,
+              child: Stack(
+                children: [
+                  for (var i = 0; i < data.members.take(3).length; i++)
+                    Positioned(
+                      left: i * 34,
+                      child: _FamilyAvatar(
+                        member: data.members[i],
+                        fallbackIndex: i,
+                      ),
+                    ),
+                  if (data.members.isEmpty)
+                    for (var i = 0; i < 3; i++)
+                      Positioned(
+                        left: i * 34,
+                        child: _FamilyAvatar(fallbackIndex: i),
+                      ),
+                ],
               ),
             ),
             const Icon(Icons.chevron_right_rounded, color: green),
@@ -1185,6 +1172,80 @@ Widget _familyStatusCard(
         ),
       ),
     );
+
+class _FamilyAvatar extends StatelessWidget {
+  final Member? member;
+  final int fallbackIndex;
+  const _FamilyAvatar({this.member, required this.fallbackIndex});
+
+  @override
+  Widget build(BuildContext context) {
+    final relation = member?.relation.toLowerCase() ?? '';
+    final face = relation.contains('child') || relation.contains('vaik')
+        ? '👦'
+        : relation.contains('self')
+        ? '👨'
+        : ['👨', '👩', '👦'][fallbackIndex % 3];
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: const Color(0xffdff2fb),
+        border: Border.all(color: Colors.white, width: 2),
+      ),
+      alignment: Alignment.center,
+      child: Text(face, style: const TextStyle(fontSize: 27)),
+    );
+  }
+}
+
+class ExpiringMedicinesPage extends StatelessWidget {
+  final List<Med> medicines;
+  final DateTime now;
+  const ExpiringMedicinesPage({
+    super.key,
+    required this.medicines,
+    required this.now,
+  });
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: Text(tx(context, 'Besibaigiantys vaistai', 'Expiring medicines')),
+    ),
+    body: ListView.separated(
+      padding: const EdgeInsets.all(18),
+      itemCount: medicines.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final medicine = medicines[index];
+        final days = daysUntilMedicineExpiry(medicine.expiry, now);
+        return Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              backgroundColor: Color(0xffffe9e8),
+              child: Icon(Icons.event_busy_outlined, color: Color(0xffe53935)),
+            ),
+            title: Text(
+              '${medicine.name} ${medicine.strength}',
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+            subtitle: Text(
+              _expiryDetail(context, medicine.expiry, days),
+              style: TextStyle(
+                color: (days ?? 0) < 0
+                    ? const Color(0xffb91c1c)
+                    : const Color(0xffc62828),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
 
 String _who(AppData d, Reminder r, String me) {
   if (r.memberId.isEmpty) return me;
