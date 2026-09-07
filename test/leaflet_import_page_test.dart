@@ -84,7 +84,7 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).at(1), source);
-      await tester.testTextInput.hide();
+      tester.testTextInput.hide();
       await reveal(tester, key('generate'));
       expect(requests, 0);
       expect(tester.widget<FilledButton>(key('generate')).onPressed, isNull);
@@ -131,7 +131,7 @@ void main() {
       ),
     );
     await tester.enterText(find.byType(TextField).at(1), source);
-    await tester.testTextInput.hide();
+    tester.testTextInput.hide();
     await reveal(tester, key('consent'));
     await tester.tap(key('consent'));
     await tester.pumpAndSettle();
