@@ -2609,7 +2609,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     }
     _vvktDebounce?.cancel();
     final record = await Navigator.push<LeafletRecord>(context, MaterialPageRoute(
-      builder: (_) => LeafletImportPage(identity: identity, initialUrl: leaflet.text),
+      builder: (_) => LeafletImportPage(identity: identity,
+        initialUrl: leaflet.text.trim().isNotEmpty
+            ? leaflet.text : _leafletRecord?.sourceUrl ?? ''),
     ));
     if (!mounted || record == null) return;
     // An outstanding registry request may have changed the editor meanwhile.

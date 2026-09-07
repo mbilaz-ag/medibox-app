@@ -172,6 +172,7 @@ class _LeafletImportPageState extends State<LeafletImportPage> {
                 ),
               ),
               CheckboxListTile(
+                key: const ValueKey('leaflet-consent'),
                 contentPadding: EdgeInsets.zero,
                 value: consent,
                 onChanged: busy
@@ -200,6 +201,7 @@ class _LeafletImportPageState extends State<LeafletImportPage> {
               ),
               const SizedBox(height: 12),
               FilledButton.icon(
+                key: const ValueKey('leaflet-generate'),
                 onPressed: consent && !busy ? _generate : null,
                 icon: const Icon(Icons.auto_awesome_outlined),
                 label: Text(
@@ -242,6 +244,7 @@ class _LeafletImportPageState extends State<LeafletImportPage> {
                   child: Column(
                     children: [
                       CheckboxListTile(
+                        key: ValueKey('leaflet-select-${entry.key}'),
                         value: selected.contains(entry.key),
                         title: Text(label),
                         onChanged: (value) => setState(() {
@@ -277,6 +280,7 @@ class _LeafletImportPageState extends State<LeafletImportPage> {
                 ],
               ),
               CheckboxListTile(
+                key: const ValueKey('leaflet-review'),
                 contentPadding: EdgeInsets.zero,
                 value: reviewed,
                 onChanged: (v) => setState(() => reviewed = v == true),
@@ -289,6 +293,7 @@ class _LeafletImportPageState extends State<LeafletImportPage> {
                 ),
               ),
               FilledButton(
+                key: const ValueKey('leaflet-apply'),
                 onPressed: reviewed && selected.isNotEmpty
                     ? () => Navigator.pop(
                         context,
@@ -351,6 +356,9 @@ class LeafletRecordCard extends StatelessWidget {
               'Leaflet · AI-selected extracts',
             ),
             style: Theme.of(context).textTheme.titleMedium,
+          ),
+          Text(
+            '${record.identity.name} • ${record.identity.strength} • ${record.identity.form}',
           ),
           Text(
             _t(

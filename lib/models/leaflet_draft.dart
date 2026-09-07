@@ -191,7 +191,7 @@ class LeafletRecord {
       return LeafletRecord(
         identity: identity,
         sourceUrl: source,
-        acceptedAt: accepted,
+        acceptedAt: DateTime.parse(accepted).toUtc().toIso8601String(),
         model: json['model'] as String,
         sections: Map.unmodifiable(sections),
       );

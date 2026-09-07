@@ -9,6 +9,22 @@ const identity = LeafletIdentity('Testmed', '40 mg', 'tablets');
 const quote =
     'This is a test fixture, not real medicine information or advice.';
 const source = 'Testmed 40 mg tablets. $quote $quote $quote $quote';
+Finder key(String name) => find.byKey(ValueKey('leaflet-$name'));
+
+Future<void> reveal(
+  WidgetTester tester,
+  Finder target, {
+  double delta = 250,
+}) async {
+  await tester.scrollUntilVisible(
+    target,
+    delta,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.pumpAndSettle();
+  await Scrollable.ensureVisible(tester.element(target), alignment: 0.5);
+  await tester.pumpAndSettle();
+}
 
 void main() {
   testWidgets(
@@ -68,32 +84,28 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).at(1), source);
+      await tester.testTextInput.hide();
+      await reveal(tester, key('generate'));
       expect(requests, 0);
-      expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNull,
-      );
-      await tester.ensureVisible(find.byType(CheckboxListTile));
-      await tester.tap(find.byType(CheckboxListTile));
+      expect(tester.widget<FilledButton>(key('generate')).onPressed, isNull);
+      await reveal(tester, key('consent'), delta: -250);
+      await tester.tap(key('consent'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byType(FilledButton));
-      await tester.tap(find.byType(FilledButton));
+      await reveal(tester, key('generate'));
+      await tester.tap(key('generate'));
       await tester.pumpAndSettle();
       expect(requests, 1);
       expect(returned, isNull);
-      await tester.ensureVisible(find.byType(FilledButton));
-      expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNull,
-      );
-      await tester.ensureVisible(find.byType(CheckboxListTile).first);
-      await tester.tap(find.byType(CheckboxListTile).first);
+      await reveal(tester, key('apply'));
+      expect(tester.widget<FilledButton>(key('apply')).onPressed, isNull);
+      await reveal(tester, key('select-purpose'), delta: -250);
+      await tester.tap(key('select-purpose'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byType(CheckboxListTile).last);
-      await tester.tap(find.byType(CheckboxListTile).last);
+      await reveal(tester, key('review'));
+      await tester.tap(key('review'));
       await tester.pumpAndSettle();
-      await tester.ensureVisible(find.byType(FilledButton));
-      await tester.tap(find.byType(FilledButton));
+      await reveal(tester, key('apply'));
+      await tester.tap(key('apply'));
       await tester.pumpAndSettle();
       expect(returned!.sections, {'purpose': quote});
     },
@@ -119,17 +131,16 @@ void main() {
       ),
     );
     await tester.enterText(find.byType(TextField).at(1), source);
-    await tester.ensureVisible(find.byType(CheckboxListTile));
-    await tester.tap(find.byType(CheckboxListTile));
+    await tester.testTextInput.hide();
+    await reveal(tester, key('consent'));
+    await tester.tap(key('consent'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.byType(FilledButton));
-    await tester.tap(find.byType(FilledButton));
+    await reveal(tester, key('generate'));
+    await tester.tap(key('generate'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('AI is unavailable.'), findsOneWidget);
+    await reveal(tester, find.textContaining('AI is unavailable.'));
     expect(find.textContaining('SECRET_PROVIDER_ERROR'), findsNothing);
-    expect(
-      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-      isNotNull,
-    );
+    await reveal(tester, key('generate'), delta: -250);
+    expect(tester.widget<FilledButton>(key('generate')).onPressed, isNotNull);
   });
 }
