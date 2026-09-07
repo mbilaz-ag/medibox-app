@@ -4856,7 +4856,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.16.4'),
+                const Text('MediBox v0.17.0'),
                 Text(
                   tx(
                     c,
@@ -5573,7 +5573,7 @@ class _BarcodePage extends State<BarcodePage> {
   );
 }
 
-class SymptomsPage extends StatelessWidget {
+class SymptomsPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
   const SymptomsPage({
@@ -5582,18 +5582,35 @@ class SymptomsPage extends StatelessWidget {
     required this.onChanged,
   });
   @override
+  State<SymptomsPage> createState() => _SymptomsPageState();
+}
+
+class _SymptomsPageState extends State<SymptomsPage> {
+  String memberId = '';
+  final customSymptom = TextEditingController();
+
+  @override
+  void dispose() {
+    customSymptom.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(c) {
-    final cats = [
-      ['Skausmas', 'Pain'],
-      ['Karščiavimas', 'Fever'],
-      ['Peršalimas', 'Cold'],
-      ['Pilvo problemos', 'Stomach'],
-      ['Alergija', 'Allergy'],
+    final cats = <(String, String, IconData, Color)>[
+      ('Skausmas', 'Pain', Icons.healing_rounded, const Color(0xffe53935)),
+      ('Karščiavimas', 'Fever', Icons.thermostat_rounded, const Color(0xffe53935)),
+      ('Peršalimas', 'Cold', Icons.sick_outlined, green),
+      ('Pilvo problemos', 'Stomach problems', Icons.health_and_safety_rounded, green),
+      ('Alergija', 'Allergy', Icons.air_rounded, navy),
+      ('Viduriavimas / užkietėjimas', 'Diarrhea / constipation', Icons.wc_rounded, navy),
+      ('Odos problemos', 'Skin problems', Icons.water_drop_outlined, navy),
+      ('Galvos svaigimas', 'Dizziness', Icons.sync_problem_outlined, navy),
     ];
     return Scaffold(
       appBar: AppBar(title: Text(tx(c, 'Man bloga', 'Symptoms'))),
       body: ListView(
-        padding: const EdgeInsets.all(18),
+        padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.paddingOf(c).bottom + 32),
         children: [
           title(tx(c, 'Kas labiausiai vargina?', 'What bothers you most?')),
           Text(
@@ -5603,42 +5620,344 @@ class SymptomsPage extends StatelessWidget {
               'This guide does not diagnose. Urgent or worsening symptoms require medical assessment.',
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 16),
+          if (widget.data.members.isNotEmpty) ...[
+            Text(tx(c, 'Kam pasireiškė simptomai?', 'Who has symptoms?'),
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: navy)),
+            const SizedBox(height: 8),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: widget.data.members.map((member) => Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ChoiceChip(
+                  avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
+                  label: Text(member.name),
+                  selected: memberId == member.id,
+                  onSelected: (_) => setState(() => memberId = member.id),
+                ),
+              )).toList()),
+            ),
+            const SizedBox(height: 14),
+          ],
           ...cats.map(
             (x) => Card(
               child: ListTile(
-                leading: const Icon(Icons.health_and_safety, color: green),
-                title: Text(tx(c, x[0], x[1])),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) => MatchesPage(
-                      data: data,
-                      category: x[0],
-                      onChanged: onChanged,
-                    ),
-                  ),
+                leading: CircleAvatar(
+                  backgroundColor: x.$4.withValues(alpha: .11),
+                  child: Icon(x.$3, color: x.$4),
                 ),
+                title: Text(tx(c, x.$1, x.$2),
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openWizard(c, x.$1),
               ),
             ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: customSymptom,
+            onChanged: (_) => setState(() {}),
+            minLines: 2,
+            maxLines: 4,
+            decoration: InputDecoration(
+              labelText: tx(c, 'Aprašyti kitus simptomus', 'Describe other symptoms'),
+              hintText: tx(c, 'Pvz., silpna, pykina ir svaigsta galva…', 'For example: weakness, nausea and dizziness…'),
+              prefixIcon: const Icon(Icons.auto_awesome_outlined),
+            ),
+          ),
+          const SizedBox(height: 10),
+          FilledButton.icon(
+            onPressed: customSymptom.text.trim().isEmpty
+                ? null
+                : () => _openWizard(c, 'Kiti simptomai', customSymptom.text.trim()),
+            icon: const Icon(Icons.arrow_forward_rounded),
+            label: Text(tx(c, 'Tęsti', 'Continue')),
           ),
         ],
       ),
     );
   }
+
+  Future<void> _openWizard(BuildContext context, String category, [String details = '']) async {
+    if (widget.data.members.isNotEmpty && memberId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(tx(context, 'Pirmiausia pasirinkite šeimos narį.', 'Choose a family member first.')),
+      ));
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SymptomWizardPage(
+          data: widget.data,
+          memberId: memberId,
+          category: category,
+          initialDetails: details,
+          onChanged: widget.onChanged,
+        ),
+      ),
+    );
+  }
 }
+
+class SymptomWizardPage extends StatefulWidget {
+  final AppData data;
+  final String memberId;
+  final String category;
+  final String initialDetails;
+  final VoidCallback onChanged;
+  const SymptomWizardPage({
+    super.key,
+    required this.data,
+    required this.memberId,
+    required this.category,
+    this.initialDetails = '',
+    required this.onChanged,
+  });
+  @override
+  State<SymptomWizardPage> createState() => _SymptomWizardPageState();
+}
+
+class _SymptomWizardPageState extends State<SymptomWizardPage> {
+  int step = 0;
+  String location = '';
+  String severity = 'vidutinis';
+  String painType = '';
+  String duration = '';
+  bool fever = false;
+  bool highFever = false;
+  bool vomiting = false;
+  bool persistentVomiting = false;
+  bool blood = false;
+  bool breathingProblem = false;
+  bool faintingOrConfusion = false;
+
+  List<String> get locations => switch (widget.category) {
+    'Pilvo problemos' => ['Viršutinėje pilvo dalyje', 'Dešinėje', 'Kairėje', 'Apatinėje dalyje', 'Visą pilvą', 'Sunku pasakyti'],
+    'Skausmas' => ['Galva', 'Gerklė', 'Krūtinė', 'Pilvas', 'Nugara', 'Sąnariai / raumenys', 'Kita vieta'],
+    'Odos problemos' => ['Veidas', 'Rankos', 'Kojos', 'Liemuo', 'Kelios kūno vietos'],
+    _ => ['Galva / veidas', 'Krūtinė', 'Pilvas', 'Visa savijauta', 'Kita / sunku pasakyti'],
+  };
+
+  bool get dangerous =>
+      severity == 'labai stiprus' ||
+      blood ||
+      breathingProblem ||
+      faintingOrConfusion ||
+      persistentVomiting ||
+      highFever ||
+      (widget.category == 'Pilvo problemos' && location == 'Dešinėje' && fever && vomiting);
+
+  @override
+  Widget build(c) => Scaffold(
+    appBar: AppBar(title: Text(step == 0 ? widget.category : tx(c, 'Simptomų įvertinimas', 'Symptom assessment'))),
+    body: AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      child: step == 0 ? _locationStep(c) : step == 1 ? _questionsStep(c) : _resultStep(c),
+    ),
+  );
+
+  Widget _locationStep(BuildContext c) => ListView(
+    key: const ValueKey('location'),
+    padding: const EdgeInsets.all(18),
+    children: [
+      title(tx(c, 'Kur jaučiate problemą?', 'Where do you feel the problem?')),
+      const SizedBox(height: 12),
+      Center(
+        child: Container(
+          width: 132,
+          height: 180,
+          decoration: BoxDecoration(color: const Color(0xffffeeee), borderRadius: BorderRadius.circular(28)),
+          child: const Icon(Icons.accessibility_new_rounded, size: 112, color: Color(0xffef9a9a)),
+        ),
+      ),
+      const SizedBox(height: 12),
+      ...locations.map((item) => Card(
+        color: location == item ? mint : Colors.white,
+        child: ListTile(
+          leading: Icon(location == item ? Icons.check_circle : Icons.radio_button_unchecked, color: green),
+          title: Text(item),
+          onTap: () => setState(() => location = item),
+        ),
+      )),
+      const SizedBox(height: 10),
+      FilledButton(
+        onPressed: location.isEmpty ? null : () => setState(() => step = 1),
+        child: Text(tx(c, 'Tęsti', 'Continue')),
+      ),
+    ],
+  );
+
+  Widget _questionsStep(BuildContext c) => ListView(
+    key: const ValueKey('questions'),
+    padding: const EdgeInsets.all(18),
+    children: [
+      title(tx(c, 'Papildomi klausimai', 'Additional questions')),
+      if (widget.initialDetails.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        card(Text(widget.initialDetails)),
+      ],
+      const SizedBox(height: 12),
+      _choice(c, tx(c, 'Koks simptomų stiprumas?', 'How severe are the symptoms?'),
+          ['lengvas', 'vidutinis', 'stiprus', 'labai stiprus'], severity, (v) => severity = v),
+      const SizedBox(height: 14),
+      _choice(c, tx(c, 'Kiek laiko tai tęsiasi?', 'How long has this lasted?'),
+          ['kelias valandas', '1 dieną', '2–3 dienas', 'ilgiau'], duration, (v) => duration = v),
+      if (widget.category == 'Skausmas' || widget.category == 'Pilvo problemos') ...[
+        const SizedBox(height: 14),
+        _choice(c, tx(c, 'Koks skausmas?', 'What is the pain like?'),
+            ['spazminis', 'degina', 'maudžia', 'aštrus'], painType, (v) => painType = v),
+      ],
+      const SizedBox(height: 14),
+      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
+      if (fever) _yesNo(c, tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'), highFever, (v) => highFever = v),
+      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
+      if (vomiting) _yesNo(c, tx(c, 'Ar vėmimas kartojasi ir nepavyksta gerti?', 'Persistent vomiting or unable to drink?'), persistentVomiting, (v) => persistentVomiting = v),
+      _yesNo(c, tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'), blood, (v) => blood = v),
+      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
+      _yesNo(c, tx(c, 'Ar alpstate, esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+      const SizedBox(height: 14),
+      FilledButton(
+        onPressed: duration.isEmpty ? null : () => setState(() => step = 2),
+        child: Text(tx(c, 'Atlikti saugumo patikrą', 'Run safety check')),
+      ),
+    ],
+  );
+
+  Widget _choice(BuildContext c, String label, List<String> values, String selected, ValueChanged<String> onSelect) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: navy)),
+      const SizedBox(height: 7),
+      Wrap(spacing: 7, runSpacing: 7, children: values.map((value) => ChoiceChip(
+        label: Text(value),
+        selected: selected == value,
+        onSelected: (_) => setState(() => onSelect(value)),
+      )).toList()),
+    ],
+  );
+
+  Widget _yesNo(BuildContext c, String label, bool value, ValueChanged<bool> onChanged) => SwitchListTile(
+    contentPadding: EdgeInsets.zero,
+    title: Text(label),
+    value: value,
+    onChanged: (next) => setState(() => onChanged(next)),
+  );
+
+  Widget _resultStep(BuildContext c) {
+    if (dangerous) return _dangerResult(c);
+    final member = widget.data.members.where((x) => x.id == widget.memberId).firstOrNull;
+    final allergyText = member?.allergies.toLowerCase() ?? '';
+    final matches = widget.data.meds.where((medicine) {
+      if (medicine.prescription || medicine.stock <= 0) return false;
+      if (widget.memberId.isNotEmpty && medicine.memberIds.isNotEmpty && !medicine.memberIds.contains(widget.memberId)) return false;
+      if (!_matchesSymptomCategory(medicine, widget.category)) return false;
+      final expiryDays = daysUntilMedicineExpiry(medicine.expiry, DateTime.now());
+      if (expiryDays != null && expiryDays < 0) return false;
+      final identity = '${medicine.name} ${medicine.substance}'.toLowerCase();
+      final allergyWords = allergyText.split(RegExp(r'[,;\s]+')).where((word) => word.length > 3);
+      return !allergyWords.any(identity.contains);
+    }).toList();
+    return ListView(
+      key: const ValueKey('safe'),
+      padding: const EdgeInsets.all(18),
+      children: [
+        const Center(child: CircleAvatar(radius: 42, backgroundColor: mint, child: Icon(Icons.check_circle, size: 58, color: green))),
+        const SizedBox(height: 14),
+        Text(tx(c, 'Pagal pateiktus atsakymus pavojingų požymių nenustatyta', 'No danger signs identified from the answers provided'),
+            textAlign: TextAlign.center, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700, color: green)),
+        const SizedBox(height: 10),
+        card(Text(tx(c,
+          'Tai nėra diagnozė. Jei būklė blogėja, simptomai stiprėja ar kelia nerimą – kreipkitės į gydytoją.',
+          'This is not a diagnosis. Seek medical care if symptoms worsen or concern you.'))),
+        const SizedBox(height: 14),
+        Text(tx(c, 'Jūsų vaistinėlėje radome:', 'Found in your medicine cabinet:'),
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: navy)),
+        const SizedBox(height: 8),
+        if (matches.isEmpty) card(Text(tx(c, 'Tinkamų ir galiojančių nereceptinių vaistų nerasta.', 'No suitable, unexpired non-prescription medicines found.'))),
+        ...matches.map((medicine) => Card(
+          child: ListTile(
+            leading: medicine.imagePath.isNotEmpty && File(medicine.imagePath).existsSync()
+                ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(File(medicine.imagePath), width: 52, height: 52, fit: BoxFit.cover))
+                : const CircleAvatar(backgroundColor: mint, child: Icon(Icons.medication, color: green)),
+            title: Text('${medicine.name} ${medicine.strength}', style: const TextStyle(fontWeight: FontWeight.w700)),
+            subtitle: Text('${medicine.substance}\n${_matchReason(c, widget.category)}\n${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}'),
+            isThreeLine: true,
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => MedicinePage(data: widget.data, med: medicine, onChanged: widget.onChanged))),
+          ),
+        )),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.pop(c),
+          icon: const Icon(Icons.restart_alt),
+          label: Text(tx(c, 'Pradėti iš naujo', 'Start again')),
+        ),
+      ],
+    );
+  }
+
+  Widget _dangerResult(BuildContext c) {
+    final signs = <String>[
+      if (severity == 'labai stiprus') tx(c, 'Labai stiprūs simptomai', 'Very severe symptoms'),
+      if (highFever) tx(c, 'Temperatūra 39 °C ar aukštesnė', 'Temperature of 39°C or higher'),
+      if (persistentVomiting) tx(c, 'Nuolatinis vėmimas arba nepavyksta gerti', 'Persistent vomiting or unable to drink'),
+      if (blood) tx(c, 'Pastebėtas kraujas', 'Blood reported'),
+      if (breathingProblem) tx(c, 'Sunku kvėpuoti', 'Difficulty breathing'),
+      if (faintingOrConfusion) tx(c, 'Alpimas arba sumišimas', 'Fainting or confusion'),
+      if (widget.category == 'Pilvo problemos' && location == 'Dešinėje' && fever && vomiting)
+        tx(c, 'Pilvo skausmas dešinėje su temperatūra ir vėmimu', 'Right-sided abdominal pain with fever and vomiting'),
+    ];
+    return ListView(
+      key: const ValueKey('danger'),
+      padding: const EdgeInsets.all(18),
+      children: [
+        const Center(child: CircleAvatar(radius: 42, backgroundColor: Color(0xffffe7e7), child: Icon(Icons.warning_rounded, size: 54, color: Colors.red))),
+        const SizedBox(height: 14),
+        Text(tx(c, 'Galimi pavojingi požymiai', 'Possible danger signs'), textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: Colors.red)),
+        const SizedBox(height: 12),
+        ...signs.map((sign) => ListTile(leading: const Icon(Icons.circle, size: 10, color: Colors.red), title: Text(sign))),
+        Card(
+          color: const Color(0xffffe7e7),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(tx(c,
+              'Rekomenduojama nedelsiant kreiptis į gydytoją arba skubios pagalbos skyrių. Jei kyla grėsmė gyvybei – skambinkite 112.',
+              'Seek urgent medical assessment. Call emergency services if there is an immediate threat to life.'),
+              textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xffa31717))),
+          ),
+        ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(backgroundColor: Colors.red),
+          onPressed: () => Clipboard.setData(const ClipboardData(text: '112')).then((_) => ScaffoldMessenger.of(c).showSnackBar(
+            SnackBar(content: Text(tx(c, 'Numeris 112 nukopijuotas.', '112 copied.'))),
+          )),
+          icon: const Icon(Icons.emergency_outlined),
+          label: Text(tx(c, 'Kopijuoti numerį 112', 'Copy emergency number')),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(onPressed: () => setState(() => step = 1), child: Text(tx(c, 'Patikslinti atsakymus', 'Review answers'))),
+      ],
+    );
+  }
+}
+
+String _matchReason(BuildContext c, String category) => switch (category) {
+  'Skausmas' => tx(c, 'Gali būti susijęs su pasirinktu skausmo simptomu.', 'May relate to the selected pain symptom.'),
+  'Karščiavimas' => tx(c, 'Paskirtis susijusi su karščiavimu.', 'Its purpose relates to fever.'),
+  'Peršalimas' => tx(c, 'Paskirtis susijusi su peršalimo simptomais.', 'Its purpose relates to cold symptoms.'),
+  'Pilvo problemos' || 'Viduriavimas / užkietėjimas' => tx(c, 'Paskirtis susijusi su virškinimo simptomais.', 'Its purpose relates to digestive symptoms.'),
+  'Alergija' => tx(c, 'Paskirtis susijusi su alergijos simptomais.', 'Its purpose relates to allergy symptoms.'),
+  _ => tx(c, 'Atitinka vaisto kortelėje nurodytą paskirtį.', 'Matches the purpose recorded on the medicine card.'),
+};
 
 class MatchesPage extends StatelessWidget {
   final AppData data;
   final String category;
   final VoidCallback onChanged;
-  const MatchesPage({
-    super.key,
-    required this.data,
-    required this.category,
-    required this.onChanged,
-  });
+  const MatchesPage({super.key, required this.data, required this.category, required this.onChanged});
   @override
   Widget build(c) {
     final m = data.meds
@@ -5701,8 +6020,10 @@ bool _matchesSymptomCategory(Med medicine, String symptom) {
   final expected = switch (symptom) {
     'Skausmas' || 'Karščiavimas' => {'skausmas', 'skausmas ir karščiavimas'},
     'Peršalimas' => {'peršalimas', 'kvėpavimo sistema'},
-    'Pilvo problemos' => {'pilvo problemos', 'virškinimas'},
+    'Pilvo problemos' || 'Viduriavimas / užkietėjimas' => {'pilvo problemos', 'virškinimas'},
     'Alergija' => {'alergija'},
+    'Odos problemos' => {'oda'},
+    'Galvos svaigimas' => {'nervų sistema', 'kraujas', 'širdis ir kraujotaka'},
     _ => {symptom.toLowerCase()},
   };
   return categories.any(expected.contains);

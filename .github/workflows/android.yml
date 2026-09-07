@@ -38,11 +38,11 @@ jobs:
       - name: Build universal Android APK
         run: |
           flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk MediBox-v0.16.4-universal.apk
+          cp build/app/outputs/flutter-apk/app-release.apk MediBox-v0.17.0-universal.apk
       - uses: actions/upload-artifact@v4
         with:
           name: MediBox-Android-Universal-APK
-          path: MediBox-v0.16.4-universal.apk
+          path: MediBox-v0.17.0-universal.apk
           if-no-files-found: error
       - name: Preserve generated native source and dependency resolution
         uses: actions/upload-artifact@v4
