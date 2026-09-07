@@ -1937,7 +1937,7 @@ class MedicinePage extends StatelessWidget {
                 Text(tx(
                   c,
                   'Pagal priminimus užteks maždaug $daysRemaining d. (iki ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
-                  'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
+                  'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd)})',
                 )),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -4805,7 +4805,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.15.0'),
+                const Text('MediBox v0.16.0'),
                 Text(
                   tx(
                     c,
