@@ -16,6 +16,7 @@ import 'services/reminder_logic.dart';
 import 'services/reminder_notifications.dart';
 import 'services/expiry_status.dart';
 import 'services/store.dart';
+import 'services/vvkt_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -656,7 +657,11 @@ class _Shell extends State<Shell> {
       RemindersPage(data: d, onChanged: widget.onChanged),
     ];
     return Scaffold(
-      body: SafeArea(child: pages[index]),
+      backgroundColor: const Color(0xfff6fbfa),
+      body: ColoredBox(
+        color: const Color(0xfff6fbfa),
+        child: SafeArea(child: pages[index]),
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         onDestinationSelected: (v) => setState(() => index = v),
@@ -1365,9 +1370,11 @@ class CabinetPage extends StatelessWidget {
   final VoidCallback onChanged;
   const CabinetPage({super.key, required this.data, required this.onChanged});
   @override
-  Widget build(c) => ListView(
-    padding: const EdgeInsets.all(18),
-    children: [
+  Widget build(c) => ColoredBox(
+    color: const Color(0xfff6fbfa),
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+      children: [
       title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
       const SizedBox(height: 10),
       ...data.meds.map(
@@ -1405,7 +1412,8 @@ class CabinetPage extends StatelessWidget {
         icon: const Icon(Icons.add),
         label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
       ),
-    ],
+      ],
+    ),
   );
 }
 
@@ -1504,6 +1512,11 @@ class MedicinePage extends StatelessWidget {
                       : tx(c, 'Nereceptinis', 'Non-prescription'),
                 ),
               ),
+              if (med.registryVerified)
+                const Chip(
+                  avatar: Icon(Icons.verified_rounded, size: 18, color: green),
+                  label: Text('Patikrinta VVKT'),
+                ),
               const Divider(),
               Text(med.purpose),
               if (med.manufacturer.isNotEmpty)
@@ -1583,6 +1596,9 @@ class MedicinePage extends StatelessWidget {
     _medicineSectionsTab(c, [
       (tx(c, 'Pakuotės dydis', 'Package size'), med.packageSize),
       (tx(c, 'Gamintojas', 'Manufacturer'), med.manufacturer),
+      (tx(c, 'ATC kodas', 'ATC code'), med.atcCode),
+      (tx(c, 'Registracijos numeris', 'Registration number'), med.registrationNumber),
+      (tx(c, 'Tiekimo būsena', 'Supply status'), med.supplyStatus),
       (tx(c, 'Informacinis lapelis', 'Package leaflet'), med.leaflet),
       (tx(c, 'Pastabos', 'Notes'), med.notes),
     ]),
@@ -1638,6 +1654,7 @@ class MedicineEditor extends StatefulWidget {
   final String initialImagePath;
   final String initialMemberId;
   final Med? medicine;
+  final VvktMedicine? registryMedicine;
   const MedicineEditor({
     super.key,
     required this.data,
@@ -1646,24 +1663,36 @@ class MedicineEditor extends StatefulWidget {
     this.initialImagePath = '',
     this.initialMemberId = '',
     this.medicine,
+    this.registryMedicine,
   });
   State<MedicineEditor> createState() => _MedicineEditor();
 }
 
 class _MedicineEditor extends State<MedicineEditor> {
   late final name = TextEditingController(
-        text: widget.medicine?.name ?? _guessName(widget.sourceText),
+        text: widget.medicine?.name ??
+            widget.registryMedicine?.name ??
+            _guessName(widget.sourceText),
       ),
-      sub = TextEditingController(text: widget.medicine?.substance ?? ''),
+      sub = TextEditingController(
+        text: widget.medicine?.substance ?? widget.registryMedicine?.substance ?? '',
+      ),
       strength = TextEditingController(
-        text: widget.medicine?.strength ?? _guessStrength(widget.sourceText),
+        text: widget.medicine?.strength ??
+            widget.registryMedicine?.strength ??
+            _guessStrength(widget.sourceText),
       ),
-      manufacturer = TextEditingController(text: widget.medicine?.manufacturer ?? ''),
-      dosageForm = TextEditingController(text: widget.medicine?.dosageForm ?? ''),
+      manufacturer = TextEditingController(
+        text: widget.medicine?.manufacturer ?? widget.registryMedicine?.registrant ?? '',
+      ),
+      dosageForm = TextEditingController(
+        text: widget.medicine?.dosageForm ?? widget.registryMedicine?.dosageForm ?? '',
+      ),
       packageSize = TextEditingController(
-        text: widget.medicine?.packageSize ?? _guessPackageSize(widget.sourceText),
+        text: widget.medicine?.packageSize ??
+            widget.registryMedicine?.packageDescription ??
+            _guessPackageSize(widget.sourceText),
       ),
-      category = TextEditingController(text: widget.medicine?.category ?? ''),
       purpose = TextEditingController(text: widget.medicine?.purpose ?? ''),
       dosage = TextEditingController(text: widget.medicine?.dosage ?? ''),
       warnings = TextEditingController(text: widget.medicine?.warnings ?? ''),
@@ -1678,14 +1707,24 @@ class _MedicineEditor extends State<MedicineEditor> {
       storageLocation = TextEditingController(text: widget.medicine?.storageLocation ?? ''),
       leaflet = TextEditingController(text: widget.medicine?.leaflet ?? ''),
       notes = TextEditingController(text: widget.medicine?.notes ?? '');
-  late bool prescription = widget.medicine?.prescription ?? false;
+  late bool prescription = widget.medicine?.prescription ??
+      (widget.registryMedicine?.prescriptionStatus.toLowerCase() == 'receptinis');
+  late final Set<String> selectedCategories = {
+    ..._splitCategories(widget.medicine?.category ?? ''),
+    if (widget.medicine == null)
+      ..._suggestMedicineCategories(
+        widget.registryMedicine?.atcCode ?? '',
+        '${widget.registryMedicine?.name ?? ''} ${widget.registryMedicine?.substance ?? ''} ${widget.sourceText}',
+      ),
+  };
+  final newCategory = TextEditingController();
   late String imagePath = widget.medicine?.imagePath ?? widget.initialImagePath;
   late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
 
   @override
   void dispose() {
     for (final x in [
-      name, sub, strength, manufacturer, dosageForm, packageSize, category,
+      name, sub, strength, manufacturer, dosageForm, packageSize, newCategory,
       purpose, dosage, warnings, sideEffects, interactions, expiry,
       stock, batchNumber, barcode, storageLocation, leaflet, notes,
     ]) {
@@ -1706,6 +1745,69 @@ class _MedicineEditor extends State<MedicineEditor> {
     final id = widget.medicine?.id ?? newId();
     final saved = await File(picked.path).copy('${directory.path}/medicine_$id.$extension');
     if (mounted) setState(() => imagePath = saved.path);
+  }
+
+  Widget _categoryPicker(BuildContext c) {
+    final categories = <String>{
+      ...defaultMedicineCategories,
+      ...widget.data.meds.expand((m) => _splitCategories(m.category)),
+      ...selectedCategories,
+    }.toList()..sort();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          tx(c, 'Kategorijos', 'Categories'),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: categories
+              .map((category) => FilterChip(
+                    label: Text(category),
+                    selected: selectedCategories.contains(category),
+                    onSelected: (selected) => setState(() {
+                      if (selected) {
+                        if (category == 'Kita') {
+                          selectedCategories.clear();
+                        } else {
+                          selectedCategories.remove('Kita');
+                        }
+                        selectedCategories.add(category);
+                      } else {
+                        selectedCategories.remove(category);
+                      }
+                    }),
+                  ))
+              .toList(),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: field(c, newCategory, 'Nauja kategorija', 'New category'),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filledTonal(
+              tooltip: tx(c, 'Pridėti kategoriją', 'Add category'),
+              onPressed: () {
+                final value = newCategory.text.trim();
+                if (value.isEmpty) return;
+                setState(() {
+                  selectedCategories.remove('Kita');
+                  selectedCategories.add(value);
+                  newCategory.clear();
+                });
+              },
+              icon: const Icon(Icons.add),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   @override
@@ -1765,7 +1867,7 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
         field(c, dosageForm, 'Vaisto forma (tabletės, sirupas...)', 'Dosage form'),
         field(c, packageSize, 'Pakuotės dydis', 'Package size'),
-        field(c, category, 'Kategorija', 'Category'),
+        _categoryPicker(c),
         field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
         field(c, dosage, 'Kaip vartoti', 'How to use', lines: 3),
         field(c, warnings, 'Svarbūs įspėjimai', 'Important warnings', lines: 3),
@@ -1857,7 +1959,9 @@ class _MedicineEditor extends State<MedicineEditor> {
                 substance: sub.text.trim(),
                 strength: strength.text.trim(),
                 purpose: purpose.text.trim(),
-                category: category.text.trim().isEmpty ? 'Kita' : category.text.trim(),
+                category: selectedCategories.isEmpty
+                    ? 'Kita'
+                    : selectedCategories.join('; '),
                 expiry: expiry.text.trim(),
                 stock: parsedStock,
                 prescription: prescription,
@@ -1870,6 +1974,11 @@ class _MedicineEditor extends State<MedicineEditor> {
                 warnings: warnings.text.trim(),
                 sideEffects: sideEffects.text.trim(),
                 interactions: interactions.text.trim(),
+                atcCode: widget.registryMedicine?.atcCode ?? '',
+                registrationNumber:
+                    widget.registryMedicine?.registrationNumber ?? '',
+                supplyStatus: widget.registryMedicine?.supplyStatus ?? '',
+                registryVerified: widget.registryMedicine != null,
                 memberIds: widget.initialMemberId.isEmpty
                     ? null
                     : [widget.initialMemberId],
@@ -1890,12 +1999,21 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..manufacturer = manufacturer.text.trim()
                 ..dosageForm = dosageForm.text.trim()
                 ..packageSize = packageSize.text.trim()
-                ..category = category.text.trim().isEmpty ? 'Kita' : category.text.trim()
+                ..category = (selectedCategories.isEmpty
+                    ? 'Kita'
+                    : selectedCategories.join('; '))
                 ..purpose = purpose.text.trim()
                 ..dosage = dosage.text.trim()
                 ..warnings = warnings.text.trim()
                 ..sideEffects = sideEffects.text.trim()
                 ..interactions = interactions.text.trim()
+                ..atcCode = (widget.registryMedicine?.atcCode ?? existing.atcCode)
+                ..registrationNumber = (widget.registryMedicine?.registrationNumber ??
+                    existing.registrationNumber)
+                ..supplyStatus = (widget.registryMedicine?.supplyStatus ??
+                    existing.supplyStatus)
+                ..registryVerified = (existing.registryVerified ||
+                    widget.registryMedicine != null)
                 ..expiry = expiry.text.trim()
                 ..stock = parsedStock
                 ..prescription = prescription
@@ -1934,6 +2052,29 @@ String _guessName(String source) {
   return selected.replaceAll(RegExp(r'\s+'), ' ').trim();
 }
 
+String _guessRegistryName(String source) {
+  final guessed = _guessName(source);
+  if (guessed.isEmpty) return '';
+  final strength = RegExp(
+    r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|μg|g|ml)\b',
+    caseSensitive: false,
+  ).firstMatch(guessed);
+  final withoutStrength = strength == null
+      ? guessed
+      : guessed.substring(0, strength.start);
+  return withoutStrength
+      .replaceAll(RegExp(r'[^\p{L}\d -]', unicode: true), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
+String _registryTitleCase(String value) => value
+    .split(' ')
+    .map((word) => word.isEmpty
+        ? word
+        : '${word.substring(0, 1).toUpperCase()}${word.substring(1).toLowerCase()}')
+    .join(' ');
+
 String _guessStrength(String source) =>
     RegExp(
       r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|g|ml)\b',
@@ -1947,6 +2088,64 @@ String _guessPackageSize(String source) =>
         ?.group(0)
         ?.replaceAll(' ', '') ??
     '';
+
+const defaultMedicineCategories = <String>{
+  'Skausmas ir karščiavimas',
+  'Alergija',
+  'Virškinimas',
+  'Kvėpavimo sistema',
+  'Širdis ir kraujotaka',
+  'Kraujas',
+  'Nervų sistema',
+  'Infekcijos',
+  'Hormonai ir skydliaukė',
+  'Oda',
+  'Akys ir ausys',
+  'Vitaminai ir papildai',
+  'Kita',
+};
+
+Set<String> _splitCategories(String value) => value
+    .split(RegExp(r'[;,]'))
+    .map((x) => x.trim())
+    .where((x) => x.isNotEmpty)
+    .toSet();
+
+Set<String> _suggestMedicineCategories(String atcCode, String source) {
+  final result = <String>{};
+  final atc = atcCode.trim().toUpperCase();
+  if (atc.isNotEmpty) {
+    final byAtc = {
+      'A': 'Virškinimas',
+      'B': 'Kraujas',
+      'C': 'Širdis ir kraujotaka',
+      'D': 'Oda',
+      'H': 'Hormonai ir skydliaukė',
+      'J': 'Infekcijos',
+      'M': 'Skausmas ir karščiavimas',
+      'N': 'Nervų sistema',
+      'R': 'Kvėpavimo sistema',
+      'S': 'Akys ir ausys',
+    };
+    final category = byAtc[atc.substring(0, 1)];
+    if (category != null) result.add(category);
+  }
+  final text = source.toLowerCase();
+  if (RegExp(r'ibuprofen|paracetamol|skausm|karščiav').hasMatch(text)) {
+    result.add('Skausmas ir karščiavimas');
+  }
+  if (RegExp(r'loratadin|cetirizin|alerg').hasMatch(text)) {
+    result.add('Alergija');
+  }
+  if (RegExp(r'levotiroks|euthyrox|skydliauk').hasMatch(text)) {
+    result.add('Hormonai ir skydliaukė');
+  }
+  if (RegExp(r'vitamin|magn|papild').hasMatch(text)) {
+    result.add('Vitaminai ir papildai');
+  }
+  if (result.isEmpty) result.add('Kita');
+  return result;
+}
 
 class FamilyPage extends StatelessWidget {
   final AppData data;
@@ -2971,6 +3170,98 @@ class _ScanPage extends State<ScanPage> {
   String text = '';
   String imagePath = '';
   bool busy = false;
+  bool vvktBusy = false;
+  bool vvktChecked = false;
+  String vvktError = '';
+  VvktMedicine? vvktMatch;
+  List<VvktMedicine> vvktMatches = [];
+
+  Future<void> _lookupVvkt(String recognizedText) async {
+    final query = _guessRegistryName(recognizedText);
+    if (query.isEmpty) return;
+    setState(() {
+      vvktBusy = true;
+      vvktChecked = false;
+      vvktError = '';
+      vvktMatch = null;
+      vvktMatches = [];
+    });
+    try {
+      var matches = <VvktMedicine>[];
+      final candidates = {
+        query,
+        _registryTitleCase(query),
+        if (query.contains(' ')) query.split(' ').first,
+        if (query.contains(' ')) _registryTitleCase(query.split(' ').first),
+      };
+      for (final candidate in candidates) {
+        matches = await VvktService.search(candidate);
+        if (matches.isNotEmpty) break;
+      }
+      final match = VvktService.bestMatch(matches, _guessStrength(recognizedText));
+      if (mounted) setState(() {
+        vvktMatches = matches;
+        vvktMatch = match;
+      });
+    } catch (error) {
+      if (mounted) setState(() {
+        vvktMatch = null;
+        vvktError = '$error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          vvktBusy = false;
+          vvktChecked = true;
+        });
+      }
+    }
+  }
+
+  Future<void> _chooseVvktVariant() async {
+    final selected = await showModalBottomSheet<VvktMedicine>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: FractionallySizedBox(
+          heightFactor: .78,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(18),
+                child: Text(
+                  tx(sheetContext, 'Pasirinkite tikslų vaisto variantą', 'Choose the exact medicine variant'),
+                  style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800),
+                ),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: vvktMatches.length,
+                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  itemBuilder: (_, index) {
+                    final item = vvktMatches[index];
+                    return ListTile(
+                      leading: Icon(
+                        identical(item, vvktMatch)
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                        color: green,
+                      ),
+                      title: Text('${item.name} ${item.strength}'),
+                      subtitle: Text('${item.dosageForm}\n${item.packageDescription}'),
+                      isThreeLine: true,
+                      onTap: () => Navigator.pop(sheetContext, item),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected != null && mounted) setState(() => vvktMatch = selected);
+  }
   Future<void> ocr(ImageSource src) async {
     if (busy) return;
     setState(() => busy = true);
@@ -2989,6 +3280,7 @@ class _ScanPage extends State<ScanPage> {
           text = out.text;
           imagePath = saved.path;
         });
+        await _lookupVvkt(out.text);
       }
     } catch (_) {
       if (mounted)
@@ -3018,6 +3310,7 @@ class _ScanPage extends State<ScanPage> {
         text = result.text;
         imagePath = result.imagePath;
       });
+      await _lookupVvkt(result.text);
     }
   }
 
@@ -3095,6 +3388,72 @@ class _ScanPage extends State<ScanPage> {
               ],
             ),
           ),
+          if (vvktBusy)
+            card(
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 3),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(tx(c, 'Tikrinama VVKT registre…', 'Checking the VVKT register…'))),
+                ],
+              ),
+            ),
+          if (!vvktBusy && vvktMatch != null)
+            Card(
+              color: const Color(0xffe5f7f0),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.verified_rounded, color: green),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            tx(c, 'Rastas oficialiame VVKT duomenų rinkinyje', 'Found in official VVKT data'),
+                            style: const TextStyle(fontWeight: FontWeight.w800, color: green),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text('${vvktMatch!.name} ${vvktMatch!.strength}', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+                    Text(vvktMatch!.substance),
+                    Text('${vvktMatch!.dosageForm} • ${vvktMatch!.packageDescription}'),
+                    Text('${tx(c, 'Tiekimas', 'Supply')}: ${vvktMatch!.supplyStatus}'),
+                    Text('${tx(c, 'Registracijos Nr.', 'Registration No.')}: ${vvktMatch!.registrationNumber}'),
+                    if (vvktMatches.length > 1)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: _chooseVvktVariant,
+                          icon: const Icon(Icons.swap_horiz),
+                          label: Text(tx(c, 'Keisti variantą (${vvktMatches.length})', 'Change variant (${vvktMatches.length})')),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          if (!vvktBusy && vvktChecked && vvktMatch == null)
+            Card(
+              color: const Color(0xfffff4dc),
+              child: ListTile(
+                leading: Icon(vvktError.isEmpty ? Icons.info_outline : Icons.cloud_off_outlined, color: const Color(0xffbd7200)),
+                title: Text(vvktError.isEmpty
+                    ? tx(c, 'VVKT registre automatiškai nepatvirtinta', 'Not automatically confirmed in VVKT')
+                    : tx(c, 'Nepavyko prisijungti prie VVKT', 'Could not connect to VVKT')),
+                subtitle: Text(vvktError.isEmpty
+                    ? tx(c, 'Patikrinkite nuskaitytą pavadinimą arba įveskite duomenis rankiniu būdu.', 'Check the recognized name or enter the details manually.')
+                    : tx(c, 'Patikrinkite interneto ryšį ir nuskaitykite dar kartą. Duomenis taip pat galite įvesti rankiniu būdu.', 'Check your connection and scan again. You can also enter the details manually.')),
+              ),
+            ),
           const SizedBox(height: 10),
           FilledButton.icon(
             onPressed: () => Navigator.push(
@@ -3105,6 +3464,7 @@ class _ScanPage extends State<ScanPage> {
                   onChanged: widget.onChanged,
                   sourceText: text,
                   initialImagePath: imagePath,
+                  registryMedicine: vvktMatch,
                 ),
               ),
             ),
@@ -3469,7 +3829,7 @@ class MatchesPage extends StatelessWidget {
   @override
   Widget build(c) {
     final m = meds
-        .where((x) => x.category == category && !x.prescription)
+        .where((x) => _matchesSymptomCategory(x, category) && !x.prescription)
         .toList();
     return Scaffold(
       appBar: AppBar(title: Text(tx(c, 'Ką turiu?', 'What do I have?'))),
@@ -3505,4 +3865,18 @@ class MatchesPage extends StatelessWidget {
       ),
     );
   }
+}
+
+bool _matchesSymptomCategory(Med medicine, String symptom) {
+  final categories = _splitCategories(medicine.category)
+      .map((x) => x.toLowerCase())
+      .toSet();
+  final expected = switch (symptom) {
+    'Skausmas' || 'Karščiavimas' => {'skausmas', 'skausmas ir karščiavimas'},
+    'Peršalimas' => {'peršalimas', 'kvėpavimo sistema'},
+    'Pilvo problemos' => {'pilvo problemos', 'virškinimas'},
+    'Alergija' => {'alergija'},
+    _ => {symptom.toLowerCase()},
+  };
+  return categories.any(expected.contains);
 }

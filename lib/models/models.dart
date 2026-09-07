@@ -18,9 +18,13 @@ class Med {
       dosage,
       warnings,
       sideEffects,
-      interactions;
+      interactions,
+      atcCode,
+      registrationNumber,
+      supplyStatus;
   double stock;
   bool prescription;
+  bool registryVerified;
   List<String> memberIds;
   Med({
     required this.id,
@@ -45,6 +49,10 @@ class Med {
     this.warnings = '',
     this.sideEffects = '',
     this.interactions = '',
+    this.atcCode = '',
+    this.registrationNumber = '',
+    this.supplyStatus = '',
+    this.registryVerified = false,
     List<String>? memberIds,
   }) : memberIds = memberIds ?? [];
   Map<String, dynamic> toJson() => {
@@ -71,6 +79,10 @@ class Med {
     'sideEffects': sideEffects,
     'interactions': interactions,
     'memberIds': memberIds,
+    'atcCode': atcCode,
+    'registrationNumber': registrationNumber,
+    'supplyStatus': supplyStatus,
+    'registryVerified': registryVerified,
   };
   factory Med.fromJson(Map<String, dynamic> j) => Med(
     id: '${j['id']}',
@@ -96,6 +108,10 @@ class Med {
     sideEffects: '${j['sideEffects'] ?? ''}',
     interactions: '${j['interactions'] ?? ''}',
     memberIds: (j['memberIds'] as List?)?.map((x) => '$x').toList(),
+    atcCode: '${j['atcCode'] ?? ''}',
+    registrationNumber: '${j['registrationNumber'] ?? ''}',
+    supplyStatus: '${j['supplyStatus'] ?? ''}',
+    registryVerified: j['registryVerified'] == true,
   );
 }
 
