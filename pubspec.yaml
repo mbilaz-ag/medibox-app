@@ -1,7 +1,7 @@
 name: medibox
 description: MediBox - išmani šeimos vaistinėlė
 publish_to: 'none'
-version: 0.10.0+15
+version: 0.11.0+16
 environment:
   sdk: '>=3.3.0 <4.0.0'
 dependencies:
@@ -12,6 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.5.3
   image_picker: ^1.1.2
+  path_provider: ^2.1.5
   camera: ^0.11.2
   google_mlkit_text_recognition: ^0.15.0
   mobile_scanner: ^7.0.1
