@@ -1589,7 +1589,7 @@ class MedicinePage extends StatelessWidget {
       ],
     ),
   ),
-  );
+  ),
   );
 }
 
