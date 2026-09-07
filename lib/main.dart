@@ -791,18 +791,23 @@ class HomePage extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    data.profile.name.isEmpty
-                        ? tx(c, '☀️ Labas! 👋', '☀️ Hello! 👋')
-                        : tx(
-                            c,
-                            '☀️ Labas, ${data.profile.name}! 👋',
-                            '☀️ Hello, ${data.profile.name}! 👋',
-                          ),
-                    style: const TextStyle(
-                      fontSize: 26,
-                      fontWeight: FontWeight.w800,
-                      color: navy,
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      data.profile.name.isEmpty
+                          ? tx(c, 'Labas! 👋', 'Hello! 👋')
+                          : tx(
+                              c,
+                              'Labas, ${data.profile.name}! 👋',
+                              'Hello, ${data.profile.name}! 👋',
+                            ),
+                      maxLines: 1,
+                      style: const TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        color: navy,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 3),
