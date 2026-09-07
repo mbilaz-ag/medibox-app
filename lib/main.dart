@@ -5871,22 +5871,28 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
           'Tai nėra diagnozė. Jei būklė blogėja, simptomai stiprėja ar kelia nerimą – kreipkitės į gydytoją.',
           'This is not a diagnosis. Seek medical care if symptoms worsen or concern you.'))),
         const SizedBox(height: 14),
-        Text(tx(c, 'Jūsų vaistinėlėje radome:', 'Found in your medicine cabinet:'),
+        Text(tx(c, 'Asmens ir bendroje vaistinėlėje radome:', 'Found in the personal and shared medicine cabinet:'),
             style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: navy)),
         const SizedBox(height: 8),
         if (matches.isEmpty) card(Text(tx(c, 'Tinkamų ir galiojančių nereceptinių vaistų nerasta.', 'No suitable, unexpired non-prescription medicines found.'))),
-        ...matches.map((medicine) => Card(
+        ...matches.map((medicine) {
+          final isShared = medicine.memberIds.isEmpty;
+          final source = isShared
+              ? tx(c, 'Bendra vaistinėlė', 'Shared medicine cabinet')
+              : tx(c, 'Priskirta pasirinktam asmeniui', 'Assigned to selected person');
+          return Card(
           child: ListTile(
             leading: medicine.imagePath.isNotEmpty && File(medicine.imagePath).existsSync()
                 ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(File(medicine.imagePath), width: 52, height: 52, fit: BoxFit.cover))
                 : const CircleAvatar(backgroundColor: mint, child: Icon(Icons.medication, color: green)),
             title: Text('${medicine.name} ${medicine.strength}', style: const TextStyle(fontWeight: FontWeight.w700)),
-            subtitle: Text('${medicine.substance}\n${_matchReason(c, widget.category)}\n${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}'),
+            subtitle: Text('$source • ${medicine.substance}\n${_matchReason(c, widget.category)}\n${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}'),
             isThreeLine: true,
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => MedicinePage(data: widget.data, med: medicine, onChanged: widget.onChanged))),
           ),
-        )),
+        ));
+        }),
         const SizedBox(height: 10),
         OutlinedButton.icon(
           onPressed: () => Navigator.pop(c),
