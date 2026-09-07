@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:intl/intl.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
@@ -461,8 +462,9 @@ class HomePage extends StatelessWidget {
   final AppData data;
   final VoidCallback onChanged;
   const HomePage({super.key, required this.data, required this.onChanged});
+
   @override
-  Widget build(c) {
+  Widget build(BuildContext c) {
     final now = DateTime.now();
     final today = dateKey(now);
     final active =
@@ -472,27 +474,57 @@ class HomePage extends StatelessWidget {
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
     final remaining = active.length - taken;
+    final lowStock = data.meds.where((x) => x.stock < 10).length;
+    final expiring = data.meds.where((x) => _expiresSoon(x.expiry, now)).length;
+
     return ListView(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
       children: [
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const CircleAvatar(
-              backgroundColor: green,
-              child: Icon(Icons.medication, color: Colors.white),
-            ),
-            const SizedBox(width: 10),
-            const Expanded(
-              child: Text(
-                'MediBox',
-                style: TextStyle(
-                  fontSize: 29,
-                  fontWeight: FontWeight.bold,
-                  color: navy,
-                ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    data.profile.name.isEmpty
+                        ? tx(c, '☀️ Labas! 👋', '☀️ Hello! 👋')
+                        : tx(
+                            c,
+                            '☀️ Labas, ${data.profile.name}! 👋',
+                            '☀️ Hello, ${data.profile.name}! 👋',
+                          ),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      color: navy,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    _todayLabel(c, now),
+                    style: const TextStyle(color: Color(0xff48606f)),
+                  ),
+                ],
               ),
             ),
-            IconButton.filledTonal(
+            Badge(
+              isLabelVisible: remaining > 0,
+              label: Text('$remaining'),
+              child: IconButton(
+                tooltip: tx(c, 'Priminimai', 'Reminders'),
+                onPressed: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        RemindersPage(data: data, onChanged: onChanged),
+                  ),
+                ),
+                icon: const Icon(Icons.notifications_outlined, size: 28),
+              ),
+            ),
+            IconButton(
               tooltip: tx(c, 'Mano profilis', 'My profile'),
               onPressed: () => Navigator.push(
                 c,
@@ -500,23 +532,9 @@ class HomePage extends StatelessWidget {
                   builder: (_) => ProfilePage(data: data, onChanged: onChanged),
                 ),
               ),
-              icon: const Icon(Icons.account_circle_outlined),
+              icon: const Icon(Icons.account_circle_outlined, size: 30),
             ),
           ],
-        ),
-        const SizedBox(height: 18),
-        Text(
-          data.profile.name.isEmpty
-              ? tx(c, 'Labas! 👋', 'Hello! 👋')
-              : tx(
-                  c,
-                  'Labas, ${data.profile.name}! 👋',
-                  'Hello, ${data.profile.name}! 👋',
-                ),
-          style: const TextStyle(fontSize: 25, fontWeight: FontWeight.bold),
-        ),
-        Text(
-          tx(c, 'Tavo vaistinėlė šiandien.', 'Your medicine cabinet today.'),
         ),
         const SizedBox(height: 14),
         card(
@@ -526,8 +544,8 @@ class HomePage extends StatelessWidget {
               Row(
                 children: [
                   SizedBox(
-                    width: 92,
-                    height: 92,
+                    width: 88,
+                    height: 88,
                     child: Stack(
                       alignment: Alignment.center,
                       children: [
@@ -550,7 +568,7 @@ class HomePage extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const SizedBox(width: 18),
+                  const SizedBox(width: 16),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -559,7 +577,7 @@ class HomePage extends StatelessWidget {
                           tx(c, 'Šiandienos planas', 'Today’s plan'),
                           style: const TextStyle(
                             fontSize: 20,
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
                         const SizedBox(height: 5),
@@ -580,6 +598,27 @@ class HomePage extends StatelessWidget {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
+                        if (active.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          FilledButton(
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size(0, 36),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                              ),
+                            ),
+                            onPressed: () => Navigator.push(
+                              c,
+                              MaterialPageRoute(
+                                builder: (_) => RemindersPage(
+                                  data: data,
+                                  onChanged: onChanged,
+                                ),
+                              ),
+                            ),
+                            child: Text(tx(c, 'Rodyti visus', 'Show all')),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -589,8 +628,8 @@ class HomePage extends StatelessWidget {
               Text(
                 tx(c, 'Šiandienos priminimai', 'Today’s reminders'),
                 style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
               if (active.isEmpty)
@@ -609,8 +648,17 @@ class HomePage extends StatelessWidget {
                   .map(
                     (r) => ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.schedule, color: green),
-                      title: Text('${r.time} • ${r.title}'),
+                      leading: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: r.takenDates.contains(today)
+                              ? green
+                              : const Color(0xffff9f1c),
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      title: Text('${r.time}  ${r.title}'),
                       subtitle: Text(_who(data, r, tx(c, 'Aš', 'Me'))),
                       trailing: IconButton(
                         tooltip: r.takenDates.contains(today)
@@ -640,63 +688,146 @@ class HomePage extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 10),
-        FilledButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => ScanPage(data: data, onChanged: onChanged),
-            ),
-          ),
-          icon: const Icon(Icons.camera_alt),
-          label: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Text(
-              tx(c, 'Nuskenuoti vaistą / čekį', 'Scan medicine / receipt'),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        FilledButton.tonalIcon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(builder: (_) => SymptomsPage(meds: data.meds)),
-          ),
-          icon: const Icon(Icons.health_and_safety),
-          label: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Text(tx(c, 'Man bloga', 'I feel unwell')),
-          ),
-        ),
-        const SizedBox(height: 10),
-        card(
-          Column(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.inventory_2, color: Colors.orange),
-                title: Text(
-                  tx(
-                    c,
-                    '${data.meds.where((x) => x.stock < 10).length} preparatų atsargos mažos',
-                    '${data.meds.where((x) => x.stock < 10).length} medicines are low in stock',
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => ScanPage(data: data, onChanged: onChanged),
                   ),
                 ),
+                icon: const Icon(Icons.camera_alt),
+                label: Text(tx(c, 'Nuskenuoti vaistą', 'Scan medicine')),
               ),
-              ListTile(
-                leading: const Icon(Icons.people, color: green),
-                title: Text(
-                  tx(
-                    c,
-                    'Šeimos narių: ${data.members.length}',
-                    'Family members: ${data.members.length}',
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xffe1f4ef),
+                  foregroundColor: navy,
+                ),
+                onPressed: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => SymptomsPage(meds: data.meds),
                   ),
                 ),
+                icon: const Icon(Icons.health_and_safety),
+                label: Text(tx(c, 'Man bloga', 'I feel unwell')),
               ),
-            ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        if (lowStock > 0) ...[
+          _statusStrip(
+            icon: Icons.warning_amber_rounded,
+            color: const Color(0xffff9f1c),
+            background: const Color(0xfffff3df),
+            text: tx(
+              c,
+              '$lowStock preparatų atsargos mažos',
+              '$lowStock medicines are low in stock',
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (expiring > 0) ...[
+          _statusStrip(
+            icon: Icons.event_busy_outlined,
+            color: const Color(0xffe53935),
+            background: const Color(0xffffe9e8),
+            text: tx(
+              c,
+              '$expiring preparatų baigs galioti per 30 dienų',
+              '$expiring medicines expire within 30 days',
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+        _statusStrip(
+          icon: Icons.people,
+          color: green,
+          background: const Color(0xffe5f6f1),
+          text: tx(
+            c,
+            'Šeimos narių: ${data.members.length}',
+            'Family members: ${data.members.length}',
           ),
         ),
       ],
     );
+  }
+}
+
+String _todayLabel(BuildContext context, DateTime date) {
+  if (Localizations.localeOf(context).languageCode == 'en') {
+    return DateFormat('EEEE, MMMM d').format(date);
+  }
+  const weekdays = [
+    'pirmadienis',
+    'antradienis',
+    'trečiadienis',
+    'ketvirtadienis',
+    'penktadienis',
+    'šeštadienis',
+    'sekmadienis',
+  ];
+  const months = [
+    'sausio',
+    'vasario',
+    'kovo',
+    'balandžio',
+    'gegužės',
+    'birželio',
+    'liepos',
+    'rugpjūčio',
+    'rugsėjo',
+    'spalio',
+    'lapkričio',
+    'gruodžio',
+  ];
+  return 'Šiandien, ${weekdays[date.weekday - 1]}, ${months[date.month - 1]} ${date.day} d.';
+}
+
+Widget _statusStrip({
+  required IconData icon,
+  required Color color,
+  required Color background,
+  required String text,
+}) => Container(
+  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+  decoration: BoxDecoration(
+    color: background,
+    borderRadius: BorderRadius.circular(14),
+  ),
+  child: Row(
+    children: [
+      Icon(icon, color: color),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+      ),
+    ],
+  ),
+);
+
+bool _expiresSoon(String value, DateTime now) {
+  try {
+    final parts = value.split('-').map(int.parse).toList();
+    final expiry = parts.length == 2
+        ? DateTime(parts[0], parts[1] + 1, 0)
+        : DateTime(parts[0], parts[1], parts[2]);
+    final days = expiry
+        .difference(DateTime(now.year, now.month, now.day))
+        .inDays;
+    return days >= 0 && days <= 30;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -1615,7 +1746,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.5.1'),
+                const Text('MediBox v0.6.0'),
                 Text(
                   tx(
                     c,
