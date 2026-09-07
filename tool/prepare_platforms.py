@@ -19,6 +19,20 @@ text = manifest.read_text().replace('android:label="medibox"', 'android:label="M
 if 'android.permission.CAMERA' not in text:
     text = text.replace('<application', '<uses-permission android:name="android.permission.CAMERA"/>\n    <uses-feature android:name="android.hardware.camera" android:required="false"/>\n    <application', 1)
 manifest.write_text(text)
+
+# Install the MediBox launcher icon generated from the approved brand mark.
+android_icons = {
+    'mipmap-mdpi': 'mdpi.png',
+    'mipmap-hdpi': 'hdpi.png',
+    'mipmap-xhdpi': 'xhdpi.png',
+    'mipmap-xxhdpi': 'xxhdpi.png',
+    'mipmap-xxxhdpi': 'xxxhdpi.png',
+}
+for folder, source_name in android_icons.items():
+    destination = root / 'android/app/src/main/res' / folder
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / 'assets/icon/android' / source_name,
+                 destination / 'ic_launcher.png')
 gradle = root / 'android/app/build.gradle.kts'
 if gradle.exists():
     text = gradle.read_text().replace('minSdk = flutter.minSdkVersion', 'minSdk = 23')
@@ -54,6 +68,10 @@ data.update({
 })
 with info.open('wb') as f:
     plistlib.dump(data, f, sort_keys=False)
+ios_icon_target = root / 'ios/Runner/Assets.xcassets/AppIcon.appiconset'
+ios_icon_target.mkdir(parents=True, exist_ok=True)
+for source in sorted((root / 'assets/icon/ios').glob('*.png')):
+    shutil.copy2(source, ios_icon_target / source.name)
 project = root / 'ios/Runner.xcodeproj/project.pbxproj'
 text = re.sub(r'IPHONEOS_DEPLOYMENT_TARGET = [\d.]+;', 'IPHONEOS_DEPLOYMENT_TARGET = 15.5;', project.read_text())
 project.write_text(text)

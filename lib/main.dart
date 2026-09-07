@@ -141,20 +141,14 @@ class LaunchScreen extends StatelessWidget {
     backgroundColor: const Color(0xfff8fcfb),
     body: Stack(
       children: [
-        const Positioned(
-          top: 170,
-          right: -55,
-          child: _SoftLeaf(size: 150, angle: -.35),
+        Positioned.fill(
+          child: Image.asset(
+            'assets/images/medibox_home_background.webp',
+            fit: BoxFit.cover,
+          ),
         ),
-        const Positioned(
-          top: 370,
-          left: -65,
-          child: _SoftLeaf(size: 170, angle: .45),
-        ),
-        const Positioned(
-          bottom: 135,
-          right: -45,
-          child: _SoftLeaf(size: 125, angle: .8),
+        Positioned.fill(
+          child: ColoredBox(color: Colors.white.withValues(alpha: .24)),
         ),
         SafeArea(
           child: Padding(
@@ -188,15 +182,15 @@ class LaunchScreen extends StatelessWidget {
                 const SizedBox(height: 2),
                 Expanded(
                   child: Transform.translate(
-                    offset: const Offset(0, 8),
+                    offset: const Offset(0, 22),
                     child: Image.asset(
-                      'assets/images/medibox_family.webp',
+                      'assets/images/medibox_family_equal.png',
                       fit: BoxFit.contain,
                     ),
                   ),
                 ),
                 Transform.translate(
-                  offset: const Offset(0, -4),
+                  offset: const Offset(0, -12),
                   child: Container(
                     padding: const EdgeInsets.fromLTRB(17, 12, 17, 12),
                     decoration: BoxDecoration(
@@ -275,26 +269,6 @@ class LaunchScreen extends StatelessWidget {
           ),
         ),
       ],
-    ),
-  );
-}
-
-class _SoftLeaf extends StatelessWidget {
-  final double size, angle;
-  const _SoftLeaf({required this.size, required this.angle});
-
-  @override
-  Widget build(BuildContext context) => Transform.rotate(
-    angle: angle,
-    child: Container(
-      width: size,
-      height: size * .46,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.all(Radius.elliptical(size, size * .46)),
-        gradient: const RadialGradient(
-          colors: [Color(0x3659bd75), Color(0x0059bd75)],
-        ),
-      ),
     ),
   );
 }
@@ -425,7 +399,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
         const SizedBox(height: 10),
         Expanded(
           child: Image.asset(
-            'assets/images/medibox_family.webp',
+            'assets/images/medibox_family_equal.png',
             fit: BoxFit.contain,
           ),
         ),
@@ -2064,7 +2038,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.6.3'),
+                const Text('MediBox v0.7.0'),
                 Text(
                   tx(
                     c,
