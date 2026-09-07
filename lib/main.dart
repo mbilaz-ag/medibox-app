@@ -1062,8 +1062,10 @@ class HomePage extends StatelessWidget {
               c,
               MaterialPageRoute(
                 builder: (_) => ExpiringMedicinesPage(
+                  data: data,
                   medicines: expiringMeds,
                   now: now,
+                  onChanged: onChanged,
                 ),
               ),
             ),
@@ -1314,27 +1316,42 @@ class _FamilyAvatar extends StatelessWidget {
   }
 }
 
-class ExpiringMedicinesPage extends StatelessWidget {
+class ExpiringMedicinesPage extends StatefulWidget {
+  final AppData data;
   final List<Med> medicines;
   final DateTime now;
+  final VoidCallback onChanged;
   const ExpiringMedicinesPage({
     super.key,
+    required this.data,
     required this.medicines,
     required this.now,
+    required this.onChanged,
   });
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(tx(context, 'Besibaigiantys vaistai', 'Expiring medicines')),
-    ),
-    body: ListView.separated(
+  State<ExpiringMedicinesPage> createState() => _ExpiringMedicinesPageState();
+}
+
+class _ExpiringMedicinesPageState extends State<ExpiringMedicinesPage> {
+  @override
+  Widget build(BuildContext context) {
+    final medicines = widget.medicines.where((medicine) {
+      final stillExists = widget.data.meds.any((item) => item.id == medicine.id);
+      return stillExists &&
+          medicineNeedsExpiryAttention(medicine.expiry, widget.now);
+    }).toList();
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(tx(context, 'Besibaigiantys vaistai', 'Expiring medicines')),
+      ),
+      body: ListView.separated(
       padding: const EdgeInsets.all(18),
       itemCount: medicines.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final medicine = medicines[index];
-        final days = daysUntilMedicineExpiry(medicine.expiry, now);
+        final days = daysUntilMedicineExpiry(medicine.expiry, widget.now);
         return Card(
           child: ListTile(
             leading: const CircleAvatar(
@@ -1354,11 +1371,26 @@ class ExpiringMedicinesPage extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => MedicinePage(
+                    data: widget.data,
+                    med: medicine,
+                    onChanged: widget.onChanged,
+                  ),
+                ),
+              );
+              if (mounted) setState(() {});
+            },
           ),
         );
       },
-    ),
-  );
+      ),
+    );
+  }
 }
 
 String _who(AppData d, Reminder r, String me) {
