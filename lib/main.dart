@@ -323,16 +323,16 @@ class CabinetPage extends StatelessWidget {
             ),
           ),
         ),
-        OutlinedButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => MedicineEditor(data: data, onChanged: onChanged),
-            ),
+      ),
+      OutlinedButton.icon(
+        onPressed: () => Navigator.push(
+          c,
+          MaterialPageRoute(
+            builder: (_) => MedicineEditor(data: data, onChanged: onChanged),
           ),
-          icon: const Icon(Icons.add),
-          label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
         ),
+        icon: const Icon(Icons.add),
+        label: Text(tx(c, 'Pridėti vaistą', 'Add medicine')),
       ),
     ],
   );
@@ -526,16 +526,16 @@ class FamilyPage extends StatelessWidget {
             ),
           ),
         ),
-        FilledButton.tonalIcon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => MemberEditor(data: data, onChanged: onChanged),
-            ),
+      ),
+      FilledButton.tonalIcon(
+        onPressed: () => Navigator.push(
+          c,
+          MaterialPageRoute(
+            builder: (_) => MemberEditor(data: data, onChanged: onChanged),
           ),
-          icon: const Icon(Icons.person_add),
-          label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
         ),
+        icon: const Icon(Icons.person_add),
+        label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
       ),
     ],
   );
@@ -727,17 +727,16 @@ class RemindersPage extends StatelessWidget {
               ),
             ),
           ),
-          FilledButton.icon(
-            onPressed: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) =>
-                    ReminderEditor(data: data, onChanged: onChanged),
-              ),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.push(
+            c,
+            MaterialPageRoute(
+              builder: (_) => ReminderEditor(data: data, onChanged: onChanged),
             ),
-            icon: const Icon(Icons.add_alarm),
-            label: Text(tx(c, 'Pridėti priminimą', 'Add reminder')),
           ),
+          icon: const Icon(Icons.add_alarm),
+          label: Text(tx(c, 'Pridėti priminimą', 'Add reminder')),
         ),
       ],
     );
@@ -900,53 +899,52 @@ class _ReminderEditor extends State<ReminderEditor> {
               }),
             ),
           ),
-          const SizedBox(height: 12),
-          field(c, dose, 'Dozė / kiekis', 'Dose / amount'),
-          field(
-            c,
-            instructions,
-            'Instrukcija (pvz., po valgio)',
-            'Instructions (e.g. after food)',
-            lines: 2,
-          ),
-          SwitchListTile(
-            value: enabled,
-            onChanged: (v) => setState(() => enabled = v),
-            title: Text(tx(c, 'Priminimas įjungtas', 'Reminder enabled')),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (titleC.text.trim().isEmpty || days.isEmpty) {
-                ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      tx(
-                        c,
-                        'Įrašyk pavadinimą ir pasirink bent vieną dieną.',
-                        'Enter a title and select at least one day.',
-                      ),
+        ),
+        const SizedBox(height: 12),
+        field(c, dose, 'Dozė / kiekis', 'Dose / amount'),
+        field(
+          c,
+          instructions,
+          'Instrukcija (pvz., po valgio)',
+          'Instructions (e.g. after food)',
+          lines: 2,
+        ),
+        SwitchListTile(
+          value: enabled,
+          onChanged: (v) => setState(() => enabled = v),
+          title: Text(tx(c, 'Priminimas įjungtas', 'Reminder enabled')),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (titleC.text.trim().isEmpty || days.isEmpty) {
+              ScaffoldMessenger.of(c).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    tx(
+                      c,
+                      'Įrašyk pavadinimą ir pasirink bent vieną dieną.',
+                      'Enter a title and select at least one day.',
                     ),
                   ),
-                );
-                return;
-              }
-              final r =
-                  widget.reminder ??
-                  Reminder(id: newId(), title: '', time: time);
-              r.title = titleC.text.trim();
-              r.medId = medId;
-              r.memberId = memberId;
-              r.time = time;
-              r.dose = dose.text.trim();
-              r.instructions = instructions.text.trim();
-              r.weekdays = [...days];
-              r.enabled = enabled;
-              if (widget.reminder == null) widget.data.reminders.add(r);
-              widget.onChanged();
-              Navigator.pop(c);
-            },
-            child: Text(tx(c, 'Išsaugoti', 'Save')),
-          ),
+                ),
+              );
+              return;
+            }
+            final r =
+                widget.reminder ?? Reminder(id: newId(), title: '', time: time);
+            r.title = titleC.text.trim();
+            r.medId = medId;
+            r.memberId = memberId;
+            r.time = time;
+            r.dose = dose.text.trim();
+            r.instructions = instructions.text.trim();
+            r.weekdays = [...days];
+            r.enabled = enabled;
+            if (widget.reminder == null) widget.data.reminders.add(r);
+            widget.onChanged();
+            Navigator.pop(c);
+          },
+          child: Text(tx(c, 'Išsaugoti', 'Save')),
         ),
       ],
     ),
@@ -974,7 +972,7 @@ class _ProfilePage extends State<ProfilePage> {
     p.emergencyName,
     p.emergencyPhone,
     p.notes,
-  ].map(TextEditingController.new).toList();
+  ].map((value) => TextEditingController(text: value)).toList();
   @override
   void dispose() {
     for (final x in ctrls) x.dispose();
