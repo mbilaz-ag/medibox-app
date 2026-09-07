@@ -7,7 +7,7 @@ class Med {
       category,
       expiry,
       leaflet;
-  int stock;
+  double stock;
   final bool prescription;
   Med({
     required this.id,
@@ -41,7 +41,7 @@ class Med {
     purpose: '${j['purpose'] ?? ''}',
     category: '${j['category'] ?? 'Kita'}',
     expiry: '${j['expiry'] ?? ''}',
-    stock: (j['stock'] as num?)?.toInt() ?? 0,
+    stock: (j['stock'] as num?)?.toDouble() ?? 0,
     prescription: j['prescription'] == true,
     leaflet: '${j['leaflet'] ?? ''}',
   );
@@ -81,9 +81,19 @@ class Member {
 
 class Reminder {
   final String id;
-  String title, medId, memberId, time, dose, instructions;
+  String title,
+      medId,
+      memberId,
+      time,
+      dose,
+      doseUnit,
+      instructions,
+      startDate,
+      endDate;
   List<int> weekdays;
-  List<String> takenDates;
+  List<String> takenDates, skippedDates;
+  Map<String, String> takenTimes;
+  double quantityPerDose;
   bool enabled;
   Reminder({
     required this.id,
@@ -92,12 +102,20 @@ class Reminder {
     this.memberId = '',
     required this.time,
     this.dose = '',
+    this.doseUnit = 'vnt.',
+    this.quantityPerDose = 1,
     this.instructions = '',
+    this.startDate = '',
+    this.endDate = '',
     List<int>? weekdays,
     List<String>? takenDates,
+    List<String>? skippedDates,
+    Map<String, String>? takenTimes,
     this.enabled = true,
   }) : weekdays = weekdays ?? [1, 2, 3, 4, 5, 6, 7],
-       takenDates = takenDates ?? [];
+       takenDates = takenDates ?? [],
+       skippedDates = skippedDates ?? [],
+       takenTimes = takenTimes ?? {};
   Map<String, dynamic> toJson() => {
     'id': id,
     'title': title,
@@ -105,9 +123,15 @@ class Reminder {
     'memberId': memberId,
     'time': time,
     'dose': dose,
+    'doseUnit': doseUnit,
+    'quantityPerDose': quantityPerDose,
     'instructions': instructions,
+    'startDate': startDate,
+    'endDate': endDate,
     'weekdays': weekdays,
     'takenDates': takenDates,
+    'skippedDates': skippedDates,
+    'takenTimes': takenTimes,
     'enabled': enabled,
   };
   factory Reminder.fromJson(Map<String, dynamic> j) => Reminder(
@@ -117,9 +141,17 @@ class Reminder {
     memberId: '${j['memberId'] ?? ''}',
     time: '${j['time'] ?? '08:00'}',
     dose: '${j['dose'] ?? ''}',
+    doseUnit: '${j['doseUnit'] ?? 'vnt.'}',
+    quantityPerDose: (j['quantityPerDose'] as num?)?.toDouble() ?? 1,
     instructions: '${j['instructions'] ?? ''}',
+    startDate: '${j['startDate'] ?? ''}',
+    endDate: '${j['endDate'] ?? ''}',
     weekdays: (j['weekdays'] as List?)?.map((x) => (x as num).toInt()).toList(),
     takenDates: (j['takenDates'] as List?)?.map((x) => '$x').toList(),
+    skippedDates: (j['skippedDates'] as List?)?.map((x) => '$x').toList(),
+    takenTimes: (j['takenTimes'] as Map?)?.map(
+      (key, value) => MapEntry('$key', '$value'),
+    ),
     enabled: j['enabled'] != false,
   );
 }
