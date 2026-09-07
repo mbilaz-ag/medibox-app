@@ -1,14 +1,21 @@
 class Med {
-  final String id,
-      name,
+  final String id;
+  String name,
       substance,
       strength,
       purpose,
       category,
       expiry,
-      leaflet;
+      leaflet,
+      imagePath,
+      manufacturer,
+      dosageForm,
+      batchNumber,
+      barcode,
+      storageLocation,
+      notes;
   double stock;
-  final bool prescription;
+  bool prescription;
   Med({
     required this.id,
     required this.name,
@@ -20,6 +27,13 @@ class Med {
     required this.stock,
     this.prescription = false,
     this.leaflet = '',
+    this.imagePath = '',
+    this.manufacturer = '',
+    this.dosageForm = '',
+    this.batchNumber = '',
+    this.barcode = '',
+    this.storageLocation = '',
+    this.notes = '',
   });
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -32,6 +46,13 @@ class Med {
     'stock': stock,
     'prescription': prescription,
     'leaflet': leaflet,
+    'imagePath': imagePath,
+    'manufacturer': manufacturer,
+    'dosageForm': dosageForm,
+    'batchNumber': batchNumber,
+    'barcode': barcode,
+    'storageLocation': storageLocation,
+    'notes': notes,
   };
   factory Med.fromJson(Map<String, dynamic> j) => Med(
     id: '${j['id']}',
@@ -44,6 +65,13 @@ class Med {
     stock: (j['stock'] as num?)?.toDouble() ?? 0,
     prescription: j['prescription'] == true,
     leaflet: '${j['leaflet'] ?? ''}',
+    imagePath: '${j['imagePath'] ?? ''}',
+    manufacturer: '${j['manufacturer'] ?? ''}',
+    dosageForm: '${j['dosageForm'] ?? ''}',
+    batchNumber: '${j['batchNumber'] ?? ''}',
+    barcode: '${j['barcode'] ?? ''}',
+    storageLocation: '${j['storageLocation'] ?? ''}',
+    notes: '${j['notes'] ?? ''}',
   );
 }
 
