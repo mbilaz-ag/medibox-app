@@ -43,8 +43,14 @@ void main() {
     final medicine = Med(
       id: 'm1', name: 'Vaistas', substance: '', strength: '', purpose: '',
       category: '', expiry: '2028-01', stock: 20, lowStockThreshold: 7,
+      prescription: true,
+      prescriptionValidUntil: '2026-10-01',
+      treatmentUntil: '2026-10-15',
     );
-    expect(Med.fromJson(medicine.toJson()).lowStockThreshold, 7);
+    final restoredMedicine = Med.fromJson(medicine.toJson());
+    expect(restoredMedicine.lowStockThreshold, 7);
+    expect(restoredMedicine.prescriptionValidUntil, '2026-10-01');
+    expect(restoredMedicine.treatmentUntil, '2026-10-15');
     final appointment = HealthAppointment(
       id: 'a1', title: 'Kardiologas', date: '2026-10-10', time: '09:30',
       doctor: 'Gydytojas', remindBeforeMinutes: 2880,

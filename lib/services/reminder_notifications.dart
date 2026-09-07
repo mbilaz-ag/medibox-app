@@ -3,6 +3,7 @@ import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../models/models.dart';
+import 'expiry_status.dart';
 import 'reminder_logic.dart';
 
 typedef ReminderActionHandler = Future<void> Function(
@@ -131,6 +132,73 @@ class ReminderNotifications {
             'health_appointments',
             'Gydytojų vizitai',
             channelDescription: 'Priminimai apie suplanuotus vizitus',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      );
+    }
+    for (final medicine in data.meds) {
+      final expiry = medicineExpiryDate(medicine.expiry);
+      if (expiry != null) {
+        await _scheduleMedicineDeadline(
+          medicine,
+          '${expiry.year.toString().padLeft(4, '0')}-'
+              '${expiry.month.toString().padLeft(2, '0')}-'
+              '${expiry.day.toString().padLeft(2, '0')}',
+          'Baigiasi vaisto galiojimas',
+          now,
+        );
+      }
+      if (medicine.prescriptionValidUntil.isNotEmpty) {
+        await _scheduleMedicineDeadline(
+          medicine,
+          medicine.prescriptionValidUntil,
+          'Baigiasi recepto galiojimas',
+          now,
+        );
+      }
+      if (medicine.treatmentUntil.isNotEmpty) {
+        await _scheduleMedicineDeadline(
+          medicine,
+          medicine.treatmentUntil,
+          'Vaisto atsargos ir gydymo laikotarpio pabaiga',
+          now,
+        );
+      }
+    }
+  }
+
+  static Future<void> _scheduleMedicineDeadline(
+    Med medicine,
+    String date,
+    String reason,
+    DateTime now,
+  ) async {
+    final deadline = DateTime.tryParse(date);
+    if (deadline == null) return;
+    for (final daysBefore in [7, 1]) {
+      final notifyAt = DateTime(
+        deadline.year,
+        deadline.month,
+        deadline.day,
+        9,
+      ).subtract(Duration(days: daysBefore));
+      if (!notifyAt.isAfter(now)) continue;
+      await _plugin.zonedSchedule(
+        ('medicine-deadline-${medicine.id}-$reason-$daysBefore').hashCode &
+            0x7fffffff,
+        '$reason po $daysBefore d.',
+        '${medicine.name} ${medicine.strength}. '
+            'Patikrinkite likutį ir prireikus suplanuokite vizitą pas gydytoją.',
+        tz.TZDateTime.from(notifyAt, tz.local),
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'medicine_deadlines',
+            'Receptai ir gydymo laikotarpiai',
+            channelDescription: 'Priminimai apie receptų ir vaistų atsargų pabaigą',
             importance: Importance.high,
             priority: Priority.high,
           ),

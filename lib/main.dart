@@ -1961,6 +1961,10 @@ class MedicinePage extends StatelessWidget {
                 ],
               ),
               Text('${tx(c, 'Galioja iki', 'Expires')}: ${med.expiry}'),
+              if (med.prescriptionValidUntil.isNotEmpty)
+                Text('${tx(c, 'Receptas galioja iki', 'Prescription valid until')}: ${med.prescriptionValidUntil}'),
+              if (med.treatmentUntil.isNotEmpty)
+                Text('${tx(c, 'Vaisto turi užtekti iki', 'Medicine should last until')}: ${med.treatmentUntil}'),
               if (med.batchNumber.isNotEmpty)
                 Text('${tx(c, 'Partijos numeris', 'Batch number')}: ${med.batchNumber}'),
               if (med.barcode.isNotEmpty)
@@ -2240,6 +2244,12 @@ class _MedicineEditor extends State<MedicineEditor> {
       expiry = TextEditingController(
         text: widget.medicine?.expiry ?? MedicineMatcher.expiry(widget.sourceText) ?? '',
       ),
+      prescriptionValidUntil = TextEditingController(
+        text: widget.medicine?.prescriptionValidUntil ?? '',
+      ),
+      treatmentUntil = TextEditingController(
+        text: widget.medicine?.treatmentUntil ?? '',
+      ),
       stock = TextEditingController(text: quantityLabel(widget.medicine?.stock ?? 1)),
       lowStockThreshold = TextEditingController(
         text: quantityLabel(widget.medicine?.lowStockThreshold ?? 10),
@@ -2293,6 +2303,7 @@ class _MedicineEditor extends State<MedicineEditor> {
     for (final x in [
       name, sub, strength, manufacturer, dosageForm, packageSize, newCategory,
       purpose, dosage, warnings, sideEffects, interactions, expiry,
+      prescriptionValidUntil, treatmentUntil,
       stock, lowStockThreshold, batchNumber, barcode, storageLocation, leaflet, notes,
     ]) {
       x.dispose();
@@ -2652,6 +2663,19 @@ class _MedicineEditor extends State<MedicineEditor> {
           expiryMode == 'month' ? 'Expires YYYY-MM' : 'Expires YYYY-MM-DD',
           monthOnly: expiryMode == 'month',
         ),
+        if (prescription)
+          dateField(
+            c,
+            prescriptionValidUntil,
+            'Receptas galioja iki YYYY-MM-DD',
+            'Prescription valid until YYYY-MM-DD',
+          ),
+        dateField(
+          c,
+          treatmentUntil,
+          'Vaisto turi užtekti iki YYYY-MM-DD',
+          'Medicine should last until YYYY-MM-DD',
+        ),
         field(c, stock, 'Kiekis', 'Quantity', number: true),
         field(
           c,
@@ -2679,14 +2703,18 @@ class _MedicineEditor extends State<MedicineEditor> {
         FilledButton(
           onPressed: () {
             if (name.text.trim().isEmpty ||
-                !_validDate(expiry.text, monthOnly: expiryMode == 'month')) {
+                !_validDate(expiry.text, monthOnly: expiryMode == 'month') ||
+                (prescriptionValidUntil.text.isNotEmpty &&
+                    DateTime.tryParse(prescriptionValidUntil.text) == null) ||
+                (treatmentUntil.text.isNotEmpty &&
+                    DateTime.tryParse(treatmentUntil.text) == null)) {
               ScaffoldMessenger.of(c).showSnackBar(
                 SnackBar(
                   content: Text(
                     tx(
                       c,
-                      'Patikrink pavadinimą ir galiojimo datos formatą.',
-                      'Check the name and expiry date format.',
+                      'Patikrink pavadinimą ir datų formatą.',
+                      'Check the name and date formats.',
                     ),
                   ),
                 ),
@@ -2711,6 +2739,8 @@ class _MedicineEditor extends State<MedicineEditor> {
                     ? 'Kita'
                     : selectedCategories.join('; '),
                 expiry: expiry.text.trim(),
+                prescriptionValidUntil: prescriptionValidUntil.text.trim(),
+                treatmentUntil: treatmentUntil.text.trim(),
                 stock: parsedStock,
                 lowStockThreshold: parsedThreshold,
                 prescription: prescription,
@@ -2759,6 +2789,8 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..registryVerified = (existing.registryVerified ||
                     _registryMedicine != null)
                 ..expiry = expiry.text.trim()
+                ..prescriptionValidUntil = prescriptionValidUntil.text.trim()
+                ..treatmentUntil = treatmentUntil.text.trim()
                 ..stock = parsedStock
                 ..lowStockThreshold = parsedThreshold
                 ..prescription = prescription
@@ -3406,6 +3438,19 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
     final appointments = widget.data.appointments.where((item) =>
         item.date == key && (memberId.isEmpty || item.memberId == memberId)).toList()
       ..sort((a, b) => a.time.compareTo(b.time));
+    final medicineDeadlines = <(Med, String, String)>[];
+    for (final medicine in widget.data.meds) {
+      if (memberId.isNotEmpty && medicine.memberIds.isNotEmpty &&
+          !medicine.memberIds.contains(memberId)) continue;
+      if (medicine.prescriptionValidUntil == key) {
+        medicineDeadlines.add((medicine, 'receptas',
+            tx(context, 'Baigiasi recepto galiojimas', 'Prescription expires')));
+      }
+      if (medicine.treatmentUntil == key) {
+        medicineDeadlines.add((medicine, 'gydymas',
+            tx(context, 'Vaisto turi užtekti iki šios dienos', 'Medicine should last until this day')));
+      }
+    }
     final days = List.generate(7, (index) {
       final now = DateTime.now();
       return DateTime(now.year, now.month, now.day + index - 2);
@@ -3478,8 +3523,33 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
         Text(DateFormat('yyyy-MM-dd').format(selectedDay),
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: navy)),
         const SizedBox(height: 8),
-        if (doses.isEmpty && appointments.isEmpty)
+        if (doses.isEmpty && appointments.isEmpty && medicineDeadlines.isEmpty)
           card(Text(tx(context, 'Šiai dienai įvykių nėra.', 'No events for this day.'))),
+        ...medicineDeadlines.map((entry) => Card(
+          color: const Color(0xfffff3df),
+          child: ListTile(
+            leading: const CircleAvatar(
+              backgroundColor: Colors.white,
+              child: Icon(Icons.event_busy_outlined, color: Color(0xffff9f1c)),
+            ),
+            title: Text('${entry.$1.name} ${entry.$1.strength}',
+                style: const TextStyle(fontWeight: FontWeight.w800)),
+            subtitle: Text('${entry.$3}\n${tx(context, 'Paspauskite suplanuoti vizitą pas gydytoją.', 'Tap to schedule a doctor appointment.')}'),
+            isThreeLine: true,
+            trailing: const Icon(Icons.add_circle_outline),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
+              AppointmentEditor(
+                data: widget.data,
+                initialDate: key,
+                initialMemberId: memberId.isNotEmpty
+                    ? memberId
+                    : entry.$1.memberIds.firstOrNull ?? '',
+                initialTitle: tx(context, 'Vizitas dėl recepto', 'Prescription appointment'),
+                initialReason: '${entry.$1.name} ${entry.$1.strength}: ${entry.$3}',
+                onChanged: widget.onChanged,
+              ))),
+          ),
+        )),
         ...appointments.map((item) => Card(child: ListTile(
           leading: const CircleAvatar(
             backgroundColor: mint,
@@ -3544,7 +3614,7 @@ String _memberName(AppData data, String id) => data.members
 class AppointmentEditor extends StatefulWidget {
   final AppData data;
   final HealthAppointment? appointment;
-  final String initialDate, initialMemberId;
+  final String initialDate, initialMemberId, initialTitle, initialReason;
   final VoidCallback onChanged;
   const AppointmentEditor({
     super.key,
@@ -3552,6 +3622,8 @@ class AppointmentEditor extends StatefulWidget {
     this.appointment,
     this.initialDate = '',
     this.initialMemberId = '',
+    this.initialTitle = '',
+    this.initialReason = '',
     required this.onChanged,
   });
   @override
@@ -3559,12 +3631,16 @@ class AppointmentEditor extends StatefulWidget {
 }
 
 class _AppointmentEditorState extends State<AppointmentEditor> {
-  late final titleC = TextEditingController(text: widget.appointment?.title ?? ''),
+  late final titleC = TextEditingController(
+        text: widget.appointment?.title ?? widget.initialTitle,
+      ),
       doctor = TextEditingController(text: widget.appointment?.doctor ?? ''),
       facility = TextEditingController(text: widget.appointment?.facility ?? ''),
       address = TextEditingController(text: widget.appointment?.address ?? ''),
       date = TextEditingController(text: widget.appointment?.date ?? widget.initialDate),
-      reason = TextEditingController(text: widget.appointment?.reason ?? ''),
+      reason = TextEditingController(
+        text: widget.appointment?.reason ?? widget.initialReason,
+      ),
       notes = TextEditingController(text: widget.appointment?.notes ?? '');
   late String time = widget.appointment?.time ?? '09:00';
   late String memberId = widget.appointment?.memberId ?? widget.initialMemberId;
@@ -3911,10 +3987,13 @@ class _ReminderEditor extends State<ReminderEditor> {
           ],
           onChanged: (v) {
             setState(() => medId = v!);
-            if (titleC.text.isEmpty && medId.isNotEmpty)
-              titleC.text = widget.data.meds
-                  .firstWhere((x) => x.id == medId)
-                  .name;
+            if (medId.isNotEmpty) {
+              final medicine = widget.data.meds.firstWhere((x) => x.id == medId);
+              if (titleC.text.isEmpty) titleC.text = medicine.name;
+              if (endDate.text.isEmpty && medicine.treatmentUntil.isNotEmpty) {
+                endDate.text = medicine.treatmentUntil;
+              }
+            }
           },
         ),
         const SizedBox(height: 12),
