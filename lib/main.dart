@@ -182,10 +182,15 @@ class LaunchScreen extends StatelessWidget {
                 const SizedBox(height: 2),
                 Expanded(
                   child: Transform.translate(
-                    offset: const Offset(0, 22),
-                    child: Image.asset(
-                      'assets/images/medibox_family_equal.png',
-                      fit: BoxFit.contain,
+                    offset: const Offset(0, 16),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: Image.asset(
+                        'assets/images/medibox_family_equal.webp',
+                        fit: BoxFit.contain,
+                        alignment: Alignment.bottomCenter,
+                        filterQuality: FilterQuality.high,
+                      ),
                     ),
                   ),
                 ),
@@ -399,7 +404,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
         const SizedBox(height: 10),
         Expanded(
           child: Image.asset(
-            'assets/images/medibox_family_equal.png',
+            'assets/images/medibox_family_equal.webp',
             fit: BoxFit.contain,
           ),
         ),
@@ -2038,7 +2043,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.7.0'),
+                const Text('MediBox v0.7.1'),
                 Text(
                   tx(
                     c,

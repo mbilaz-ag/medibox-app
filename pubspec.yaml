@@ -1,7 +1,7 @@
 name: medibox
 description: MediBox - išmani šeimos vaistinėlė
 publish_to: 'none'
-version: 0.7.0+11
+version: 0.7.1+12
 environment:
   sdk: '>=3.3.0 <4.0.0'
 dependencies:
@@ -25,5 +25,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/medibox_family.webp
-    - assets/images/medibox_family_equal.png
+    - assets/images/medibox_family_equal.webp
     - assets/images/medibox_home_background.webp
