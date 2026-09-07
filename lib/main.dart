@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -15,6 +16,34 @@ const green = Color(0xff079b7a),
 String tx(BuildContext c, String lt, String en) =>
     Localizations.localeOf(c).languageCode == 'en' ? en : lt;
 String newId() => DateTime.now().microsecondsSinceEpoch.toString();
+String dateKey([DateTime? value]) {
+  final d = value ?? DateTime.now();
+  return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+}
+
+class DateDashFormatter extends TextInputFormatter {
+  final bool monthOnly;
+  DateDashFormatter({this.monthOnly = false});
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final digits = newValue.text.replaceAll(RegExp(r'\D'), '');
+    final max = monthOnly ? 6 : 8;
+    final length = digits.length > max ? max : digits.length;
+    final value = digits.substring(0, length);
+    final out = StringBuffer();
+    for (var i = 0; i < value.length; i++) {
+      if (i == 4 || (!monthOnly && i == 6)) out.write('-');
+      out.write(value[i]);
+    }
+    return TextEditingValue(
+      text: out.toString(),
+      selection: TextSelection.collapsed(offset: out.length),
+    );
+  }
+}
 
 class App extends StatefulWidget {
   const App({super.key});
@@ -280,10 +309,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
                 ),
                 child: Row(
                   children: [
-                    CircleAvatar(
-                      backgroundColor: mint,
-                      child: Icon(o.$2, color: green),
-                    ),
+                    RoleAvatar(type: o.$1),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Text(
@@ -332,6 +358,44 @@ class Shell extends StatefulWidget {
   final VoidCallback onChanged;
   const Shell({super.key, required this.data, required this.onChanged});
   State<Shell> createState() => _Shell();
+}
+
+class RoleAvatar extends StatelessWidget {
+  final String type;
+  const RoleAvatar({super.key, required this.type});
+
+  @override
+  Widget build(BuildContext context) {
+    if (type == 'shared') {
+      return const CircleAvatar(
+        radius: 27,
+        backgroundColor: mint,
+        child: Icon(Icons.home_rounded, color: green, size: 30),
+      );
+    }
+    final alignment = switch (type) {
+      'child' => const Alignment(-0.15, 0.65),
+      'family' => Alignment.center,
+      _ => const Alignment(0.15, -0.55),
+    };
+    return Container(
+      width: 54,
+      height: 54,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: mint,
+        border: Border.all(color: const Color(0xffb9e5d9), width: 2),
+      ),
+      child: ClipOval(
+        child: Image.asset(
+          'assets/images/medibox_family.webp',
+          fit: BoxFit.cover,
+          alignment: alignment,
+          scale: type == 'family' ? 1 : 0.65,
+        ),
+      ),
+    );
+  }
 }
 
 class _Shell extends State<Shell> {
@@ -398,8 +462,15 @@ class HomePage extends StatelessWidget {
   const HomePage({super.key, required this.data, required this.onChanged});
   @override
   Widget build(c) {
-    final active = data.reminders.where((x) => x.enabled).toList()
-      ..sort((a, b) => a.time.compareTo(b.time));
+    final now = DateTime.now();
+    final today = dateKey(now);
+    final active =
+        data.reminders
+            .where((x) => x.enabled && x.weekdays.contains(now.weekday))
+            .toList()
+          ..sort((a, b) => a.time.compareTo(b.time));
+    final taken = active.where((x) => x.takenDates.contains(today)).length;
+    final remaining = active.length - taken;
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
@@ -451,10 +522,73 @@ class HomePage extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Row(
+                children: [
+                  SizedBox(
+                    width: 92,
+                    height: 92,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox.expand(
+                          child: CircularProgressIndicator(
+                            value: active.isEmpty ? 0 : taken / active.length,
+                            strokeWidth: 9,
+                            backgroundColor: const Color(0xffdbeee9),
+                            strokeCap: StrokeCap.round,
+                          ),
+                        ),
+                        Text(
+                          '$taken/${active.length}\n${tx(c, 'išgerta', 'taken')}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: navy,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 18),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          tx(c, 'Šiandienos planas', 'Today’s plan'),
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          active.isEmpty
+                              ? tx(
+                                  c,
+                                  'Šiandien vaistų nėra',
+                                  'No medicines today',
+                                )
+                              : tx(
+                                  c,
+                                  'Liko išgerti: $remaining',
+                                  '$remaining remaining',
+                                ),
+                          style: const TextStyle(
+                            color: green,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const Divider(height: 28),
               Text(
                 tx(c, 'Šiandienos priminimai', 'Today’s reminders'),
                 style: const TextStyle(
-                  fontSize: 20,
+                  fontSize: 17,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -477,6 +611,29 @@ class HomePage extends StatelessWidget {
                       leading: const Icon(Icons.schedule, color: green),
                       title: Text('${r.time} • ${r.title}'),
                       subtitle: Text(_who(data, r, tx(c, 'Aš', 'Me'))),
+                      trailing: IconButton(
+                        tooltip: r.takenDates.contains(today)
+                            ? tx(
+                                c,
+                                'Pažymėti kaip neišgertą',
+                                'Mark as not taken',
+                              )
+                            : tx(c, 'Pažymėti kaip išgertą', 'Mark as taken'),
+                        onPressed: () {
+                          if (r.takenDates.contains(today)) {
+                            r.takenDates.remove(today);
+                          } else {
+                            r.takenDates.add(today);
+                          }
+                          onChanged();
+                        },
+                        icon: Icon(
+                          r.takenDates.contains(today)
+                              ? Icons.check_circle
+                              : Icons.radio_button_unchecked,
+                          color: green,
+                        ),
+                      ),
                     ),
                   ),
             ],
@@ -710,6 +867,7 @@ class _MedicineEditor extends State<MedicineEditor> {
         text: MedicineMatcher.expiry(widget.sourceText) ?? '',
       ),
       stock = TextEditingController(text: '1');
+  late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
   @override
   void dispose() {
     for (final x in [name, sub, strength, expiry, stock]) x.dispose();
@@ -725,7 +883,42 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, name, 'Pavadinimas', 'Name'),
         field(c, sub, 'Veiklioji medžiaga', 'Active ingredient'),
         field(c, strength, 'Stiprumas', 'Strength'),
-        field(c, expiry, 'Galioja iki (YYYY-MM)', 'Expiry (YYYY-MM)'),
+        Text(
+          tx(c, 'Galiojimo datos tikslumas', 'Expiry date precision'),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: [
+            ButtonSegment(
+              value: 'month',
+              label: Text(tx(c, 'Metai ir mėnuo', 'Year and month')),
+            ),
+            ButtonSegment(
+              value: 'day',
+              label: Text(tx(c, 'Tiksli diena', 'Exact day')),
+            ),
+          ],
+          selected: {expiryMode},
+          onSelectionChanged: (v) {
+            setState(() {
+              expiryMode = v.first;
+              if (expiryMode == 'month' && expiry.text.length > 7) {
+                expiry.text = expiry.text.substring(0, 7);
+              }
+            });
+          },
+        ),
+        const SizedBox(height: 12),
+        dateField(
+          c,
+          expiry,
+          expiryMode == 'month'
+              ? 'Galioja iki YYYY-MM'
+              : 'Galioja iki YYYY-MM-DD',
+          expiryMode == 'month' ? 'Expires YYYY-MM' : 'Expires YYYY-MM-DD',
+          monthOnly: expiryMode == 'month',
+        ),
         field(c, stock, 'Kiekis', 'Quantity', number: true),
         if (widget.sourceText.isNotEmpty)
           ExpansionTile(
@@ -740,7 +933,21 @@ class _MedicineEditor extends State<MedicineEditor> {
         const SizedBox(height: 8),
         FilledButton(
           onPressed: () {
-            if (name.text.trim().isEmpty) return;
+            if (name.text.trim().isEmpty ||
+                !_validDate(expiry.text, monthOnly: expiryMode == 'month')) {
+              ScaffoldMessenger.of(c).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    tx(
+                      c,
+                      'Patikrink pavadinimą ir galiojimo datos formatą.',
+                      'Check the name and expiry date format.',
+                    ),
+                  ),
+                ),
+              );
+              return;
+            }
             widget.data.meds.add(
               Med(
                 id: newId(),
@@ -949,7 +1156,12 @@ class _MemberEditor extends State<MemberEditor> {
           onChanged: (v) => setState(() => relation = v!),
         ),
         const SizedBox(height: 12),
-        field(c, birth, 'Gimimo data', 'Date of birth'),
+        dateField(
+          c,
+          birth,
+          'Gimimo data YYYY-MM-DD',
+          'Date of birth YYYY-MM-DD',
+        ),
         field(c, allergies, 'Alergijos', 'Allergies', lines: 2),
         field(
           c,
@@ -1328,16 +1540,23 @@ class _ProfilePage extends State<ProfilePage> {
       body: ListView(
         padding: const EdgeInsets.all(18),
         children: [
-          ...List.generate(
-            ctrls.length,
-            (i) => field(
+          ...List.generate(ctrls.length, (i) {
+            if (i == 1) {
+              return dateField(
+                c,
+                ctrls[i],
+                'Gimimo data YYYY-MM-DD',
+                'Date of birth YYYY-MM-DD',
+              );
+            }
+            return field(
               c,
               ctrls[i],
               labels[i][0],
               labels[i][1],
               lines: i >= 5 ? 2 : 1,
-            ),
-          ),
+            );
+          }),
           FilledButton(
             onPressed: () {
               p.name = ctrls[0].text.trim();
@@ -1395,7 +1614,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.3.0'),
+                const Text('MediBox v0.5.0'),
                 Text(
                   tx(
                     c,
@@ -1439,6 +1658,41 @@ Widget field(
   ),
 );
 
+Widget dateField(
+  BuildContext c,
+  TextEditingController controller,
+  String lt,
+  String en, {
+  bool monthOnly = false,
+}) => Padding(
+  padding: const EdgeInsets.only(bottom: 12),
+  child: TextField(
+    controller: controller,
+    keyboardType: TextInputType.number,
+    inputFormatters: [DateDashFormatter(monthOnly: monthOnly)],
+    maxLength: monthOnly ? 7 : 10,
+    decoration: InputDecoration(
+      labelText: tx(c, lt, en),
+      hintText: monthOnly ? 'YYYY-MM' : 'YYYY-MM-DD',
+      counterText: '',
+      prefixIcon: const Icon(Icons.calendar_month_outlined),
+    ),
+  ),
+);
+
+bool _validDate(String value, {bool monthOnly = false}) {
+  final pattern = monthOnly
+      ? RegExp(r'^\d{4}-(0[1-9]|1[0-2])$')
+      : RegExp(r'^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$');
+  if (!pattern.hasMatch(value)) return false;
+  if (monthOnly) return true;
+  final parts = value.split('-').map(int.parse).toList();
+  final parsed = DateTime(parts[0], parts[1], parts[2]);
+  return parsed.year == parts[0] &&
+      parsed.month == parts[1] &&
+      parsed.day == parts[2];
+}
+
 class ScanPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -1474,6 +1728,17 @@ class _ScanPage extends State<ScanPage> {
     }
   }
 
+  Future<void> openCamera() async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            CameraCapturePage(data: widget.data, onChanged: widget.onChanged),
+      ),
+    );
+    if (result != null && mounted) setState(() => text = result);
+  }
+
   @override
   Widget build(c) => Scaffold(
     appBar: AppBar(title: Text(tx(c, 'Skenuoti', 'Scan'))),
@@ -1481,7 +1746,7 @@ class _ScanPage extends State<ScanPage> {
       padding: const EdgeInsets.all(18),
       children: [
         FilledButton.icon(
-          onPressed: busy ? null : () => ocr(ImageSource.camera),
+          onPressed: busy ? null : openCamera,
           icon: const Icon(Icons.camera_alt),
           label: Text(tx(c, 'Fotografuoti', 'Take photo')),
         ),
@@ -1541,6 +1806,202 @@ class _ScanPage extends State<ScanPage> {
       ],
     ),
   );
+}
+
+class CameraCapturePage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const CameraCapturePage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
+  State<CameraCapturePage> createState() => _CameraCapturePage();
+}
+
+class _CameraCapturePage extends State<CameraCapturePage> {
+  String mode = 'box';
+  bool busy = false;
+
+  Future<void> capture() async {
+    if (mode == 'barcode') {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              BarcodePage(data: widget.data, onChanged: widget.onChanged),
+        ),
+      );
+      return;
+    }
+    setState(() => busy = true);
+    TextRecognizer? recognizer;
+    try {
+      final file = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        imageQuality: 92,
+      );
+      if (file == null || !mounted) return;
+      recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final result = await recognizer.processImage(
+        InputImage.fromFilePath(file.path),
+      );
+      if (mounted) Navigator.pop(context, result.text);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              tx(context, 'Nepavyko nuskaityti.', 'Could not scan.'),
+            ),
+          ),
+        );
+      }
+    } finally {
+      await recognizer?.close();
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final modes = [
+      ('box', Icons.medication_outlined, 'Dėžutė', 'Box'),
+      ('receipt', Icons.receipt_long_outlined, 'Čekis', 'Receipt'),
+      ('barcode', Icons.qr_code_scanner, 'Brūkšninis kodas', 'Barcode'),
+      ('document', Icons.description_outlined, 'Dokumentas', 'Document'),
+    ];
+    return Scaffold(
+      backgroundColor: const Color(0xff17211f),
+      appBar: AppBar(
+        foregroundColor: Colors.white,
+        backgroundColor: Colors.transparent,
+        title: Text(tx(context, 'Fotografuoti', 'Take photo')),
+      ),
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 18),
+              child: Text(
+                mode == 'barcode'
+                    ? tx(
+                        context,
+                        'Sulygiuokite kodą rėmelyje',
+                        'Align the code in the frame',
+                      )
+                    : tx(
+                        context,
+                        'Sutalpinkite objektą į rėmelį',
+                        'Fit the object inside the frame',
+                      ),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 22),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(26),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xff53645e), Color(0xff25332f)],
+                  ),
+                  border: Border.all(color: Colors.white70, width: 2),
+                ),
+                child: Center(
+                  child: Icon(
+                    mode == 'barcode'
+                        ? Icons.qr_code_2_rounded
+                        : Icons.center_focus_strong,
+                    size: 115,
+                    color: Colors.white54,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            SizedBox(
+              height: 82,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                children: modes.map((item) {
+                  final selected = mode == item.$1;
+                  return InkWell(
+                    onTap: () => setState(() => mode = item.$1),
+                    child: SizedBox(
+                      width: 94,
+                      child: Column(
+                        children: [
+                          Icon(
+                            item.$2,
+                            color: selected
+                                ? const Color(0xff5ee2bf)
+                                : Colors.white70,
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            tx(context, item.$3, item.$4),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: selected
+                                  ? const Color(0xff5ee2bf)
+                                  : Colors.white70,
+                              fontSize: 12,
+                              fontWeight: selected
+                                  ? FontWeight.w800
+                                  : FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 18),
+              child: InkWell(
+                onTap: busy ? null : capture,
+                customBorder: const CircleBorder(),
+                child: Container(
+                  width: 70,
+                  height: 70,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: busy ? Colors.grey : Colors.white,
+                    border: Border.all(
+                      color: const Color(0xff5ee2bf),
+                      width: 5,
+                    ),
+                  ),
+                  child: busy
+                      ? const Padding(
+                          padding: EdgeInsets.all(18),
+                          child: CircularProgressIndicator(),
+                        )
+                      : Icon(
+                          mode == 'barcode'
+                              ? Icons.qr_code_scanner
+                              : Icons.camera_alt,
+                          color: navy,
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class BarcodePage extends StatefulWidget {
