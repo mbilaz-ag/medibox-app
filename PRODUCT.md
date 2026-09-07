@@ -7,7 +7,7 @@
 4. Čekio srautas: OCR tekstas paruoštas parseriui; prieš įrašymą vartotojas privalo patvirtinti rezultatą.
 5. „Man bloga“: simptomų kategorijos, red-flag saugumo vartai, tik turimų nereceptinių preparatų atitikmenys.
 6. Šeima: atskirų profilių UI.
-7. Priminimai: dienos grafiko UI; produkcinio Android pranešimų sluoksnio priklausomybės įtrauktos.
+7. Priminimai: dienos grafiko UI; pranešimų planavimas dar neįgyvendintas.
 8. Duomenys: local-first. Cloud/eSveikata neprivalomi programos veikimui.
 
 ## Oficialaus vaistų katalogo kontraktas

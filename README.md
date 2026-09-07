@@ -1,23 +1,15 @@
-# MediBox — Release Candidate
+# MediBox — Android ir iOS prototipas
 
-Local-first Android išmanios šeimos vaistinėlės projektas.
+Flutter šeimos vaistinėlė. Dabartinė versija dar nėra baigtas produktas.
 
-### Jau įgyvendinta
-- vaistinėlė ir išsaugojimas telefone;
-- rankinis vaisto pridėjimas;
-- likučio apskaita;
-- kamera / galerija + Google ML Kit OCR;
-- barcode/QR skenavimas;
-- galiojimo datos parserio branduolys;
-- čekio vaistų eilučių parserio branduolys;
-- vaisto kortelės;
-- simptomų vedlys ir red-flag saugumo vartai;
-- receptinių vaistų atmetimo logika simptomų rezultate;
-- šeimos ir priminimų UI;
-- testai ir GitHub Actions release APK.
+Veikia / įgyvendinta kode: vietinė vaistų saugykla, rankinis pridėjimas, likučio mažinimas, kameros / galerijos OCR ir kodų nuskaitymas. Native funkcijas būtina išbandyti telefone.
 
-### Prieš viešą leidimą
-VVKT duomenų importas ir oficialių lapelių susiejimas turi būti užbaigtas bei validuotas. Simptomų taisykles turi peržiūrėti medicinos specialistas. eSveikata nėra šio RC priklausomybė.
+Šeimos ir priminimų ekranai bei šiandienos dozės yra demonstraciniai. HealthKit, Health Connect, pranešimų planavimas, vartojimo istorija ir VVKT importas neįgyvendinti.
 
-### Build
-GitHub Actions workflow sukuria `app-release.apk` ir įkelia jį kaip artifact.
+## Kūrimas
+
+GitHub Actions turi Android APK ir atskirą iOS kompiliavimo workflow. Native projektai generuojami atskirai ir konfigūruojami `tool/prepare_platforms.py`, nekeičiant Dart programos ar testų.
+
+Android artifact: `MediBox-Android-APK`. iOS artifact: `MediBox-iOS-unsigned` — nepasirašyta programa, netinkama tiesiogiai diegti iPhone. TestFlight reikės Apple pasirašymo.
+
+Sėkmingas build dar nepatvirtintas. Pataisymų, atliktų patikrų ir prieigos kliūties informacija: [BUILD_STATUS.md](BUILD_STATUS.md).
