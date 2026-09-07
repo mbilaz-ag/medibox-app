@@ -158,6 +158,7 @@ class _App extends State<App> {
         filledButtonTheme: FilledButtonThemeData(
           style: FilledButton.styleFrom(
             backgroundColor: const Color(0xff078b71),
+            foregroundColor: Colors.white,
             minimumSize: const Size.fromHeight(54),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
@@ -1296,6 +1297,7 @@ class _FamilyAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final imagePath = member?.imagePath ?? '';
     final relation = member?.relation.toLowerCase() ?? '';
     final face = relation.contains('child') || relation.contains('vaik')
         ? '👦'
@@ -1311,7 +1313,17 @@ class _FamilyAvatar extends StatelessWidget {
         border: Border.all(color: Colors.white, width: 2),
       ),
       alignment: Alignment.center,
-      child: Text(face, style: const TextStyle(fontSize: 27)),
+      clipBehavior: Clip.antiAlias,
+      child: imagePath.isNotEmpty
+          ? Image.file(
+              File(imagePath),
+              width: 48,
+              height: 48,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) =>
+                  Text(face, style: const TextStyle(fontSize: 27)),
+            )
+          : Text(face, style: const TextStyle(fontSize: 27)),
     );
   }
 }
@@ -1413,11 +1425,13 @@ class CabinetPage extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
       children: [
       title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
-      const SizedBox(height: 10),
+      const SizedBox(height: 16),
       ...data.meds.map(
         (m) => Card(
           child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             leading: const CircleAvatar(
+              radius: 25,
               backgroundColor: mint,
               child: Icon(Icons.medication, color: green),
             ),
@@ -1439,7 +1453,8 @@ class CabinetPage extends StatelessWidget {
           ),
         ),
       ),
-      OutlinedButton.icon(
+      const SizedBox(height: 8),
+      FilledButton.icon(
         onPressed: () => Navigator.push(
           c,
           MaterialPageRoute(
@@ -2199,7 +2214,7 @@ class FamilyPage extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
       children: [
       title(tx(c, 'Mano šeima', 'My family')),
-      const SizedBox(height: 10),
+      const SizedBox(height: 16),
       if (data.members.isEmpty)
         card(
           Text(
@@ -2213,16 +2228,15 @@ class FamilyPage extends StatelessWidget {
       ...data.members.map(
         (m) => Card(
           child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: mint,
-              backgroundImage: m.imagePath.isNotEmpty
-                  ? FileImage(File(m.imagePath))
-                  : null,
-              child: m.imagePath.isEmpty
-                  ? const Icon(Icons.person, color: green)
-                  : null,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            leading: _FamilyAvatar(
+              member: m,
+              fallbackIndex: data.members.indexOf(m),
             ),
-            title: Text(m.name),
+            title: Text(
+              m.name,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
             subtitle: Text(relationName(c, m.relation)),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
@@ -2235,7 +2249,8 @@ class FamilyPage extends StatelessWidget {
           ),
         ),
       ),
-      FilledButton.tonalIcon(
+      const SizedBox(height: 8),
+      FilledButton.icon(
         onPressed: () => Navigator.push(
           c,
           MaterialPageRoute(
