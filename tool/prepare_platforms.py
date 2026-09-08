@@ -6,6 +6,7 @@ import plistlib
 import re
 import shutil
 import sys
+from android_signing import configure_android_signing
 
 root = Path(__file__).resolve().parents[1]
 generated = Path(sys.argv[1])
@@ -71,6 +72,7 @@ for folder, source_name in android_icons.items():
 gradle = root / 'android/app/build.gradle.kts'
 if gradle.exists():
     text = gradle.read_text().replace('minSdk = flutter.minSdkVersion', 'minSdk = 23')
+    text = configure_android_signing(text)
     if 'medibox-r8-rules' not in text:
         text += '''
 

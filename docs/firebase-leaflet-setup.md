@@ -30,8 +30,10 @@ Integrity requirements for the intended distribution channel: a sideloaded APK
 must not be assumed to pass Play Store licensing/recognition checks. Keep
 enforcement and configure only the attestation settings appropriate for the
 authorized distribution. A stable release signing key is required for a durable
-release configuration; the current generated Flutter release setup uses the
-debug signing configuration. Do not claim production attestation is complete.
+release configuration. Permanent signing is now prepared in
+`docs/android-release-signing.md`; the owner must configure the two Actions
+Secrets before building. Existing v0.17.5 used a debug certificate. Do not claim
+production attestation is complete.
 
 Documentation:
 - https://firebase.google.com/docs/ai-logic/get-started

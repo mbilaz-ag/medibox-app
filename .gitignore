@@ -12,3 +12,12 @@ macos/
 linux/
 windows/
 web/
+*.jks
+*.keystore
+*.p12
+*.pfx
+key.properties
+*signing-password*
+*keystore-base64*
+__pycache__/
+*.pyc
