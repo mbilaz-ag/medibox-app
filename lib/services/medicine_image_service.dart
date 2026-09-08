@@ -26,7 +26,7 @@ class MedicineImageService {
       if (response.statusCode != 200 || response.bodyBytes.length > 5000000) {
         return null;
       }
-      return _store(response.bodyBytes, identity);
+      return await _store(response.bodyBytes, identity);
     } catch (_) {
       return null;
     }
@@ -34,7 +34,7 @@ class MedicineImageService {
 
   static Future<String?> optimizeLocal(String path, String identity) async {
     try {
-      return _store(await File(path).readAsBytes(), identity);
+      return await _store(await File(path).readAsBytes(), identity);
     } catch (_) {
       return null;
     }
