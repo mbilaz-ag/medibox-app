@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html;
 import 'package:http/http.dart' as http;
 
@@ -9,7 +10,9 @@ class RetrievedMedicineLeaflet {
   final String text;
   final String url;
   final Map<String, String> sections;
-  const RetrievedMedicineLeaflet(this.text, this.url, this.sections);
+  final String imageUrl;
+  const RetrievedMedicineLeaflet(this.text, this.url, this.sections,
+      {this.imageUrl = ''});
 }
 
 /// Retrieves the published leaflet, not a search snippet or generated facts.
@@ -63,6 +66,20 @@ class MedicineLeafletLookup {
       .text!.replaceAll(RegExp(r'[ \t\u00a0]+'), ' ')
       .replaceAll(RegExp(r'\n\s*\n+'), '\n').trim();
 
+  static String _imageUrl(Document page, Uri pageUri) {
+    final candidates = <String>[
+      ...page.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"]')
+          .map((node) => node.attributes['content'] ?? ''),
+      ...page.querySelectorAll('.product-info img[src], .product-title img[src]')
+          .map((node) => node.attributes['src'] ?? ''),
+    ];
+    for (final value in candidates) {
+      final uri = pageUri.resolve(value.trim());
+      if (uri.scheme == 'https' && uri.host == 'vaistai.lt') return uri.toString();
+    }
+    return '';
+  }
+
   Future<RetrievedMedicineLeaflet> find(VvktMedicine medicine) async {
     if (medicine.name.trim().isEmpty || medicine.strength.trim().isEmpty ||
         medicine.dosageForm.trim().isEmpty) {
@@ -93,6 +110,7 @@ class MedicineLeafletLookup {
     for (final article in leaflet.querySelectorAll('article[data-nodeindex]')) {
       sections[article.attributes['data-nodeindex']!] = plainText(article.innerHtml);
     }
-    return RetrievedMedicineLeaflet(text, url, sections);
+    return RetrievedMedicineLeaflet(text, url, sections,
+        imageUrl: _imageUrl(page, Uri.parse(url)));
   }
 }

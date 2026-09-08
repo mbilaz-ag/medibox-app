@@ -8,6 +8,7 @@ import 'firebase_leaflet_service.dart';
 import 'vvkt_service.dart';
 import '../models/models.dart';
 import 'medicine_leaflet_lookup.dart';
+import 'medicine_image_service.dart';
 
 class MedicineAiProfile {
   final String purpose;
@@ -21,6 +22,7 @@ class MedicineAiProfile {
   final List<String> sourceUrls;
   final String searchHtml;
   final Map<String, Map<String, String>> localized;
+  final String imageUrl;
 
   const MedicineAiProfile({
     required this.purpose,
@@ -34,6 +36,7 @@ class MedicineAiProfile {
     required this.sourceUrls,
     required this.searchHtml,
     this.localized = const {},
+    this.imageUrl = '',
   });
 
   Map<String, String> get fields => {
@@ -73,6 +76,13 @@ class AiMedicineProfileService {
     medicine.aiSearchHtml = profile.searchHtml;
     medicine.aiUpdatedAt = DateTime.now().toUtc().toIso8601String();
     medicine.aiLocalized = profile.localized;
+    if (medicine.imagePath.isEmpty && profile.imageUrl.isNotEmpty) {
+      final image = await MedicineImageService.fetchAndStore(
+        imageUrl: profile.imageUrl,
+        identity: '${medicine.registrationNumber}-${medicine.name}-${medicine.strength}',
+      );
+      if (image != null) medicine.imagePath = image;
+    }
     return true;
   }
 
@@ -112,7 +122,8 @@ class AiMedicineProfileService {
         final record = jsonDecode(saved) as Map<String, dynamic>;
         final time = DateTime.parse(record['at'] as String);
         if (DateTime.now().difference(time).inDays < 30) {
-          return _fromBilingual(record['profile'] as Map<String, dynamic>, record['url'] as String);
+          return _fromBilingual(record['profile'] as Map<String, dynamic>, record['url'] as String,
+              imageUrl: '${record['imageUrl'] ?? ''}');
         }
       } catch (_) { /* Old or incomplete cache: retrieve fresh information. */ }
     }
@@ -169,14 +180,16 @@ Skausmas, Karščiavimas, Peršalimas, Virškinimas, Alergija, Oda, Kita.'''),
       'form': medicine.dosageForm, 'source': source.url, 'leaflet': leafletForSummary,
     }))]).timeout(const Duration(seconds: 40));
     final decoded = jsonDecode(response.text ?? '') as Map<String, dynamic>;
-    final profile = _fromBilingual(decoded, source.url);
+    final profile = _fromBilingual(decoded, source.url, imageUrl: source.imageUrl);
     await prefs.setString(key, jsonEncode({
       'at': DateTime.now().toUtc().toIso8601String(), 'profile': decoded, 'url': source.url,
+      'imageUrl': source.imageUrl,
     }));
     return profile;
   }
 
-  static MedicineAiProfile _fromBilingual(Map<String, dynamic> json, String url) {
+  static MedicineAiProfile _fromBilingual(Map<String, dynamic> json, String url,
+      {String imageUrl = ''}) {
     final translations = <String, Map<String, String>>{};
     for (final language in ['lt', 'en']) {
       final values = json[language];
@@ -195,7 +208,7 @@ Skausmas, Karščiavimas, Peršalimas, Virškinimas, Alergija, Oda, Kita.'''),
       sideEffects: lt['sideEffects']!, interactions: lt['interactions']!, storage: lt['storage']!,
       categories: (json['categories'] as List? ?? []).whereType<String>().toList(),
       sourceTitles: ['Vaistai.lt – ${Uri.parse(url).pathSegments.last}'],
-      sourceUrls: [url], searchHtml: '', localized: translations,
+      sourceUrls: [url], searchHtml: '', localized: translations, imageUrl: imageUrl,
     );
   }
 

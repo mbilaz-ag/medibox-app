@@ -26,6 +26,7 @@ import 'services/vvkt_service.dart';
 import 'services/ai_symptom_service.dart';
 import 'services/ai_medicine_profile_service.dart';
 import 'services/ai_medicine_advisor_service.dart';
+import 'services/medicine_image_service.dart';
 import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
@@ -875,6 +876,13 @@ class HomePage extends StatelessWidget {
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
     final remaining = active.length - taken;
+    final doseColors = active
+        .map((reminder) => _doseStatusColor(
+              reminder,
+              now,
+              reminder.takenDates.contains(today),
+            ))
+        .toList();
     final lowStockMeds = data.meds.where((medicine) {
       return (memberId.isEmpty ||
               medicine.memberIds.isEmpty ||
@@ -1035,13 +1043,8 @@ class HomePage extends StatelessWidget {
                             alignment: Alignment.center,
                             children: [
                               SizedBox.expand(
-                                child: CircularProgressIndicator(
-                                  value: active.isEmpty
-                                      ? 0
-                                      : taken / active.length,
-                                  strokeWidth: 12,
-                                  backgroundColor: const Color(0xffe1e8ec),
-                                  strokeCap: StrokeCap.round,
+                                child: CustomPaint(
+                                  painter: _DoseProgressPainter(doseColors),
                                 ),
                               ),
                               Text(
@@ -1344,6 +1347,39 @@ class HomePage extends StatelessWidget {
       ],
     );
   }
+}
+
+class _DoseProgressPainter extends CustomPainter {
+  final List<Color> colors;
+  const _DoseProgressPainter(this.colors);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.shortestSide - 12) / 2;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 12
+      ..strokeCap = StrokeCap.round
+      ..color = const Color(0xffe1e8ec);
+    canvas.drawCircle(center, radius, paint);
+    if (colors.isEmpty) return;
+    const full = 6.283185307179586;
+    final gap = colors.length == 1 ? 0.0 : 0.045;
+    final segment = full / colors.length;
+    var start = -1.5707963267948966;
+    for (final color in colors) {
+      paint.color = color;
+      canvas.drawArc(rect, start + gap / 2, segment - gap, false, paint);
+      start += segment;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DoseProgressPainter oldDelegate) =>
+      oldDelegate.colors.length != colors.length ||
+      oldDelegate.colors.join() != colors.join();
 }
 
 Color _doseStatusColor(Reminder reminder, DateTime now, bool isTaken) {
@@ -3645,7 +3681,20 @@ class _MedicineEditor extends State<MedicineEditor> {
           target.text = value.trim();
         }
       }
-      final values = profile.localized[Localizations.localeOf(context).languageCode] ?? profile.fields;
+      final values =
+          profile.localized[Localizations.localeOf(context).languageCode] ??
+              profile.fields;
+      final downloadedImage = imagePath.isEmpty && profile.imageUrl.isNotEmpty
+          ? await MedicineImageService.fetchAndStore(
+              imageUrl: profile.imageUrl,
+              identity:
+                  '${medicine.registrationNumber}-${medicine.name}-${medicine.strength}',
+            )
+          : null;
+      if (!mounted ||
+          _registryMedicine?.registrationNumber != medicine.registrationNumber) {
+        return;
+      }
       setState(() {
         fill(purpose, values['purpose'] ?? '');
         if (dosage.text.startsWith('Vartojimo būdas:') ||
@@ -3667,6 +3716,7 @@ class _MedicineEditor extends State<MedicineEditor> {
           leaflet.text = profile.sourceUrls.first;
         }
         _aiUpdatedAt = DateTime.now().toUtc().toIso8601String();
+        if (downloadedImage != null) imagePath = downloadedImage;
         _aiProfileMessage = tx(
           context,
           'Kortelės informacija užpildyta automatiškai. Patikrinkite ir išsaugokite.',
@@ -3756,7 +3806,11 @@ class _MedicineEditor extends State<MedicineEditor> {
     final id = widget.medicine?.id ?? newId();
     final saved = await File(picked.path)
         .copy('${directory.path}/medicine_$id.$extension');
-    if (mounted) setState(() => imagePath = saved.path);
+    final optimized = await MedicineImageService.optimizeLocal(
+      saved.path,
+      '${widget.medicine?.id ?? id}-${name.text}-${strength.text}',
+    );
+    if (mounted) setState(() => imagePath = optimized ?? saved.path);
   }
 
   Widget _categoryPicker(BuildContext c) {
