@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -17,14 +19,15 @@ void main() {
     final client = MockClient((request) async {
       if (request.url.path.startsWith('/paieska/')) {
         return http.Response('''<div class="card__title"><a href="/espumisan-240mg.html">Espumisan 240 mg minkštosios kapsulės</a></div>
-          <div class="card__title"><a href="/espumisan-40mg.html">Espumisan 40 mg minkštosios kapsulės N25</a></div>''', 200);
+          <div class="card__title"><a href="/espumisan-40mg.html">Espumisan 40 mg minkštosios kapsulės N25</a></div>''', 200,
+          encoding: utf8);
       }
       return http.Response('''<main id="modal-info-sheet-content">
         <p>Espumisan 40 mg minkštosios kapsulės</p>
         <article data-nodeindex="1"><p>Kas yra vaistas ir kam vartojamas. ${List.filled(90, 'a').join()}</p></article>
         <article data-nodeindex="2"><p>Įspėjimai. ${List.filled(90, 'b').join()}</p></article>
         <article data-nodeindex="3"><p>Kaip vartoti. ${List.filled(90, 'c').join()}</p></article>
-      </main>''', 200);
+      </main>''', 200, encoding: utf8);
     });
     final result = await MedicineLeafletLookup(client).find(medicine);
     expect(result.url, 'https://vaistai.lt/espumisan-40mg.html');
@@ -33,7 +36,8 @@ void main() {
 
   test('does not confuse 40 mg with 240 mg', () async {
     final client = MockClient((_) async => http.Response(
-      '<div class="card__title"><a href="/wrong">Espumisan 240 mg minkštosios kapsulės</a></div>', 200));
-    expect(() => MedicineLeafletLookup(client).find(medicine), throwsFormatException);
+      '<div class="card__title"><a href="/wrong">Espumisan 240 mg minkštosios kapsulės</a></div>', 200,
+      encoding: utf8));
+    await expectLater(MedicineLeafletLookup(client).find(medicine), throwsFormatException);
   });
 }
