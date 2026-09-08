@@ -518,6 +518,7 @@ class AppData {
   bool onboarded;
   bool privacyLock;
   bool aiConsentGranted;
+  bool aiConsentChoiceMade;
   AppData({
     required this.meds,
     required this.members,
@@ -529,6 +530,7 @@ class AppData {
     this.onboarded = false,
     this.privacyLock = false,
     this.aiConsentGranted = false,
+    this.aiConsentChoiceMade = false,
   }) : shopping = shopping ?? [],
        appointments = appointments ?? [];
 }

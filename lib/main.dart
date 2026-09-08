@@ -99,12 +99,46 @@ class _App extends State<App> {
   AppData? data;
   bool launchAccepted = false;
   bool authenticating = false;
+  final navigatorKey = GlobalKey<NavigatorState>();
+
+  Future<void> _finishOpening(AppData current) async {
+    if (!current.aiConsentChoiceMade && mounted) {
+      final granted = await showDialog<bool>(
+        context: navigatorKey.currentContext!,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Išmaniosios MediBox funkcijos'),
+          content: const Text(
+            'Ar sutinkate, kad „Firebase AI / Google Gemini“ apdorotų vaisto '
+            'pakuotės tekstą ir pasirinktus sveikatos duomenis: amžių, svorį, '
+            'alergijas, ligas, simptomus bei tinkamus vaistinėlės įrašus? '
+            'Vardas nesiunčiamas. Sutikimas išsaugomas ir daugiau nekartojamas. '
+            'Dozės rodomos tik pagal patvirtintas oficialias taisykles.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Naudoti be AI'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Sutinku ir tęsti'),
+            ),
+          ],
+        ),
+      );
+      current.aiConsentChoiceMade = true;
+      current.aiConsentGranted = granted == true;
+      await Store.save(current);
+    }
+    if (mounted) setState(() => launchAccepted = true);
+  }
 
   Future<void> _openApp() async {
     final current = data;
     if (current == null || authenticating) return;
     if (!current.privacyLock) {
-      setState(() => launchAccepted = true);
+      await _finishOpening(current);
       return;
     }
     setState(() => authenticating = true);
@@ -116,7 +150,7 @@ class _App extends State<App> {
           stickyAuth: true,
         ),
       );
-      if (mounted && accepted) setState(() => launchAccepted = true);
+      if (mounted && accepted) await _finishOpening(current);
     } catch (_) {
       // The app remains locked if the device cannot authenticate.
     } finally {
@@ -174,6 +208,7 @@ class _App extends State<App> {
     final d = data;
     if (d == null || !launchAccepted) {
       return MaterialApp(
+        navigatorKey: navigatorKey,
         debugShowCheckedModeBanner: false,
         locale: d != null && d.language != 'system' ? Locale(d.language) : null,
         supportedLocales: const [Locale('lt'), Locale('en')],
@@ -187,6 +222,7 @@ class _App extends State<App> {
     Locale? locale;
     if (d.language != 'system') locale = Locale(d.language);
     return MaterialApp(
+      navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
       title: 'MediBox',
       builder: (context, child) => MediaQuery.withClampedTextScaling(
@@ -3695,28 +3731,6 @@ class _MedicineEditor extends State<MedicineEditor> {
           'Dosage form',
         ),
         field(c, packageSize, 'Pakuotės dydis', 'Package size'),
-        if (FirebaseLeafletService.supported && !widget.data.aiConsentGranted)
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            value: false,
-            onChanged: (value) {
-              if (value != true) return;
-              widget.data.aiConsentGranted = true;
-              widget.onChanged();
-              setState(() {});
-              final selected = _registryMedicine;
-              if (selected != null) _autoFillProfile(selected);
-            },
-            title: Text(
-              tx(
-                c,
-                'Sutinku vieną kartą įjungti „Firebase AI / Gemini“ automatiniam '
-                    'vaistų kortelių ir savijautos duomenų apdorojimui. Sutikimas bus įsimintas.',
-                'Enable Firebase AI / Gemini once for automatic medicine-card and '
-                    'symptom processing. This consent will be remembered.',
-              ),
-            ),
-          ),
         if (_aiProfileBusy) const LinearProgressIndicator(),
         if (_aiProfileMessage.isNotEmpty)
           Padding(
@@ -6537,6 +6551,29 @@ class _ProfilePage extends State<ProfilePage> {
             child: SwitchListTile(
               secondary: const CircleAvatar(
                 backgroundColor: mint,
+                child: Icon(Icons.auto_awesome_rounded, color: green),
+              ),
+              value: widget.data.aiConsentGranted,
+              title: Text(
+                tx(c, 'Firebase AI / Gemini', 'Firebase AI / Gemini'),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(tx(c,
+                'Vienas bendras leidimas vaistų kortelėms ir „Man bloga“ analizei',
+                'One permission for medicine cards and symptom analysis')),
+              onChanged: (value) {
+                setState(() {
+                  widget.data.aiConsentGranted = value;
+                  widget.data.aiConsentChoiceMade = true;
+                });
+                widget.onChanged();
+              },
+            ),
+          ),
+          Card(
+            child: SwitchListTile(
+              secondary: const CircleAvatar(
+                backgroundColor: mint,
                 child: Icon(Icons.fingerprint, color: green),
               ),
               value: widget.data.privacyLock,
@@ -7562,6 +7599,7 @@ class _SymptomsPageState extends State<SymptomsPage> {
           memberId: memberId,
           category: category,
           initialDetails: details,
+          directTextAnalysis: details.isNotEmpty,
           onChanged: widget.onChanged,
         ),
       ),
@@ -7574,6 +7612,7 @@ class SymptomWizardPage extends StatefulWidget {
   final String memberId;
   final String category;
   final String initialDetails;
+  final bool directTextAnalysis;
   final VoidCallback onChanged;
   const SymptomWizardPage({
     super.key,
@@ -7581,6 +7620,7 @@ class SymptomWizardPage extends StatefulWidget {
     required this.memberId,
     required this.category,
     this.initialDetails = '',
+    this.directTextAnalysis = false,
     required this.onChanged,
   });
   @override
@@ -7612,6 +7652,24 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   void initState() {
     super.initState();
     aiConsent = widget.data.aiConsentGranted;
+    if (widget.directTextAnalysis) {
+      step = 2;
+      duration = 'nenurodyta';
+      selectedSymptoms.add('Laisvas simptomų aprašymas');
+      final details = widget.initialDetails.toLowerCase();
+      breathingProblem = details.contains('sunku kvėpuoti') ||
+          details.contains('dusul') || details.contains('nekvėpu');
+      blood = details.contains('krauj');
+      faintingOrConfusion = details.contains('alp') ||
+          details.contains('sumiš') || details.contains('sąmon');
+      swelling = (details.contains('veid') || details.contains('lūp')) &&
+          (details.contains('tin') || details.contains('patin'));
+      cannotDrink = details.contains('negaliu gerti') ||
+          details.contains('neišlaikau skys');
+      neurologicDeficit = details.contains('sunku kalbėti') ||
+          details.contains('paraly') || details.contains('nevaldau');
+      aiAssessment = aiConsent ? _requestAiAssessment() : null;
+    }
   }
 
   List<String> get locations => switch (widget.category) {
@@ -7917,33 +7975,6 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       const SizedBox(height: 14),
       ..._categoryQuestions(c),
       const SizedBox(height: 14),
-      if (AiSymptomService.isConfigured && !widget.data.aiConsentGranted)
-        CheckboxListTile(
-          key: const ValueKey('symptom-ai-consent'),
-          contentPadding: EdgeInsets.zero,
-          value: aiConsent,
-          onChanged: (value) {
-            final granted = value == true;
-            setState(() => aiConsent = granted);
-            if (granted) {
-              widget.data.aiConsentGranted = true;
-              widget.onChanged();
-            }
-          },
-          title: Text(
-            tx(
-              c,
-              'Sutinku per „Firebase AI / Google Gemini“ analizuoti amžių, svorį, '
-                  'alergijas, ligas, simptomus ir tinkamus vaistinėlės įrašus. Vardas '
-                  'nesiunčiamas. Dozė rodoma tik iš patvirtintos oficialios '
-                  'taisyklės. Šis sutikimas bus įsimintas.',
-              'I agree to send age, weight, allergies, conditions, symptoms and '
-                  'eligible cabinet entries to Firebase AI / Google Gemini. The name '
-                  'is not sent. Doses come only from verified official rules. '
-                  'This consent is remembered.',
-            ),
-          ),
-        ),
       FilledButton(
         onPressed: duration.isEmpty
             ? null

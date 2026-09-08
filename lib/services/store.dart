@@ -15,6 +15,7 @@ class Store {
       _onboarded = 'medibox_onboarded_v1';
   static const _privacyLock = 'medibox_privacy_lock_v1';
   static const _aiConsent = 'medibox_ai_consent_v1';
+  static const _aiConsentChoice = 'medibox_ai_consent_choice_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
     List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
@@ -55,6 +56,7 @@ class Store {
       onboarded: p.getBool(_onboarded) ?? false,
       privacyLock: p.getBool(_privacyLock) ?? false,
       aiConsentGranted: p.getBool(_aiConsent) ?? false,
+      aiConsentChoiceMade: p.getBool(_aiConsentChoice) ?? false,
     );
   }
 
@@ -83,6 +85,7 @@ class Store {
       p.setBool(_onboarded, d.onboarded),
       p.setBool(_privacyLock, d.privacyLock),
       p.setBool(_aiConsent, d.aiConsentGranted),
+      p.setBool(_aiConsentChoice, d.aiConsentChoiceMade),
     ]);
   }
 
