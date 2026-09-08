@@ -21,7 +21,7 @@ void main() {
         return http.Response.bytes(utf8.encode('''<div class="card__title"><a href="/espumisan-240mg.html">Espumisan 240 mg minkštosios kapsulės</a></div>
           <div class="card__title"><a href="/espumisan-40mg.html">Espumisan 40 mg minkštosios kapsulės N25</a></div>'''), 200);
       }
-      return http.Response('''<main id="modal-info-sheet-content">
+      return http.Response.bytes(utf8.encode('''<main id="modal-info-sheet-content">
         <p>Espumisan 40 mg minkštosios kapsulės</p>
         <article data-nodeindex="1"><p>Kas yra vaistas ir kam vartojamas. ${List.filled(90, 'a').join()}</p></article>
         <article data-nodeindex="2"><p>Įspėjimai. ${List.filled(90, 'b').join()}</p></article>
