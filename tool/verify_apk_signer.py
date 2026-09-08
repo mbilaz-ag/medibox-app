@@ -7,9 +7,14 @@ import sys
 
 
 def verify_output(output, expected):
-    digests = re.findall(r'Signer #\d+ certificate SHA-256 digest:\s*([0-9a-fA-F]+)', output)
+    matches = re.findall(
+        r'certificate\s+SHA[- ]?256\s+digest:\s*([0-9a-fA-F:\s]+)',
+        output,
+        flags=re.IGNORECASE,
+    )
+    digests = [re.sub(r'[^0-9a-fA-F]', '', value).upper() for value in matches]
     if not digests or any(d.upper() != expected for d in digests):
-        observed = ', '.join(d.upper() for d in digests) or 'none'
+        observed = ', '.join(digests) or 'none'
         raise ValueError(
             'APK signer differs from the pinned MediBox certificate; '
             f'observed SHA-256: {observed}'
@@ -22,5 +27,6 @@ if __name__ == '__main__':
                             capture_output=True, text=True)
     if result.returncode:
         raise SystemExit('APK signature verification failed')
-    verify_output(result.stdout, policy['certificate_sha256'])
+    verify_output(result.stdout + '\n' + result.stderr,
+                  policy['certificate_sha256'])
     print('APK signature matches the permanent MediBox certificate.')
