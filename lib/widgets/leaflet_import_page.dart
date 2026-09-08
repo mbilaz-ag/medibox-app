@@ -19,10 +19,12 @@ class LeafletImportPage extends StatefulWidget {
   final LeafletIdentity identity;
   final String initialUrl;
   final LeafletGenerator generate;
+  final bool initialConsent;
   const LeafletImportPage({
     super.key,
     required this.identity,
     this.initialUrl = '',
+    this.initialConsent = false,
     this.generate = FirebaseLeafletService.generate,
   });
 
@@ -33,10 +35,17 @@ class LeafletImportPage extends StatefulWidget {
 class _LeafletImportPageState extends State<LeafletImportPage> {
   late final url = TextEditingController(text: widget.initialUrl);
   final text = TextEditingController();
-  bool consent = false, busy = false, reviewed = false;
+  late bool consent;
+  bool busy = false, reviewed = false;
   String? error;
   LeafletDraft? draft;
   final selected = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    consent = widget.initialConsent;
+  }
 
   @override
   void dispose() {
@@ -171,25 +180,26 @@ class _LeafletImportPageState extends State<LeafletImportPage> {
                   alignLabelWithHint: true,
                 ),
               ),
-              CheckboxListTile(
-                key: const ValueKey('leaflet-consent'),
-                contentPadding: EdgeInsets.zero,
-                value: consent,
-                onChanged: busy
-                    ? null
-                    : (v) => setState(() => consent = v == true),
-                title: Text(
-                  _t(
-                    context,
-                    'Patikrinau vaisto pavadinimą, stiprumą ir formą. Sutinku siųsti '
-                        'įklijuotą tekstą ir šiuos vaisto duomenis „Google Gemini“ analizei. '
-                        'Tekste nėra asmens ar sveikatos duomenų.',
-                    'I checked the medicine name, strength and form. I agree to send '
-                        'the pasted text and these medicine details to Google Gemini. '
-                        'The text contains no personal or health records.',
+              if (!widget.initialConsent)
+                CheckboxListTile(
+                  key: const ValueKey('leaflet-consent'),
+                  contentPadding: EdgeInsets.zero,
+                  value: consent,
+                  onChanged: busy
+                      ? null
+                      : (v) => setState(() => consent = v == true),
+                  title: Text(
+                    _t(
+                      context,
+                      'Patikrinau vaisto pavadinimą, stiprumą ir formą. Sutinku siųsti '
+                          'įklijuotą tekstą ir šiuos vaisto duomenis „Google Gemini“ analizei. '
+                          'Tekste nėra asmens ar sveikatos duomenų.',
+                      'I checked the medicine name, strength and form. I agree to send '
+                          'the pasted text and these medicine details to Google Gemini. '
+                          'The text contains no personal or health records.',
+                    ),
                   ),
                 ),
-              ),
               Text(
                 _t(
                   context,

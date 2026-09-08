@@ -199,8 +199,10 @@ class Med {
     registryVerified: j['registryVerified'] == true,
     leafletRecord: LeafletRecord.tryRead(j['leafletRecord']),
     batches: (j['batches'] as List?)
-        ?.map((item) => MedicineStockBatch.fromJson(
-            Map<String, dynamic>.from(item)))
+        ?.map(
+          (item) =>
+              MedicineStockBatch.fromJson(Map<String, dynamic>.from(item)),
+        )
         .toList(),
   );
 }
@@ -269,7 +271,8 @@ class Member {
     name: '${j['name']}',
     relation: '${j['relation']}',
     gender: '${j['gender'] ?? _legacyGender('${j['relation']}')}',
-    ageGroup: '${j['ageGroup'] ?? ('${j['relation']}' == 'child' ? 'child' : 'adult')}',
+    ageGroup:
+        '${j['ageGroup'] ?? ('${j['relation']}' == 'child' ? 'child' : 'adult')}',
     birthDate: '${j['birthDate'] ?? ''}',
     imagePath: '${j['imagePath'] ?? ''}',
     bloodType: '${j['bloodType'] ?? ''}',
@@ -455,15 +458,7 @@ class ShoppingItem {
 
 class HealthAppointment {
   final String id;
-  String memberId,
-      title,
-      doctor,
-      facility,
-      address,
-      date,
-      time,
-      reason,
-      notes;
+  String memberId, title, doctor, facility, address, date, time, reason, notes;
   int remindBeforeMinutes;
   bool completed;
   HealthAppointment({
@@ -522,6 +517,7 @@ class AppData {
   String language;
   bool onboarded;
   bool privacyLock;
+  bool aiConsentGranted;
   AppData({
     required this.meds,
     required this.members,
@@ -532,6 +528,7 @@ class AppData {
     this.language = 'system',
     this.onboarded = false,
     this.privacyLock = false,
+    this.aiConsentGranted = false,
   }) : shopping = shopping ?? [],
        appointments = appointments ?? [];
 }

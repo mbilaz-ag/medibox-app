@@ -14,6 +14,7 @@ class Store {
       _language = 'medibox_language_v1',
       _onboarded = 'medibox_onboarded_v1';
   static const _privacyLock = 'medibox_privacy_lock_v1';
+  static const _aiConsent = 'medibox_ai_consent_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
     List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
@@ -53,6 +54,7 @@ class Store {
       language: p.getString(_language) ?? 'system',
       onboarded: p.getBool(_onboarded) ?? false,
       privacyLock: p.getBool(_privacyLock) ?? false,
+      aiConsentGranted: p.getBool(_aiConsent) ?? false,
     );
   }
 
@@ -80,6 +82,7 @@ class Store {
       p.setString(_language, d.language),
       p.setBool(_onboarded, d.onboarded),
       p.setBool(_privacyLock, d.privacyLock),
+      p.setBool(_aiConsent, d.aiConsentGranted),
     ]);
   }
 

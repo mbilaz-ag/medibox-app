@@ -22,6 +22,7 @@ import 'services/expiry_status.dart';
 import 'services/store.dart';
 import 'services/vvkt_service.dart';
 import 'services/ai_symptom_service.dart';
+import 'services/ai_medicine_profile_service.dart';
 import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
@@ -33,6 +34,7 @@ Future<void> main() async {
   await ReminderNotifications.initialize();
   runApp(const App());
 }
+
 const green = Color(0xff079b7a),
     navy = Color(0xff102a43),
     mint = Color(0xffe9f8f4);
@@ -43,6 +45,7 @@ String dateKey([DateTime? value]) {
   final d = value ?? DateTime.now();
   return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 }
+
 String quantityLabel(num value) => value == value.roundToDouble()
     ? value.toInt().toString()
     : value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '');
@@ -52,7 +55,9 @@ bool reminderMatchesMember(AppData data, Reminder reminder, String memberId) {
   if (reminder.memberId == memberId) return true;
   if (reminder.memberId.isNotEmpty) return false;
 
-  final medicine = data.meds.where((item) => item.id == reminder.medId).firstOrNull;
+  final medicine = data.meds
+      .where((item) => item.id == reminder.medId)
+      .firstOrNull;
   if (medicine != null && medicine.memberIds.contains(memberId)) return true;
 
   final member = data.members.where((item) => item.id == memberId).firstOrNull;
@@ -118,6 +123,7 @@ class _App extends State<App> {
       if (mounted) setState(() => authenticating = false);
     }
   }
+
   @override
   void initState() {
     super.initState();
@@ -174,9 +180,7 @@ class _App extends State<App> {
         localizationsDelegates: GlobalMaterialLocalizations.delegates,
         home: LaunchScreen(
           ready: d != null,
-          onStart: d == null
-              ? null
-              : _openApp,
+          onStart: d == null ? null : _openApp,
         ),
       );
     }
@@ -816,32 +820,45 @@ class HomePage extends StatelessWidget {
     final today = dateKey(now);
     final active =
         data.reminders
-            .where((x) => reminderAppliesOn(x, now) &&
-                reminderMatchesMember(data, x, memberId))
+            .where(
+              (x) =>
+                  reminderAppliesOn(x, now) &&
+                  reminderMatchesMember(data, x, memberId),
+            )
             .toList()
           ..sort((a, b) => a.time.compareTo(b.time));
     final taken = active.where((x) => x.takenDates.contains(today)).length;
     final remaining = active.length - taken;
     final lowStockMeds = data.meds.where((medicine) {
-      return (memberId.isEmpty || medicine.memberIds.isEmpty ||
+      return (memberId.isEmpty ||
+              medicine.memberIds.isEmpty ||
               medicine.memberIds.contains(memberId)) &&
           medicine.stock < medicine.lowStockThreshold;
     }).toList();
-    final expiringMeds = data.meds
-        .where((x) =>
-            (memberId.isEmpty || x.memberIds.isEmpty || x.memberIds.contains(memberId)) &&
-            medicineNeedsExpiryAttention(x.expiry, now))
-        .toList()
-      ..sort((a, b) =>
-          (daysUntilMedicineExpiry(a.expiry, now) ?? 999999).compareTo(
-            daysUntilMedicineExpiry(b.expiry, now) ?? 999999,
-          ));
-    final upcomingAppointments = data.appointments.where((item) {
-      final at = DateTime.tryParse('${item.date}T${item.time}');
-      return !item.completed && at != null && !at.isBefore(now) &&
-          (memberId.isEmpty || item.memberId == memberId);
-    }).toList()
-      ..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
+    final expiringMeds =
+        data.meds
+            .where(
+              (x) =>
+                  (memberId.isEmpty ||
+                      x.memberIds.isEmpty ||
+                      x.memberIds.contains(memberId)) &&
+                  medicineNeedsExpiryAttention(x.expiry, now),
+            )
+            .toList()
+          ..sort(
+            (a, b) => (daysUntilMedicineExpiry(a.expiry, now) ?? 999999)
+                .compareTo(daysUntilMedicineExpiry(b.expiry, now) ?? 999999),
+          );
+    final upcomingAppointments =
+        data.appointments.where((item) {
+          final at = DateTime.tryParse('${item.date}T${item.time}');
+          return !item.completed &&
+              at != null &&
+              !at.isBefore(now) &&
+              (memberId.isEmpty || item.memberId == memberId);
+        }).toList()..sort(
+          (a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'),
+        );
     final nextAppointment = upcomingAppointments.firstOrNull;
 
     return Stack(
@@ -861,173 +878,184 @@ class HomePage extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 22),
           children: [
             Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      data.profile.name.isEmpty
-                          ? tx(c, 'Labas! 👋', 'Hello! 👋')
-                          : tx(
-                              c,
-                              'Labas, ${data.profile.name}! 👋',
-                              'Hello, ${data.profile.name}! 👋',
-                            ),
-                      maxLines: 1,
-                      style: const TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w800,
-                        color: navy,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    _todayLabel(c, now),
-                    style: const TextStyle(color: Color(0xff48606f)),
-                  ),
-                ],
-              ),
-            ),
-            Badge(
-              isLabelVisible: remaining > 0,
-              label: Text('$remaining'),
-              child: IconButton(
-                tooltip: tx(c, 'Priminimai', 'Reminders'),
-                onPressed: () => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        ReminderRoutePage(data: data, onChanged: onChanged),
-                  ),
-                ),
-                icon: const Icon(Icons.notifications_outlined, size: 28),
-              ),
-            ),
-            IconButton(
-              tooltip: tx(c, 'Mano profilis', 'My profile'),
-              onPressed: () => Navigator.push(
-                c,
-                MaterialPageRoute(
-                  builder: (_) => ProfilePage(data: data, onChanged: onChanged),
-                ),
-              ),
-              icon: const Icon(Icons.account_circle_outlined, size: 30),
-            ),
-          ],
-        ),
-            const SizedBox(height: 14),
-            if (data.members.isNotEmpty) ...[
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(children: [
-                  ChoiceChip(
-                    label: Text(tx(c, 'Visa šeima', 'Whole family')),
-                    selected: memberId.isEmpty,
-                    onSelected: (_) => onMemberChanged(''),
-                  ),
-                  const SizedBox(width: 7),
-                  ...data.members.map((member) => Padding(
-                    padding: const EdgeInsets.only(right: 7),
-                    child: ChoiceChip(
-                      avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
-                      label: Text(member.name),
-                      selected: memberId == member.id,
-                      onSelected: (_) => onMemberChanged(member.id),
-                    ),
-                  )),
-                ]),
-              ),
-              const SizedBox(height: 10),
-            ],
-            Card(
-          color: Colors.white.withValues(alpha: .94),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(22),
-            side: const BorderSide(color: Color(0xffe5efec)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
-            child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  SizedBox(
-                    width: 112,
-                    height: 112,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        SizedBox.expand(
-                          child: CircularProgressIndicator(
-                            value: active.isEmpty ? 0 : taken / active.length,
-                            strokeWidth: 12,
-                            backgroundColor: const Color(0xffe1e8ec),
-                            strokeCap: StrokeCap.round,
-                          ),
-                        ),
-                        Text(
-                          '$taken/${active.length}\n${tx(c, 'vaistai\nišgerti', 'medicines\ntaken')}',
-                          textAlign: TextAlign.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          data.profile.name.isEmpty
+                              ? tx(c, 'Labas! 👋', 'Hello! 👋')
+                              : tx(
+                                  c,
+                                  'Labas, ${data.profile.name}! 👋',
+                                  'Hello, ${data.profile.name}! 👋',
+                                ),
+                          maxLines: 1,
                           style: const TextStyle(
-                            fontSize: 16,
-                            height: 1.05,
+                            fontSize: 26,
                             fontWeight: FontWeight.w800,
                             color: navy,
                           ),
                         ),
-                      ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _todayLabel(c, now),
+                        style: const TextStyle(color: Color(0xff48606f)),
+                      ),
+                    ],
+                  ),
+                ),
+                Badge(
+                  isLabelVisible: remaining > 0,
+                  label: Text('$remaining'),
+                  child: IconButton(
+                    tooltip: tx(c, 'Priminimai', 'Reminders'),
+                    onPressed: () => Navigator.push(
+                      c,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            ReminderRoutePage(data: data, onChanged: onChanged),
+                      ),
+                    ),
+                    icon: const Icon(Icons.notifications_outlined, size: 28),
+                  ),
+                ),
+                IconButton(
+                  tooltip: tx(c, 'Mano profilis', 'My profile'),
+                  onPressed: () => Navigator.push(
+                    c,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          ProfilePage(data: data, onChanged: onChanged),
                     ),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                  icon: const Icon(Icons.account_circle_outlined, size: 30),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            if (data.members.isNotEmpty) ...[
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    ChoiceChip(
+                      label: Text(tx(c, 'Visa šeima', 'Whole family')),
+                      selected: memberId.isEmpty,
+                      onSelected: (_) => onMemberChanged(''),
+                    ),
+                    const SizedBox(width: 7),
+                    ...data.members.map(
+                      (member) => Padding(
+                        padding: const EdgeInsets.only(right: 7),
+                        child: ChoiceChip(
+                          avatar: Text(
+                            _memberEmoji(member.gender, member.ageGroup),
+                          ),
+                          label: Text(member.name),
+                          selected: memberId == member.id,
+                          onSelected: (_) => onMemberChanged(member.id),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            Card(
+              color: Colors.white.withValues(alpha: .94),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(22),
+                side: const BorderSide(color: Color(0xffe5efec)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        FilledButton(
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size.fromHeight(54),
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                          ),
-                          onPressed: () => Navigator.push(
-                            c,
-                            MaterialPageRoute(
-                              builder: (_) => ReminderRoutePage(
-                                data: data,
-                                onChanged: onChanged,
-                              ),
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                        SizedBox(
+                          width: 112,
+                          height: 112,
+                          child: Stack(
+                            alignment: Alignment.center,
                             children: [
-                              Text(
-                                tx(c, 'Rodyti visus', 'Show all'),
-                                style: const TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w800,
+                              SizedBox.expand(
+                                child: CircularProgressIndicator(
+                                  value: active.isEmpty
+                                      ? 0
+                                      : taken / active.length,
+                                  strokeWidth: 12,
+                                  backgroundColor: const Color(0xffe1e8ec),
+                                  strokeCap: StrokeCap.round,
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              const Icon(Icons.chevron_right_rounded),
+                              Text(
+                                '$taken/${active.length}\n${tx(c, 'vaistai\nišgerti', 'medicines\ntaken')}',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  height: 1.05,
+                                  fontWeight: FontWeight.w800,
+                                  color: navy,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              FilledButton(
+                                style: FilledButton.styleFrom(
+                                  minimumSize: const Size.fromHeight(54),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                  ),
+                                ),
+                                onPressed: () => Navigator.push(
+                                  c,
+                                  MaterialPageRoute(
+                                    builder: (_) => ReminderRoutePage(
+                                      data: data,
+                                      onChanged: onChanged,
+                                    ),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      tx(c, 'Rodyti visus', 'Show all'),
+                                      style: const TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Icon(Icons.chevron_right_rounded),
+                                  ],
+                                ),
+                              ),
                             ],
                           ),
                         ),
                       ],
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ],
             ),
-          ),
-        ),
             const SizedBox(height: 10),
             Card(
               color: Colors.white.withValues(alpha: .96),
@@ -1036,7 +1064,10 @@ class HomePage extends StatelessWidget {
                 side: const BorderSide(color: Color(0xffe5efec)),
               ),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 6,
+                ),
                 child: Column(
                   children: [
                     if (active.isEmpty)
@@ -1091,8 +1122,16 @@ class HomePage extends StatelessWidget {
                             ),
                             trailing: IconButton(
                               tooltip: isTaken
-                                  ? tx(c, 'Pažymėti kaip neišgertą', 'Mark as not taken')
-                                  : tx(c, 'Pažymėti kaip išgertą', 'Mark as taken'),
+                                  ? tx(
+                                      c,
+                                      'Pažymėti kaip neišgertą',
+                                      'Mark as not taken',
+                                    )
+                                  : tx(
+                                      c,
+                                      'Pažymėti kaip išgertą',
+                                      'Mark as taken',
+                                    ),
                               onPressed: () {
                                 if (isTaken) {
                                   undoDoseTaken(data, r, now);
@@ -1132,122 +1171,125 @@ class HomePage extends StatelessWidget {
                   ),
                   title: Text(
                     tx(c, 'Artimiausias vizitas', 'Next appointment'),
-                    style: const TextStyle(fontWeight: FontWeight.w800, color: navy),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: navy,
+                    ),
                   ),
                   subtitle: Text(
                     '${nextAppointment.date} ${nextAppointment.time} • ${nextAppointment.title}',
                   ),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                    AppointmentEditor(
-                      data: data,
-                      appointment: nextAppointment,
-                      onChanged: onChanged,
-                    ))),
+                  onTap: () => Navigator.push(
+                    c,
+                    MaterialPageRoute(
+                      builder: (_) => AppointmentEditor(
+                        data: data,
+                        appointment: nextAppointment,
+                        onChanged: onChanged,
+                      ),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
             ],
             if (lowStockMeds.isNotEmpty) ...[
-          _medicineStatusCard(
-            context: c,
-            medicines: lowStockMeds,
-            icon: Icons.warning_amber_rounded,
-            color: const Color(0xffff9f1c),
-            background: const Color(0xfffff3df),
-            title: tx(
-              c,
-              'Mažas vaistų likutis',
-              'Low medicine stock',
-            ),
-            onTap: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => CabinetPage(data: data, onChanged: onChanged),
-              ),
-            ),
-            onMedicineTap: (medicine) => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => MedicinePage(
-                  data: data,
-                  med: medicine,
-                  onChanged: onChanged,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-            ],
-            if (expiringMeds.isNotEmpty) ...[
-          _medicineStatusCard(
-            context: c,
-            medicines: expiringMeds,
-            icon: Icons.event_busy_outlined,
-            color: const Color(0xffe53935),
-            background: const Color(0xffffe9e8),
-            title: tx(
-              c,
-              '${expiringMeds.length} ${expiringMeds.length == 1 ? 'vaistas greitai baigs' : 'vaistai greitai baigs'} galioti',
-              '${expiringMeds.length} medicines expire soon',
-            ),
-            expiry: true,
-            now: now,
-            onTap: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => ExpiringMedicinesPage(
-                  data: data,
-                  medicines: expiringMeds,
-                  now: now,
-                  onChanged: onChanged,
-                ),
-              ),
-            ),
-            onMedicineTap: (medicine) => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => MedicinePage(
-                  data: data,
-                  med: medicine,
-                  onChanged: onChanged,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-            ],
-            Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => Navigator.push(
+              _medicineStatusCard(
+                context: c,
+                medicines: lowStockMeds,
+                icon: Icons.warning_amber_rounded,
+                color: const Color(0xffff9f1c),
+                background: const Color(0xfffff3df),
+                title: tx(c, 'Mažas vaistų likutis', 'Low medicine stock'),
+                onTap: () => Navigator.push(
                   c,
                   MaterialPageRoute(
-                    builder: (_) => ScanPage(data: data, onChanged: onChanged),
+                    builder: (_) =>
+                        CabinetPage(data: data, onChanged: onChanged),
                   ),
                 ),
-                icon: const Icon(Icons.camera_alt),
-                label: Text(tx(c, 'Nuskenuoti vaistą', 'Scan medicine')),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => Navigator.push(
+                onMedicineTap: (medicine) => Navigator.push(
                   c,
                   MaterialPageRoute(
-                    builder: (_) => SymptomsPage(
+                    builder: (_) => MedicinePage(
                       data: data,
+                      med: medicine,
                       onChanged: onChanged,
                     ),
                   ),
                 ),
-                icon: const Icon(Icons.health_and_safety),
-                label: Text(tx(c, 'Man bloga', 'I feel unwell')),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+            ],
+            if (expiringMeds.isNotEmpty) ...[
+              _medicineStatusCard(
+                context: c,
+                medicines: expiringMeds,
+                icon: Icons.event_busy_outlined,
+                color: const Color(0xffe53935),
+                background: const Color(0xffffe9e8),
+                title: tx(
+                  c,
+                  '${expiringMeds.length} ${expiringMeds.length == 1 ? 'vaistas greitai baigs' : 'vaistai greitai baigs'} galioti',
+                  '${expiringMeds.length} medicines expire soon',
+                ),
+                expiry: true,
+                now: now,
+                onTap: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => ExpiringMedicinesPage(
+                      data: data,
+                      medicines: expiringMeds,
+                      now: now,
+                      onChanged: onChanged,
+                    ),
+                  ),
+                ),
+                onMedicineTap: (medicine) => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => MedicinePage(
+                      data: data,
+                      med: medicine,
+                      onChanged: onChanged,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.push(
+                      c,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            ScanPage(data: data, onChanged: onChanged),
+                      ),
+                    ),
+                    icon: const Icon(Icons.camera_alt),
+                    label: Text(tx(c, 'Nuskenuoti vaistą', 'Scan medicine')),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.push(
+                      c,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            SymptomsPage(data: data, onChanged: onChanged),
+                      ),
+                    ),
+                    icon: const Icon(Icons.health_and_safety),
+                    label: Text(tx(c, 'Man bloga', 'I feel unwell')),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             _familyStatusCard(c, data, onChanged),
@@ -1344,9 +1386,7 @@ Widget _medicineStatusCard({
                   '${quantityLabel(medicine.stock)} remaining',
                 );
           return InkWell(
-            onTap: onMedicineTap == null
-                ? null
-                : () => onMedicineTap(medicine),
+            onTap: onMedicineTap == null ? null : () => onMedicineTap(medicine),
             borderRadius: BorderRadius.circular(10),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(36, 6, 4, 6),
@@ -1392,65 +1432,65 @@ Widget _familyStatusCard(
   AppData data,
   VoidCallback onChanged,
 ) => InkWell(
+  borderRadius: BorderRadius.circular(16),
+  onTap: () => Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => FamilyPage(data: data, onChanged: onChanged),
+    ),
+  ),
+  child: Container(
+    height: 82,
+    padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
+    decoration: BoxDecoration(
+      color: const Color(0xffe2f6f1).withValues(alpha: .96),
       borderRadius: BorderRadius.circular(16),
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => FamilyPage(data: data, onChanged: onChanged),
-        ),
-      ),
-      child: Container(
-        height: 82,
-        padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-        decoration: BoxDecoration(
-          color: const Color(0xffe2f6f1).withValues(alpha: .96),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.groups_rounded, color: green, size: 31),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                tx(
-                  context,
-                  'Šeimos narių: ${data.members.length}',
-                  'Family members: ${data.members.length}',
-                ),
-                style: const TextStyle(
-                  color: navy,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 16,
-                ),
-              ),
+    ),
+    child: Row(
+      children: [
+        const Icon(Icons.groups_rounded, color: green, size: 31),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            tx(
+              context,
+              'Šeimos narių: ${data.members.length}',
+              'Family members: ${data.members.length}',
             ),
-            SizedBox(
-              width: 112,
-              height: 52,
-              child: Stack(
-                children: [
-                  for (var i = 0; i < data.members.take(3).length; i++)
-                    Positioned(
-                      left: i * 34,
-                      child: _FamilyAvatar(
-                        member: data.members[i],
-                        fallbackIndex: i,
-                      ),
-                    ),
-                  if (data.members.isEmpty)
-                    for (var i = 0; i < 3; i++)
-                      Positioned(
-                        left: i * 34,
-                        child: _FamilyAvatar(fallbackIndex: i),
-                      ),
-                ],
-              ),
+            style: const TextStyle(
+              color: navy,
+              fontWeight: FontWeight.w800,
+              fontSize: 16,
             ),
-            const Icon(Icons.chevron_right_rounded, color: green),
-          ],
+          ),
         ),
-      ),
-    );
+        SizedBox(
+          width: 112,
+          height: 52,
+          child: Stack(
+            children: [
+              for (var i = 0; i < data.members.take(3).length; i++)
+                Positioned(
+                  left: i * 34,
+                  child: _FamilyAvatar(
+                    member: data.members[i],
+                    fallbackIndex: i,
+                  ),
+                ),
+              if (data.members.isEmpty)
+                for (var i = 0; i < 3; i++)
+                  Positioned(
+                    left: i * 34,
+                    child: _FamilyAvatar(fallbackIndex: i),
+                  ),
+            ],
+          ),
+        ),
+        const Icon(Icons.chevron_right_rounded, color: green),
+      ],
+    ),
+  ),
+);
 
 class _FamilyAvatar extends StatelessWidget {
   final Member? member;
@@ -1461,8 +1501,8 @@ class _FamilyAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final imagePath = member?.imagePath ?? '';
     final face = member == null
-          ? ['👨', '👩', '👦'][fallbackIndex % 3]
-          : _memberEmoji(member!.gender, member!.ageGroup);
+        ? ['👨', '👩', '👦'][fallbackIndex % 3]
+        : _memberEmoji(member!.gender, member!.ageGroup);
     return Container(
       width: 48,
       height: 48,
@@ -1487,14 +1527,15 @@ class _FamilyAvatar extends StatelessWidget {
   }
 }
 
-String _memberEmoji(String gender, String ageGroup) => switch ((gender, ageGroup)) {
-  ('female', 'child') => '👧',
-  ('male', 'child') => '👦',
-  (_, 'child') => '🧒',
-  ('female', _) => '👩',
-  ('male', _) => '👨',
-  _ => '🧑',
-};
+String _memberEmoji(String gender, String ageGroup) =>
+    switch ((gender, ageGroup)) {
+      ('female', 'child') => '👧',
+      ('male', 'child') => '👦',
+      (_, 'child') => '🧒',
+      ('female', _) => '👩',
+      ('male', _) => '👨',
+      _ => '🧑',
+    };
 
 class ExpiringMedicinesPage extends StatefulWidget {
   final AppData data;
@@ -1517,57 +1558,64 @@ class _ExpiringMedicinesPageState extends State<ExpiringMedicinesPage> {
   @override
   Widget build(BuildContext context) {
     final medicines = widget.medicines.where((medicine) {
-      final stillExists = widget.data.meds.any((item) => item.id == medicine.id);
+      final stillExists = widget.data.meds.any(
+        (item) => item.id == medicine.id,
+      );
       return stillExists &&
           medicineNeedsExpiryAttention(medicine.expiry, widget.now);
     }).toList();
     return Scaffold(
       appBar: AppBar(
-        title: Text(tx(context, 'Besibaigiantys vaistai', 'Expiring medicines')),
+        title: Text(
+          tx(context, 'Besibaigiantys vaistai', 'Expiring medicines'),
+        ),
       ),
       body: ListView.separated(
-      padding: const EdgeInsets.all(18),
-      itemCount: medicines.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) {
-        final medicine = medicines[index];
-        final days = daysUntilMedicineExpiry(medicine.expiry, widget.now);
-        return Card(
-          child: ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: Color(0xffffe9e8),
-              child: Icon(Icons.event_busy_outlined, color: Color(0xffe53935)),
-            ),
-            title: Text(
-              '${medicine.name} ${medicine.strength}',
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-            subtitle: Text(
-              _expiryDetail(context, medicine.expiry, days),
-              style: TextStyle(
-                color: (days ?? 0) < 0
-                    ? const Color(0xffb91c1c)
-                    : const Color(0xffc62828),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => MedicinePage(
-                    data: widget.data,
-                    med: medicine,
-                    onChanged: widget.onChanged,
-                  ),
+        padding: const EdgeInsets.all(18),
+        itemCount: medicines.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (context, index) {
+          final medicine = medicines[index];
+          final days = daysUntilMedicineExpiry(medicine.expiry, widget.now);
+          return Card(
+            child: ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: Color(0xffffe9e8),
+                child: Icon(
+                  Icons.event_busy_outlined,
+                  color: Color(0xffe53935),
                 ),
-              );
-              if (mounted) setState(() {});
-            },
-          ),
-        );
-      },
+              ),
+              title: Text(
+                '${medicine.name} ${medicine.strength}',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                _expiryDetail(context, medicine.expiry, days),
+                style: TextStyle(
+                  color: (days ?? 0) < 0
+                      ? const Color(0xffb91c1c)
+                      : const Color(0xffc62828),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => MedicinePage(
+                      data: widget.data,
+                      med: medicine,
+                      onChanged: widget.onChanged,
+                    ),
+                  ),
+                );
+                if (mounted) setState(() {});
+              },
+            ),
+          );
+        },
       ),
     );
   }
@@ -1614,7 +1662,11 @@ class _CabinetPageState extends State<CabinetPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                tx(sheetContext, 'Kaip norite pridėti vaistą?', 'How would you like to add it?'),
+                tx(
+                  sheetContext,
+                  'Kaip norite pridėti vaistą?',
+                  'How would you like to add it?',
+                ),
                 style: const TextStyle(
                   color: navy,
                   fontSize: 22,
@@ -1625,7 +1677,13 @@ class _CabinetPageState extends State<CabinetPage> {
               FilledButton.icon(
                 onPressed: () => Navigator.pop(sheetContext, 'camera'),
                 icon: const Icon(Icons.camera_alt_outlined),
-                label: Text(tx(sheetContext, 'Fotografuoti arba nuskaityti', 'Photograph or scan')),
+                label: Text(
+                  tx(
+                    sheetContext,
+                    'Fotografuoti arba nuskaityti',
+                    'Photograph or scan',
+                  ),
+                ),
               ),
               const SizedBox(height: 10),
               OutlinedButton.icon(
@@ -1643,10 +1701,8 @@ class _CabinetPageState extends State<CabinetPage> {
       await Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => MedicineEditor(
-            data: widget.data,
-            onChanged: widget.onChanged,
-          ),
+          builder: (_) =>
+              MedicineEditor(data: widget.data, onChanged: widget.onChanged),
         ),
       );
     } else {
@@ -1666,221 +1722,255 @@ class _CabinetPageState extends State<CabinetPage> {
 
   @override
   Widget build(c) {
-    final categories = widget.data.meds
-        .expand((medicine) => _splitCategories(medicine.category))
-        .toSet()
-        .toList()
-      ..sort();
+    final categories =
+        widget.data.meds
+            .expand((medicine) => _splitCategories(medicine.category))
+            .toSet()
+            .toList()
+          ..sort();
     final activeCategory = categories.contains(selectedCategory)
         ? selectedCategory
         : '';
     final query = search.text.trim().toLowerCase();
-    final medicines = (activeCategory.isEmpty
-        ? widget.data.meds
-        : widget.data.meds
+    final medicines =
+        (activeCategory.isEmpty
+                ? widget.data.meds
+                : widget.data.meds
+                      .where(
+                        (medicine) =>
+                            _splitCategories(medicine.category)
+                                .contains(activeCategory),
+                      )
+                      .toList())
             .where(
               (medicine) =>
-                  _splitCategories(medicine.category).contains(activeCategory),
+                  query.isEmpty ||
+                  '${medicine.name} ${medicine.substance} ${medicine.purpose} ${medicine.barcode}'
+                      .toLowerCase()
+                      .contains(query),
             )
-            .toList())
-        .where((medicine) => query.isEmpty ||
-            '${medicine.name} ${medicine.substance} ${medicine.purpose} ${medicine.barcode}'
-                .toLowerCase()
-                .contains(query))
-        .toList()
-      ..sort((a, b) => switch (sortOrder) {
-        'expiry' => a.expiry.compareTo(b.expiry),
-        'stock' => a.stock.compareTo(b.stock),
-        _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-      });
+            .toList()
+          ..sort(
+            (a, b) => switch (sortOrder) {
+              'expiry' => a.expiry.compareTo(b.expiry),
+              'stock' => a.stock.compareTo(b.stock),
+              _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+            },
+          );
     return ColoredBox(
-    color: const Color(0xfff6fbfa),
-    child: ListView(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        18,
-        18,
-        MediaQuery.paddingOf(c).bottom + 36,
-      ),
-      children: [
-      Row(
+      color: const Color(0xfff6fbfa),
+      child: ListView(
+        padding: EdgeInsets.fromLTRB(
+          18,
+          18,
+          18,
+          MediaQuery.paddingOf(c).bottom + 36,
+        ),
         children: [
-          Expanded(child: title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet'))),
-          const SizedBox(width: 12),
-          IconButton.filled(
-            onPressed: () => _chooseAddMethod(c),
-            tooltip: tx(c, 'Pridėti vaistą', 'Add medicine'),
-            style: IconButton.styleFrom(
-              backgroundColor: green,
-              foregroundColor: Colors.white,
-              minimumSize: const Size(52, 52),
-            ),
-            icon: const Icon(Icons.add_rounded, size: 30),
-          ),
-        ],
-      ),
-      const SizedBox(height: 16),
-      TextField(
-        controller: search,
-        onChanged: (_) => setState(() {}),
-        decoration: InputDecoration(
-          labelText: tx(c, 'Ieškoti vaisto', 'Search medicines'),
-          prefixIcon: const Icon(Icons.search),
-          suffixIcon: search.text.isEmpty
-              ? null
-              : IconButton(
-                  onPressed: () {
-                    search.clear();
-                    setState(() {});
-                  },
-                  icon: const Icon(Icons.clear),
-                ),
-        ),
-      ),
-      const SizedBox(height: 10),
-      DropdownButtonFormField<String>(
-        initialValue: sortOrder,
-        decoration: InputDecoration(labelText: tx(c, 'Rikiavimas', 'Sort by')),
-        items: [
-          DropdownMenuItem(value: 'name', child: Text(tx(c, 'Pagal pavadinimą', 'Name'))),
-          DropdownMenuItem(value: 'expiry', child: Text(tx(c, 'Pagal galiojimą', 'Expiry'))),
-          DropdownMenuItem(value: 'stock', child: Text(tx(c, 'Pagal likutį', 'Stock'))),
-        ],
-        onChanged: (value) => setState(() => sortOrder = value!),
-      ),
-      const SizedBox(height: 12),
-      if (categories.isNotEmpty) ...[
-        Text(
-          tx(c, 'Filtruoti pagal kategoriją', 'Filter by category'),
-          style: const TextStyle(
-            fontSize: 16,
-            height: 1.25,
-            fontWeight: FontWeight.w700,
-            color: navy,
-            decoration: TextDecoration.none,
-          ),
-        ),
-        const SizedBox(height: 8),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
+          Row(
             children: [
-              ChoiceChip(
-                label: Text(tx(c, 'Visi', 'All')),
-                selected: activeCategory.isEmpty,
-                onSelected: (_) => setState(() => selectedCategory = ''),
+              Expanded(
+                child: title(tx(c, 'Mano vaistinėlė', 'My medicine cabinet')),
               ),
-              const SizedBox(width: 8),
-              ...categories.map(
-                (category) => Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(category),
-                    selected: activeCategory == category,
-                    onSelected: (_) =>
-                        setState(() => selectedCategory = category),
-                  ),
+              const SizedBox(width: 12),
+              IconButton.filled(
+                onPressed: () => _chooseAddMethod(c),
+                tooltip: tx(c, 'Pridėti vaistą', 'Add medicine'),
+                style: IconButton.styleFrom(
+                  backgroundColor: green,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(52, 52),
                 ),
+                icon: const Icon(Icons.add_rounded, size: 30),
               ),
             ],
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          tx(c, 'Rasta: ${medicines.length}', 'Found: ${medicines.length}'),
-          style: const TextStyle(
-            fontSize: 14,
-            height: 1.25,
-            color: Color(0xff526572),
-            decoration: TextDecoration.none,
-          ),
-        ),
-        const SizedBox(height: 8),
-      ],
-      if (medicines.isEmpty)
-        card(
-          Text(
-            tx(
-              c,
-              'Šioje kategorijoje vaistų nėra.',
-              'There are no medicines in this category.',
+          const SizedBox(height: 16),
+          TextField(
+            controller: search,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: tx(c, 'Ieškoti vaisto', 'Search medicines'),
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: search.text.isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: () {
+                        search.clear();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.clear),
+                    ),
             ),
           ),
-        ),
-      ...medicines.map((m) {
-        final days = daysUntilMedicineExpiry(m.expiry, DateTime.now());
-        final expiryColor = days != null && days < 0
-            ? const Color(0xffb91c1c)
-            : days != null && days <= 7
-                ? const Color(0xffd97706)
-                : green;
-        return Card(
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: () async {
-              await Navigator.push(
-                c,
-                MaterialPageRoute(
-                  builder: (_) => MedicinePage(
-                    data: widget.data,
-                    med: m,
-                    onChanged: widget.onChanged,
-                  ),
-                ),
-              );
-              if (mounted) setState(() {});
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(14),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            initialValue: sortOrder,
+            decoration: InputDecoration(
+              labelText: tx(c, 'Rikiavimas', 'Sort by'),
+            ),
+            items: [
+              DropdownMenuItem(
+                value: 'name',
+                child: Text(tx(c, 'Pagal pavadinimą', 'Name')),
+              ),
+              DropdownMenuItem(
+                value: 'expiry',
+                child: Text(tx(c, 'Pagal galiojimą', 'Expiry')),
+              ),
+              DropdownMenuItem(
+                value: 'stock',
+                child: Text(tx(c, 'Pagal likutį', 'Stock')),
+              ),
+            ],
+            onChanged: (value) => setState(() => sortOrder = value!),
+          ),
+          const SizedBox(height: 12),
+          if (categories.isNotEmpty) ...[
+            Text(
+              tx(c, 'Filtruoti pagal kategoriją', 'Filter by category'),
+              style: const TextStyle(
+                fontSize: 16,
+                height: 1.25,
+                fontWeight: FontWeight.w700,
+                color: navy,
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _medicineImage(m, size: 72),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('${m.name} ${m.strength}'.trim(),
-                            style: const TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w800,
-                              color: navy,
-                            )),
-                        if (m.substance.isNotEmpty) ...[
-                          const SizedBox(height: 3),
-                          Text(m.substance),
-                        ],
-                        const SizedBox(height: 8),
-                        Wrap(spacing: 7, runSpacing: 6, children: [
-                          _medicinePill(
-                            Icons.inventory_2_outlined,
-                            tx(c, '${quantityLabel(m.stock)} vnt.', '${quantityLabel(m.stock)} left'),
-                            green,
-                          ),
-                          if (m.expiry.isNotEmpty)
-                            _medicinePill(
-                              Icons.event_outlined,
-                              _expiryDetail(c, m.expiry, days),
-                              expiryColor,
-                            ),
-                          if (m.prescription)
-                            _medicinePill(Icons.receipt_long_outlined,
-                                tx(c, 'Receptinis', 'Prescription'), navy),
-                        ]),
-                      ],
+                  ChoiceChip(
+                    label: Text(tx(c, 'Visi', 'All')),
+                    selected: activeCategory.isEmpty,
+                    onSelected: (_) => setState(() => selectedCategory = ''),
+                  ),
+                  const SizedBox(width: 8),
+                  ...categories.map(
+                    (category) => Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        label: Text(category),
+                        selected: activeCategory == category,
+                        onSelected: (_) =>
+                            setState(() => selectedCategory = category),
+                      ),
                     ),
                   ),
-                  const Icon(Icons.chevron_right_rounded),
                 ],
               ),
             ),
-          ),
-        );
-      }),
-      ],
-    ),
-  );
+            const SizedBox(height: 8),
+            Text(
+              tx(c, 'Rasta: ${medicines.length}', 'Found: ${medicines.length}'),
+              style: const TextStyle(
+                fontSize: 14,
+                height: 1.25,
+                color: Color(0xff526572),
+                decoration: TextDecoration.none,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          if (medicines.isEmpty)
+            card(
+              Text(
+                tx(
+                  c,
+                  'Šioje kategorijoje vaistų nėra.',
+                  'There are no medicines in this category.',
+                ),
+              ),
+            ),
+          ...medicines.map((m) {
+            final days = daysUntilMedicineExpiry(m.expiry, DateTime.now());
+            final expiryColor = days != null && days < 0
+                ? const Color(0xffb91c1c)
+                : days != null && days <= 7
+                ? const Color(0xffd97706)
+                : green;
+            return Card(
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: () async {
+                  await Navigator.push(
+                    c,
+                    MaterialPageRoute(
+                      builder: (_) => MedicinePage(
+                        data: widget.data,
+                        med: m,
+                        onChanged: widget.onChanged,
+                      ),
+                    ),
+                  );
+                  if (mounted) setState(() {});
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _medicineImage(m, size: 72),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${m.name} ${m.strength}'.trim(),
+                              style: const TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w800,
+                                color: navy,
+                              ),
+                            ),
+                            if (m.substance.isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Text(m.substance),
+                            ],
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 7,
+                              runSpacing: 6,
+                              children: [
+                                _medicinePill(
+                                  Icons.inventory_2_outlined,
+                                  tx(
+                                    c,
+                                    '${quantityLabel(m.stock)} vnt.',
+                                    '${quantityLabel(m.stock)} left',
+                                  ),
+                                  green,
+                                ),
+                                if (m.expiry.isNotEmpty)
+                                  _medicinePill(
+                                    Icons.event_outlined,
+                                    _expiryDetail(c, m.expiry, days),
+                                    expiryColor,
+                                  ),
+                                if (m.prescription)
+                                  _medicinePill(
+                                    Icons.receipt_long_outlined,
+                                    tx(c, 'Receptinis', 'Prescription'),
+                                    navy,
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right_rounded),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
   }
 }
 
@@ -1902,32 +1992,37 @@ Widget _medicineImage(Med medicine, {double size = 56}) {
 }
 
 Widget _medicinePlaceholder(double size) => Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: mint,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: const Icon(Icons.medication_rounded, color: green, size: 31),
-    );
+  width: size,
+  height: size,
+  decoration: BoxDecoration(
+    color: mint,
+    borderRadius: BorderRadius.circular(14),
+  ),
+  child: const Icon(Icons.medication_rounded, color: green, size: 31),
+);
 
 Widget _medicinePill(IconData icon, String label, Color color) => Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: .10),
-        borderRadius: BorderRadius.circular(999),
+  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+  decoration: BoxDecoration(
+    color: color.withValues(alpha: .10),
+    borderRadius: BorderRadius.circular(999),
+  ),
+  child: Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 15, color: color),
+      const SizedBox(width: 5),
+      Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+        ),
       ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 15, color: color),
-        const SizedBox(width: 5),
-        Text(label,
-            style: TextStyle(
-              color: color,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            )),
-      ]),
-    );
+    ],
+  ),
+);
 
 class MedicinePage extends StatelessWidget {
   final AppData data;
@@ -1943,239 +2038,31 @@ class MedicinePage extends StatelessWidget {
   Widget build(c) {
     final weeklyUse = data.reminders
         .where((item) => item.enabled && item.medId == med.id)
-        .fold<double>(0, (total, item) =>
-            total + item.quantityPerDose * item.weekdays.length);
+        .fold<double>(
+          0,
+          (total, item) => total + item.quantityPerDose * item.weekdays.length,
+        );
     final dailyUse = weeklyUse / 7;
     final daysRemaining = dailyUse > 0 ? (med.stock / dailyUse).floor() : null;
     final estimatedEnd = daysRemaining == null
         ? null
         : DateTime.now().add(Duration(days: daysRemaining));
     return StatefulBuilder(
-    builder: (c, setPageState) => DefaultTabController(
-    length: 5,
-    child: Scaffold(
-    backgroundColor: const Color(0xfff6fbfa),
-    appBar: AppBar(
-      title: Text(med.name),
-      actions: [
-        IconButton(
-          tooltip: tx(c, 'Redaguoti', 'Edit'),
-          onPressed: () async {
-            await Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => MedicineEditor(
-                  data: data,
-                  medicine: med,
-                  onChanged: onChanged,
-                ),
-              ),
-            );
-            setPageState(() {});
-          },
-          icon: const Icon(Icons.edit_outlined),
-        ),
-        IconButton(
-          onPressed: () async {
-            if (!await confirmDelete(c, med.name) || !c.mounted) return;
-            data.meds.removeWhere((x) => x.id == med.id);
-            data.reminders.removeWhere((x) => x.medId == med.id);
-            onChanged();
-            Navigator.pop(c);
-          },
-          icon: const Icon(Icons.delete_outline),
-        ),
-      ],
-      bottom: TabBar(
-        isScrollable: true,
-        tabs: [
-          Tab(text: tx(c, 'Apžvalga', 'Overview')),
-          Tab(text: tx(c, 'Vartojimas', 'Use')),
-          Tab(text: tx(c, 'Įspėjimai', 'Warnings')),
-          Tab(text: tx(c, 'Sąveikos', 'Interactions')),
-          Tab(text: tx(c, 'Daugiau', 'More')),
-        ],
-      ),
-    ),
-    body: TabBarView(
-      children: [
-      ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        SizedBox(
-          height: 210,
-          width: double.infinity,
-          child: med.imagePath.isNotEmpty && File(med.imagePath).existsSync()
-              ? ClipRRect(
-                  borderRadius: BorderRadius.circular(22),
-                  child: Image.file(File(med.imagePath), fit: BoxFit.cover),
-                )
-              : Container(
-                  decoration: BoxDecoration(
-                    color: mint,
-                    borderRadius: BorderRadius.circular(22),
-                  ),
-                  child: const Icon(Icons.medication_rounded,
-                      color: green, size: 78),
-                ),
-        ),
-        const SizedBox(height: 10),
-        FilledButton.icon(
-          onPressed: () async {
-            await Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => MedicineEditor(
-                  data: data,
-                  medicine: med,
-                  onChanged: onChanged,
-                ),
-              ),
-            );
-            setPageState(() {});
-          },
-          icon: const Icon(Icons.edit_outlined),
-          label: Text(tx(c, 'Redaguoti vaisto kortelę', 'Edit medicine card')),
-        ),
-        const SizedBox(height: 4),
-        card(
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${med.name} ${med.strength}',
-                style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                '${tx(c, 'Veiklioji medžiaga', 'Active ingredient')}: ${med.substance}',
-              ),
-              Chip(
-                label: Text(
-                  med.prescription
-                      ? tx(c, 'Receptinis', 'Prescription')
-                      : tx(c, 'Nereceptinis', 'Non-prescription'),
-                ),
-              ),
-              if (med.registryVerified)
-                const Chip(
-                  avatar: Icon(Icons.verified_rounded, size: 18, color: green),
-                  label: Text('Patikrinta VVKT'),
-                ),
-              const Divider(),
-              Text(med.purpose),
-              if (med.manufacturer.isNotEmpty)
-                Text('${tx(c, 'Gamintojas', 'Manufacturer')}: ${med.manufacturer}'),
-              if (med.dosageForm.isNotEmpty)
-                Text('${tx(c, 'Vaisto forma', 'Dosage form')}: ${med.dosageForm}'),
-              if (med.category.isNotEmpty)
-                Text('${tx(c, 'Kategorija', 'Category')}: ${med.category}'),
-            ],
-          ),
-        ),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            FilledButton.tonalIcon(
-              onPressed: () async {
-                final today = data.reminders.where((item) =>
-                    item.medId == med.id && reminderAppliesOn(item, DateTime.now()) &&
-                    !item.takenDates.contains(dateKey())).firstOrNull;
-                if (today == null) {
-                  ScaffoldMessenger.of(c).showSnackBar(SnackBar(
-                    content: Text(tx(c, 'Šiandien nepažymėtų dozių nėra.', 'No untaken doses today.')),
-                  ));
-                  return;
-                }
-                markDoseTaken(data, today, DateTime.now());
-                onChanged();
-                setPageState(() {});
-              },
-              icon: const Icon(Icons.check_circle_outline),
-              label: Text(tx(c, 'Išgėriau', 'Taken')),
-            ),
-            FilledButton.tonalIcon(
-              onPressed: () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                ReminderEditor(
-                  data: data,
-                  initialMedId: med.id,
-                  onChanged: onChanged,
-                ))),
-              icon: const Icon(Icons.add_alarm),
-              label: Text(tx(c, 'Priminimas', 'Reminder')),
-            ),
-            FilledButton.tonalIcon(
-              onPressed: () {
-                if (!data.shopping.any((item) => item.medId == med.id && !item.purchased)) {
-                  data.shopping.add(ShoppingItem(
-                    id: newId(), medId: med.id,
-                    name: '${med.name} ${med.strength}'.trim(),
-                    prescription: med.prescription,
-                  ));
-                  onChanged();
-                }
-                ScaffoldMessenger.of(c).showSnackBar(SnackBar(
-                  content: Text(tx(c, 'Įtraukta į pirkinių sąrašą.', 'Added to shopping list.')),
-                ));
-              },
-              icon: const Icon(Icons.add_shopping_cart),
-              label: Text(tx(c, 'Pirkti', 'Buy')),
-            ),
-          ],
-        ),
-        card(
-          Column(
-            children: [
-              Text('${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}'),
-              Text('${tx(c, 'Perspėjimo riba', 'Warning threshold')}: ${quantityLabel(med.lowStockThreshold)}'),
-              if (daysRemaining != null)
-                Text(tx(
-                  c,
-                  'Pagal priminimus užteks maždaug $daysRemaining d. (iki ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
-                  'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd)})',
-                )),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    onPressed: med.stock > 0
-                        ? () {
-                            med.stock--;
-                            onChanged();
-                          }
-                        : null,
-                    icon: const Icon(Icons.remove_circle_outline),
-                  ),
-                  IconButton(
-                    onPressed: () {
-                      med.stock++;
-                      onChanged();
-                    },
-                    icon: const Icon(Icons.add_circle_outline),
-                  ),
-                ],
-              ),
-              Text('${tx(c, 'Galioja iki', 'Expires')}: ${med.expiry}'),
-              if (med.prescriptionValidUntil.isNotEmpty)
-                Text('${tx(c, 'Receptas galioja iki', 'Prescription valid until')}: ${med.prescriptionValidUntil}'),
-              if (med.treatmentUntil.isNotEmpty)
-                Text('${tx(c, 'Vaisto turi užtekti iki', 'Medicine should last until')}: ${med.treatmentUntil}'),
-              if (med.batchNumber.isNotEmpty)
-                Text('${tx(c, 'Partijos numeris', 'Batch number')}: ${med.batchNumber}'),
-              if (med.barcode.isNotEmpty)
-                Text('${tx(c, 'Brūkšninis kodas', 'Barcode')}: ${med.barcode}'),
-              if (med.storageLocation.isNotEmpty)
-                Text('${tx(c, 'Laikymo vieta', 'Storage location')}: ${med.storageLocation}'),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
+      builder: (c, setPageState) => DefaultTabController(
+        length: 5,
+        child: Scaffold(
+          backgroundColor: const Color(0xfff6fbfa),
+          appBar: AppBar(
+            title: Text(med.name),
+            actions: [
+              IconButton(
+                tooltip: tx(c, 'Redaguoti', 'Edit'),
                 onPressed: () async {
                   await Navigator.push(
                     c,
                     MaterialPageRoute(
-                      builder: (_) => MedicineInventoryPage(
+                      builder: (_) => MedicineEditor(
+                        data: data,
                         medicine: med,
                         onChanged: onChanged,
                       ),
@@ -2183,89 +2070,412 @@ class MedicinePage extends StatelessWidget {
                   );
                   setPageState(() {});
                 },
-                icon: const Icon(Icons.inventory_2_outlined),
-                label: Text(tx(c, 'Pakuotės ir laikymo vietos', 'Packages and storage')),
+                icon: const Icon(Icons.edit_outlined),
+              ),
+              IconButton(
+                onPressed: () async {
+                  if (!await confirmDelete(c, med.name) || !c.mounted) return;
+                  data.meds.removeWhere((x) => x.id == med.id);
+                  data.reminders.removeWhere((x) => x.medId == med.id);
+                  onChanged();
+                  Navigator.pop(c);
+                },
+                icon: const Icon(Icons.delete_outline),
               ),
             ],
-          ),
-        ),
-        card(
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Icon(Icons.health_and_safety_outlined, color: green, size: 30),
-              const SizedBox(height: 8),
-              Text(
-                tx(c, 'Vartojimas pasirinktam asmeniui', 'Use for a selected person'),
-                style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 6),
-              Text(tx(
-                c,
-                'Peržiūrėkite kortelėje ir lapelyje įrašytą vartojimą, asmens svorį bei svarbius perspėjimus.',
-                'Review the recorded and leaflet directions, the person\'s weight, and important warnings.',
-              )),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: () => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) => PersonalizedMedicineGuidancePage(data: data, medicine: med),
-                  ),
-                ),
-                icon: const Icon(Icons.person_search_outlined),
-                label: Text(tx(c, 'Rodyti patarimus', 'Show guidance')),
-              ),
-            ],
-          ),
-        ),
-        if (med.leafletRecord != null && med.leafletRecord!.identity.matches(
-            LeafletIdentity(med.name, med.strength, med.dosageForm)))
-          LeafletRecordCard(record: med.leafletRecord!),
-        if (med.leaflet.isNotEmpty || med.notes.isNotEmpty)
-          card(
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (med.leaflet.isNotEmpty)
-                  Text('${tx(c, 'Informacinis lapelis', 'Leaflet')}: ${med.leaflet}'),
-                if (med.notes.isNotEmpty) ...[
-                  if (med.leaflet.isNotEmpty) const Divider(),
-                  Text('${tx(c, 'Pastabos', 'Notes')}: ${med.notes}'),
-                ],
+            bottom: TabBar(
+              isScrollable: true,
+              tabs: [
+                Tab(text: tx(c, 'Apžvalga', 'Overview')),
+                Tab(text: tx(c, 'Vartojimas', 'Use')),
+                Tab(text: tx(c, 'Įspėjimai', 'Warnings')),
+                Tab(text: tx(c, 'Sąveikos', 'Interactions')),
+                Tab(text: tx(c, 'Daugiau', 'More')),
               ],
             ),
           ),
-      ],
-    ),
-    _medicineSectionsTab(c, [
-      (tx(c, 'Kaip vartoti?', 'How to use?'), med.dosage),
-      (tx(c, 'Priminimai', 'Reminders'),
-          data.reminders.where((r) => r.medId == med.id)
-              .map((r) => '${r.time} — ${r.dose} ${r.doseUnit}'.trim())
-              .join('\n')),
-    ]),
-    _medicineSectionsTab(c, [
-      (tx(c, 'Svarbu žinoti', 'Important'), med.warnings),
-      (tx(c, 'Dažnesni šalutiniai poveikiai', 'Common side effects'), med.sideEffects),
-    ]),
-    _medicineSectionsTab(c, [
-      (tx(c, 'Sąveikos su kitais vaistais', 'Interactions with medicines'), med.interactions),
-    ]),
-    _medicineSectionsTab(c, [
-      (tx(c, 'Pakuotės dydis', 'Package size'), med.packageSize),
-      (tx(c, 'Gamintojas', 'Manufacturer'), med.manufacturer),
-      (tx(c, 'ATC kodas', 'ATC code'), med.atcCode),
-      (tx(c, 'Registracijos numeris', 'Registration number'), med.registrationNumber),
-      (tx(c, 'Tiekimo būsena', 'Supply status'), med.supplyStatus),
-      (tx(c, 'Informacinis lapelis', 'Package leaflet'), med.leaflet),
-      (tx(c, 'Pastabos', 'Notes'), med.notes),
-    ]),
-      ],
-    ),
-  ),
-  ),
-  );
+          body: TabBarView(
+            children: [
+              ListView(
+                padding: const EdgeInsets.all(18),
+                children: [
+                  SizedBox(
+                    height: 210,
+                    width: double.infinity,
+                    child:
+                        med.imagePath.isNotEmpty &&
+                            File(med.imagePath).existsSync()
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(22),
+                            child: Image.file(
+                              File(med.imagePath),
+                              fit: BoxFit.cover,
+                            ),
+                          )
+                        : Container(
+                            decoration: BoxDecoration(
+                              color: mint,
+                              borderRadius: BorderRadius.circular(22),
+                            ),
+                            child: const Icon(
+                              Icons.medication_rounded,
+                              color: green,
+                              size: 78,
+                            ),
+                          ),
+                  ),
+                  const SizedBox(height: 10),
+                  FilledButton.icon(
+                    onPressed: () async {
+                      await Navigator.push(
+                        c,
+                        MaterialPageRoute(
+                          builder: (_) => MedicineEditor(
+                            data: data,
+                            medicine: med,
+                            onChanged: onChanged,
+                          ),
+                        ),
+                      );
+                      setPageState(() {});
+                    },
+                    icon: const Icon(Icons.edit_outlined),
+                    label: Text(
+                      tx(c, 'Redaguoti vaisto kortelę', 'Edit medicine card'),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  card(
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${med.name} ${med.strength}',
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          '${tx(c, 'Veiklioji medžiaga', 'Active ingredient')}: ${med.substance}',
+                        ),
+                        Chip(
+                          label: Text(
+                            med.prescription
+                                ? tx(c, 'Receptinis', 'Prescription')
+                                : tx(c, 'Nereceptinis', 'Non-prescription'),
+                          ),
+                        ),
+                        if (med.registryVerified)
+                          const Chip(
+                            avatar: Icon(
+                              Icons.verified_rounded,
+                              size: 18,
+                              color: green,
+                            ),
+                            label: Text('Patikrinta VVKT'),
+                          ),
+                        const Divider(),
+                        Text(med.purpose),
+                        if (med.manufacturer.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Gamintojas', 'Manufacturer')}: ${med.manufacturer}',
+                          ),
+                        if (med.dosageForm.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Vaisto forma', 'Dosage form')}: ${med.dosageForm}',
+                          ),
+                        if (med.category.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Kategorija', 'Category')}: ${med.category}',
+                          ),
+                      ],
+                    ),
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: () async {
+                          final today = data.reminders
+                              .where(
+                                (item) =>
+                                    item.medId == med.id &&
+                                    reminderAppliesOn(item, DateTime.now()) &&
+                                    !item.takenDates.contains(dateKey()),
+                              )
+                              .firstOrNull;
+                          if (today == null) {
+                            ScaffoldMessenger.of(c).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  tx(
+                                    c,
+                                    'Šiandien nepažymėtų dozių nėra.',
+                                    'No untaken doses today.',
+                                  ),
+                                ),
+                              ),
+                            );
+                            return;
+                          }
+                          markDoseTaken(data, today, DateTime.now());
+                          onChanged();
+                          setPageState(() {});
+                        },
+                        icon: const Icon(Icons.check_circle_outline),
+                        label: Text(tx(c, 'Išgėriau', 'Taken')),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () => Navigator.push(
+                          c,
+                          MaterialPageRoute(
+                            builder: (_) => ReminderEditor(
+                              data: data,
+                              initialMedId: med.id,
+                              onChanged: onChanged,
+                            ),
+                          ),
+                        ),
+                        icon: const Icon(Icons.add_alarm),
+                        label: Text(tx(c, 'Priminimas', 'Reminder')),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: () {
+                          if (!data.shopping.any(
+                            (item) => item.medId == med.id && !item.purchased,
+                          )) {
+                            data.shopping.add(
+                              ShoppingItem(
+                                id: newId(),
+                                medId: med.id,
+                                name: '${med.name} ${med.strength}'.trim(),
+                                prescription: med.prescription,
+                              ),
+                            );
+                            onChanged();
+                          }
+                          ScaffoldMessenger.of(c).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                tx(
+                                  c,
+                                  'Įtraukta į pirkinių sąrašą.',
+                                  'Added to shopping list.',
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.add_shopping_cart),
+                        label: Text(tx(c, 'Pirkti', 'Buy')),
+                      ),
+                    ],
+                  ),
+                  card(
+                    Column(
+                      children: [
+                        Text(
+                          '${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}',
+                        ),
+                        Text(
+                          '${tx(c, 'Perspėjimo riba', 'Warning threshold')}: ${quantityLabel(med.lowStockThreshold)}',
+                        ),
+                        if (daysRemaining != null)
+                          Text(
+                            tx(
+                              c,
+                              'Pagal priminimus užteks maždaug $daysRemaining d. (iki ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
+                              'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd)})',
+                            ),
+                          ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton(
+                              onPressed: med.stock > 0
+                                  ? () {
+                                      med.stock--;
+                                      onChanged();
+                                    }
+                                  : null,
+                              icon: const Icon(Icons.remove_circle_outline),
+                            ),
+                            IconButton(
+                              onPressed: () {
+                                med.stock++;
+                                onChanged();
+                              },
+                              icon: const Icon(Icons.add_circle_outline),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          '${tx(c, 'Galioja iki', 'Expires')}: ${med.expiry}',
+                        ),
+                        if (med.prescriptionValidUntil.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Receptas galioja iki', 'Prescription valid until')}: ${med.prescriptionValidUntil}',
+                          ),
+                        if (med.treatmentUntil.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Vaisto turi užtekti iki', 'Medicine should last until')}: ${med.treatmentUntil}',
+                          ),
+                        if (med.batchNumber.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Partijos numeris', 'Batch number')}: ${med.batchNumber}',
+                          ),
+                        if (med.barcode.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Brūkšninis kodas', 'Barcode')}: ${med.barcode}',
+                          ),
+                        if (med.storageLocation.isNotEmpty)
+                          Text(
+                            '${tx(c, 'Laikymo vieta', 'Storage location')}: ${med.storageLocation}',
+                          ),
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            await Navigator.push(
+                              c,
+                              MaterialPageRoute(
+                                builder: (_) => MedicineInventoryPage(
+                                  medicine: med,
+                                  onChanged: onChanged,
+                                ),
+                              ),
+                            );
+                            setPageState(() {});
+                          },
+                          icon: const Icon(Icons.inventory_2_outlined),
+                          label: Text(
+                            tx(
+                              c,
+                              'Pakuotės ir laikymo vietos',
+                              'Packages and storage',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  card(
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.health_and_safety_outlined,
+                          color: green,
+                          size: 30,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          tx(
+                            c,
+                            'Vartojimas pasirinktam asmeniui',
+                            'Use for a selected person',
+                          ),
+                          style: const TextStyle(
+                            color: navy,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          tx(
+                            c,
+                            'Peržiūrėkite kortelėje ir lapelyje įrašytą vartojimą, asmens svorį bei svarbius perspėjimus.',
+                            'Review the recorded and leaflet directions, the person\'s weight, and important warnings.',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          onPressed: () => Navigator.push(
+                            c,
+                            MaterialPageRoute(
+                              builder: (_) => PersonalizedMedicineGuidancePage(
+                                data: data,
+                                medicine: med,
+                              ),
+                            ),
+                          ),
+                          icon: const Icon(Icons.person_search_outlined),
+                          label: Text(
+                            tx(c, 'Rodyti patarimus', 'Show guidance'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (med.leafletRecord != null &&
+                      med.leafletRecord!.identity.matches(
+                        LeafletIdentity(med.name, med.strength, med.dosageForm),
+                      ))
+                    LeafletRecordCard(record: med.leafletRecord!),
+                  if (med.leaflet.isNotEmpty || med.notes.isNotEmpty)
+                    card(
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (med.leaflet.isNotEmpty)
+                            Text(
+                              '${tx(c, 'Informacinis lapelis', 'Leaflet')}: ${med.leaflet}',
+                            ),
+                          if (med.notes.isNotEmpty) ...[
+                            if (med.leaflet.isNotEmpty) const Divider(),
+                            Text('${tx(c, 'Pastabos', 'Notes')}: ${med.notes}'),
+                          ],
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+              _medicineSectionsTab(c, [
+                (tx(c, 'Kaip vartoti?', 'How to use?'), med.dosage),
+                (
+                  tx(c, 'Priminimai', 'Reminders'),
+                  data.reminders
+                      .where((r) => r.medId == med.id)
+                      .map((r) => '${r.time} — ${r.dose} ${r.doseUnit}'.trim())
+                      .join('\n'),
+                ),
+              ]),
+              _medicineSectionsTab(c, [
+                (tx(c, 'Svarbu žinoti', 'Important'), med.warnings),
+                (
+                  tx(c, 'Dažnesni šalutiniai poveikiai', 'Common side effects'),
+                  med.sideEffects,
+                ),
+              ]),
+              _medicineSectionsTab(c, [
+                (
+                  tx(
+                    c,
+                    'Sąveikos su kitais vaistais',
+                    'Interactions with medicines',
+                  ),
+                  med.interactions,
+                ),
+              ]),
+              _medicineSectionsTab(c, [
+                (tx(c, 'Pakuotės dydis', 'Package size'), med.packageSize),
+                (tx(c, 'Gamintojas', 'Manufacturer'), med.manufacturer),
+                (tx(c, 'ATC kodas', 'ATC code'), med.atcCode),
+                (
+                  tx(c, 'Registracijos numeris', 'Registration number'),
+                  med.registrationNumber,
+                ),
+                (tx(c, 'Tiekimo būsena', 'Supply status'), med.supplyStatus),
+                (tx(c, 'Informacinis lapelis', 'Package leaflet'), med.leaflet),
+                (tx(c, 'Pastabos', 'Notes'), med.notes),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -2324,23 +2534,30 @@ class _PersonalizedMedicineGuidancePageState
     final uri = Uri.tryParse(widget.medicine.leaflet.trim());
     if (uri == null || !uri.hasScheme || !await launchUrl(uri)) {
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(tx(
-          context,
-          'Nepavyko atidaryti informacinio lapelio nuorodos.',
-          'The package leaflet link could not be opened.',
-        )),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            tx(
+              context,
+              'Nepavyko atidaryti informacinio lapelio nuorodos.',
+              'The package leaflet link could not be opened.',
+            ),
+          ),
+        ),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final members = widget.data.members;
-    final member = members.where((item) => item.id == selectedMemberId).firstOrNull;
+    final member = members
+        .where((item) => item.id == selectedMemberId)
+        .firstOrNull;
     final medicine = widget.medicine;
     final age = member == null ? null : _age(member.birthDate);
-    final allergyAlert = member != null &&
+    final allergyAlert =
+        member != null &&
         (_mentionsMedicine(member.allergies) ||
             _mentionsMedicine(member.intolerantMedicines));
     final doseGuidance = member == null
@@ -2348,7 +2565,9 @@ class _PersonalizedMedicineGuidancePageState
         : calculateDoseGuidance(medicine, member);
     return Scaffold(
       backgroundColor: const Color(0xfff6fbfa),
-      appBar: AppBar(title: Text(tx(context, 'Vartojimo patarimai', 'Use guidance'))),
+      appBar: AppBar(
+        title: Text(tx(context, 'Vartojimo patarimai', 'Use guidance')),
+      ),
       body: ListView(
         padding: EdgeInsets.fromLTRB(
           18,
@@ -2357,156 +2576,259 @@ class _PersonalizedMedicineGuidancePageState
           MediaQuery.paddingOf(context).bottom + 30,
         ),
         children: [
-          card(Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${medicine.name} ${medicine.strength}'.trim(),
-                style: const TextStyle(color: navy, fontSize: 23, fontWeight: FontWeight.w800),
-              ),
-              if (medicine.substance.isNotEmpty)
-                Text('${tx(context, 'Veiklioji medžiaga', 'Active ingredient')}: ${medicine.substance}'),
-              if (medicine.dosageForm.isNotEmpty)
-                Text('${tx(context, 'Forma', 'Form')}: ${medicine.dosageForm}'),
-            ],
-          )),
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${medicine.name} ${medicine.strength}'.trim(),
+                  style: const TextStyle(
+                    color: navy,
+                    fontSize: 23,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                if (medicine.substance.isNotEmpty)
+                  Text(
+                    '${tx(context, 'Veiklioji medžiaga', 'Active ingredient')}: ${medicine.substance}',
+                  ),
+                if (medicine.dosageForm.isNotEmpty)
+                  Text(
+                    '${tx(context, 'Forma', 'Form')}: ${medicine.dosageForm}',
+                  ),
+              ],
+            ),
+          ),
           if (members.isEmpty)
-            card(Text(tx(
-              context,
-              'Pirmiausia sukurkite šeimos narį ir jo kortelėje įrašykite amžių, svorį bei alergijas.',
-              'First create a family member and record age, weight, and allergies in their profile.',
-            )))
+            card(
+              Text(
+                tx(
+                  context,
+                  'Pirmiausia sukurkite šeimos narį ir jo kortelėje įrašykite amžių, svorį bei alergijas.',
+                  'First create a family member and record age, weight, and allergies in their profile.',
+                ),
+              ),
+            )
           else ...[
             Text(
-              tx(context, 'Kam skirtas patarimas?', 'Who is this guidance for?'),
-              style: const TextStyle(color: navy, fontSize: 19, fontWeight: FontWeight.w800),
+              tx(
+                context,
+                'Kam skirtas patarimas?',
+                'Who is this guidance for?',
+              ),
+              style: const TextStyle(
+                color: navy,
+                fontSize: 19,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: members.map((item) => ChoiceChip(
-                selected: selectedMemberId == item.id,
-                onSelected: (_) => setState(() => selectedMemberId = item.id),
-                avatar: Text(_memberEmoji(item.gender, item.ageGroup)),
-                label: Text(item.name),
-              )).toList(),
+              children: members
+                  .map(
+                    (item) => ChoiceChip(
+                      selected: selectedMemberId == item.id,
+                      onSelected: (_) =>
+                          setState(() => selectedMemberId = item.id),
+                      avatar: Text(_memberEmoji(item.gender, item.ageGroup)),
+                      label: Text(item.name),
+                    ),
+                  )
+                  .toList(),
             ),
             const SizedBox(height: 12),
-            card(Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  member!.name,
-                  style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
-                ),
-                Text([
-                  member.ageGroup == 'child'
-                      ? tx(context, 'Vaikas', 'Child')
-                      : tx(context, 'Suaugęs', 'Adult'),
-                  if (age != null) tx(context, '$age m.', 'Age $age'),
-                  if (member.weight.trim().isNotEmpty) '${member.weight.trim()} kg',
-                ].join(' • ')),
-                if (member.weight.trim().isEmpty)
+            card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    tx(context, 'Svoris neįvestas asmens kortelėje.', 'Weight is missing from the profile.'),
-                    style: const TextStyle(color: Colors.deepOrange, fontWeight: FontWeight.w700),
+                    member!.name,
+                    style: const TextStyle(
+                      color: navy,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-              ],
-            )),
+                  Text(
+                    [
+                      member.ageGroup == 'child'
+                          ? tx(context, 'Vaikas', 'Child')
+                          : tx(context, 'Suaugęs', 'Adult'),
+                      if (age != null) tx(context, '$age m.', 'Age $age'),
+                      if (member.weight.trim().isNotEmpty)
+                        '${member.weight.trim()} kg',
+                    ].join(' • '),
+                  ),
+                  if (member.weight.trim().isEmpty)
+                    Text(
+                      tx(
+                        context,
+                        'Svoris neįvestas asmens kortelėje.',
+                        'Weight is missing from the profile.',
+                      ),
+                      style: const TextStyle(
+                        color: Colors.deepOrange,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                ],
+              ),
+            ),
             if (allergyAlert)
               Card(
                 color: const Color(0xffffe8e8),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Icon(Icons.warning_amber_rounded, color: Colors.red),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(
-                      tx(
-                        context,
-                        'Dėmesio: asmens alergijų arba netoleruojamų vaistų įraše aptiktas šio vaisto pavadinimas ar veiklioji medžiaga. Nevartokite nepasitarę su gydytoju ar vaistininku.',
-                        'Warning: this medicine or its active ingredient appears in the person\'s allergy or intolerance record. Do not use it without consulting a doctor or pharmacist.',
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.warning_amber_rounded,
+                        color: Colors.red,
                       ),
-                      style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700),
-                    )),
-                  ]),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          tx(
+                            context,
+                            'Dėmesio: asmens alergijų arba netoleruojamų vaistų įraše aptiktas šio vaisto pavadinimas ar veiklioji medžiaga. Nevartokite nepasitarę su gydytoju ar vaistininku.',
+                            'Warning: this medicine or its active ingredient appears in the person\'s allergy or intolerance record. Do not use it without consulting a doctor or pharmacist.',
+                          ),
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
           ],
-          card(Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                tx(context, 'Kaip vartoti', 'How to use'),
-                style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              Text(medicine.dosage.trim().isEmpty
-                  ? tx(
-                      context,
-                      'Vartojimo informacija kortelėje neįvesta. Vadovaukitės receptu ir oficialiu informaciniu lapeliu.',
-                      'No use directions are recorded. Follow the prescription and official package leaflet.',
-                    )
-                  : medicine.dosage.trim()),
-              const SizedBox(height: 10),
-              if (doseGuidance != null && !allergyAlert) ...[
-                const Divider(),
-                Text(
-                  tx(context, 'Pagal patvirtintą lapelio taisyklę', 'From the approved leaflet rule'),
-                  style: const TextStyle(color: green, fontWeight: FontWeight.w800),
-                ),
-                Text(
-                  '${quantityLabel(doseGuidance.doseMg)} mg'
-                  '${doseGuidance.volumeMl == null ? '' : ' • ${quantityLabel(doseGuidance.volumeMl!)} ml'}'
-                  '${doseGuidance.units == null ? '' : ' • ${quantityLabel(doseGuidance.units!)} vnt.'}',
-                  style: const TextStyle(color: navy, fontSize: 22, fontWeight: FontWeight.w900),
-                ),
-                if (doseGuidance.intervalHours != null)
-                  Text(tx(context,
-                    'Ne dažniau kaip kas ${quantityLabel(doseGuidance.intervalHours!)} val.',
-                    'Not more often than every ${quantityLabel(doseGuidance.intervalHours!)} hours.')),
-                if (doseGuidance.maxDailyMg != null)
-                  Text(tx(context,
-                    'Didžiausia paros dozė: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.',
-                    'Maximum daily dose: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.')),
-                Text(tx(context,
-                  'Šaltinis: ${doseGuidance.source}',
-                  'Source: ${doseGuidance.source}')),
-              ] else
-                Text(
-                  tx(
-                    context,
-                    'Dozė neskaičiuojama, kol nėra su oficialiu lapeliu palygintos struktūrizuotos taisyklės, tikslaus svorio arba yra alergijos įspėjimas.',
-                    'A dose is not calculated without a structured rule checked against the official leaflet, an exact weight, or when an allergy warning exists.',
-                  ),
-                  style: const TextStyle(color: Color(0xff5b6870)),
-                ),
-            ],
-          )),
-          if (medicine.warnings.isNotEmpty || medicine.interactions.isNotEmpty)
-            card(Column(
+          card(
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  tx(context, 'Svarbu prieš vartojant', 'Important before use'),
-                  style: const TextStyle(color: navy, fontSize: 20, fontWeight: FontWeight.w800),
+                  tx(context, 'Kaip vartoti', 'How to use'),
+                  style: const TextStyle(
+                    color: navy,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
-                if (medicine.warnings.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(medicine.warnings),
-                ],
-                if (medicine.interactions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  medicine.dosage.trim().isEmpty
+                      ? tx(
+                          context,
+                          'Vartojimo informacija kortelėje neįvesta. Vadovaukitės receptu ir oficialiu informaciniu lapeliu.',
+                          'No use directions are recorded. Follow the prescription and official package leaflet.',
+                        )
+                      : medicine.dosage.trim(),
+                ),
+                const SizedBox(height: 10),
+                if (doseGuidance != null && !allergyAlert) ...[
                   const Divider(),
-                  Text('${tx(context, 'Sąveikos', 'Interactions')}: ${medicine.interactions}'),
-                ],
+                  Text(
+                    tx(
+                      context,
+                      'Pagal patvirtintą lapelio taisyklę',
+                      'From the approved leaflet rule',
+                    ),
+                    style: const TextStyle(
+                      color: green,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(
+                    '${quantityLabel(doseGuidance.doseMg)} mg'
+                    '${doseGuidance.volumeMl == null ? '' : ' • ${quantityLabel(doseGuidance.volumeMl!)} ml'}'
+                    '${doseGuidance.units == null ? '' : ' • ${quantityLabel(doseGuidance.units!)} vnt.'}',
+                    style: const TextStyle(
+                      color: navy,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  if (doseGuidance.intervalHours != null)
+                    Text(
+                      tx(
+                        context,
+                        'Ne dažniau kaip kas ${quantityLabel(doseGuidance.intervalHours!)} val.',
+                        'Not more often than every ${quantityLabel(doseGuidance.intervalHours!)} hours.',
+                      ),
+                    ),
+                  if (doseGuidance.maxDailyMg != null)
+                    Text(
+                      tx(
+                        context,
+                        'Didžiausia paros dozė: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.',
+                        'Maximum daily dose: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.',
+                      ),
+                    ),
+                  Text(
+                    tx(
+                      context,
+                      'Šaltinis: ${doseGuidance.source}',
+                      'Source: ${doseGuidance.source}',
+                    ),
+                  ),
+                ] else
+                  Text(
+                    tx(
+                      context,
+                      'Dozė neskaičiuojama, kol nėra su oficialiu lapeliu palygintos struktūrizuotos taisyklės, tikslaus svorio arba yra alergijos įspėjimas.',
+                      'A dose is not calculated without a structured rule checked against the official leaflet, an exact weight, or when an allergy warning exists.',
+                    ),
+                    style: const TextStyle(color: Color(0xff5b6870)),
+                  ),
               ],
-            )),
+            ),
+          ),
+          if (medicine.warnings.isNotEmpty || medicine.interactions.isNotEmpty)
+            card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tx(
+                      context,
+                      'Svarbu prieš vartojant',
+                      'Important before use',
+                    ),
+                    style: const TextStyle(
+                      color: navy,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (medicine.warnings.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(medicine.warnings),
+                  ],
+                  if (medicine.interactions.isNotEmpty) ...[
+                    const Divider(),
+                    Text(
+                      '${tx(context, 'Sąveikos', 'Interactions')}: ${medicine.interactions}',
+                    ),
+                  ],
+                ],
+              ),
+            ),
           if (medicine.leaflet.trim().isNotEmpty)
             OutlinedButton.icon(
               onPressed: () => _openLeaflet(context),
               icon: const Icon(Icons.description_outlined),
-              label: Text(tx(context, 'Atidaryti oficialų lapelį', 'Open official leaflet')),
+              label: Text(
+                tx(
+                  context,
+                  'Atidaryti oficialų lapelį',
+                  'Open official leaflet',
+                ),
+              ),
             ),
           const SizedBox(height: 10),
           Text(
@@ -2547,12 +2869,20 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
       builder: (dialogContext) => AlertDialog(
         title: Text(tx(context, 'Pridėti pakuotę', 'Add package')),
         content: SingleChildScrollView(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            field(context, quantity, 'Kiekis', 'Quantity', number: true),
-            dateField(context, expiry, 'Galioja iki YYYY-MM-DD', 'Expiry YYYY-MM-DD'),
-            field(context, batch, 'Partijos numeris', 'Batch number'),
-            field(context, location, 'Laikymo vieta', 'Storage location'),
-          ]),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              field(context, quantity, 'Kiekis', 'Quantity', number: true),
+              dateField(
+                context,
+                expiry,
+                'Galioja iki YYYY-MM-DD',
+                'Expiry YYYY-MM-DD',
+              ),
+              field(context, batch, 'Partijos numeris', 'Batch number'),
+              field(context, location, 'Laikymo vieta', 'Storage location'),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -2561,17 +2891,23 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
           ),
           FilledButton(
             onPressed: () {
-              final parsed = double.tryParse(quantity.text.replaceAll(',', '.'));
+              final parsed = double.tryParse(
+                quantity.text.replaceAll(',', '.'),
+              );
               if (parsed == null || parsed <= 0) return;
-              widget.medicine.batches.add(MedicineStockBatch(
-                id: newId(),
-                quantity: parsed,
-                expiry: expiry.text.trim(),
-                batchNumber: batch.text.trim(),
-                storageLocation: location.text.trim(),
-              ));
-              widget.medicine.stock = widget.medicine.batches
-                  .fold(0, (total, item) => total + item.quantity);
+              widget.medicine.batches.add(
+                MedicineStockBatch(
+                  id: newId(),
+                  quantity: parsed,
+                  expiry: expiry.text.trim(),
+                  batchNumber: batch.text.trim(),
+                  storageLocation: location.text.trim(),
+                ),
+              );
+              widget.medicine.stock = widget.medicine.batches.fold(
+                0,
+                (total, item) => total + item.quantity,
+              );
               widget.onChanged();
               Navigator.pop(dialogContext);
               setState(() {});
@@ -2589,45 +2925,64 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(tx(context, 'Vaisto pakuotės', 'Medicine packages'))),
+    appBar: AppBar(
+      title: Text(tx(context, 'Vaisto pakuotės', 'Medicine packages')),
+    ),
     body: ListView(
       padding: const EdgeInsets.all(18),
       children: [
-        card(Text(
-          '${widget.medicine.name} ${widget.medicine.strength}\n'
-          '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)}',
-          style: const TextStyle(fontWeight: FontWeight.w800),
-        )),
+        card(
+          Text(
+            '${widget.medicine.name} ${widget.medicine.strength}\n'
+            '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)}',
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
         if (widget.medicine.batches.isEmpty)
-          card(Text(tx(
-            context,
-            'Atskiros pakuotės dar nesuvestos. Dabartinis bendras likutis išsaugotas.',
-            'No individual packages yet. The current total stock is preserved.',
-          ))),
-        ...widget.medicine.batches.map((item) => Card(
-          child: ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: mint,
-              child: Icon(Icons.inventory_2_outlined, color: green),
-            ),
-            title: Text('${quantityLabel(item.quantity)} ${tx(context, 'vnt.', 'units')}'),
-            subtitle: Text([
-              if (item.expiry.isNotEmpty) '${tx(context, 'Galioja iki', 'Expires')}: ${item.expiry}',
-              if (item.batchNumber.isNotEmpty) '${tx(context, 'Partija', 'Batch')}: ${item.batchNumber}',
-              if (item.storageLocation.isNotEmpty) '${tx(context, 'Vieta', 'Location')}: ${item.storageLocation}',
-            ].join('\n')),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () {
-                widget.medicine.batches.remove(item);
-                widget.medicine.stock = widget.medicine.batches
-                    .fold(0, (total, batch) => total + batch.quantity);
-                widget.onChanged();
-                setState(() {});
-              },
+          card(
+            Text(
+              tx(
+                context,
+                'Atskiros pakuotės dar nesuvestos. Dabartinis bendras likutis išsaugotas.',
+                'No individual packages yet. The current total stock is preserved.',
+              ),
             ),
           ),
-        )),
+        ...widget.medicine.batches.map(
+          (item) => Card(
+            child: ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: mint,
+                child: Icon(Icons.inventory_2_outlined, color: green),
+              ),
+              title: Text(
+                '${quantityLabel(item.quantity)} ${tx(context, 'vnt.', 'units')}',
+              ),
+              subtitle: Text(
+                [
+                  if (item.expiry.isNotEmpty)
+                    '${tx(context, 'Galioja iki', 'Expires')}: ${item.expiry}',
+                  if (item.batchNumber.isNotEmpty)
+                    '${tx(context, 'Partija', 'Batch')}: ${item.batchNumber}',
+                  if (item.storageLocation.isNotEmpty)
+                    '${tx(context, 'Vieta', 'Location')}: ${item.storageLocation}',
+                ].join('\n'),
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () {
+                  widget.medicine.batches.remove(item);
+                  widget.medicine.stock = widget.medicine.batches.fold(
+                    0,
+                    (total, batch) => total + batch.quantity,
+                  );
+                  widget.onChanged();
+                  setState(() {});
+                },
+              ),
+            ),
+          ),
+        ),
         FilledButton.icon(
           onPressed: _addBatch,
           icon: const Icon(Icons.add),
@@ -2638,10 +2993,7 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
   );
 }
 
-Widget _medicineSectionsTab(
-  BuildContext c,
-  List<(String, String)> sections,
-) =>
+Widget _medicineSectionsTab(BuildContext c, List<(String, String)> sections) =>
     ListView(
       padding: EdgeInsets.fromLTRB(
         18,
@@ -2650,30 +3002,37 @@ Widget _medicineSectionsTab(
         MediaQuery.paddingOf(c).bottom + 28,
       ),
       children: sections
-          .map((section) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: card(
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                section.$1,
-                style: const TextStyle(
-                  color: navy,
-                  fontSize: 21,
-                  fontWeight: FontWeight.w800,
+          .map(
+            (section) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: card(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      section.$1,
+                      style: const TextStyle(
+                        color: navy,
+                        fontSize: 21,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      section.$2.trim().isEmpty
+                          ? tx(
+                              c,
+                              'Informacija dar neįvesta.',
+                              'Information has not been entered yet.',
+                            )
+                          : section.$2.trim(),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 10),
-              Text(
-                section.$2.trim().isEmpty
-                    ? tx(c, 'Informacija dar neįvesta.', 'Information has not been entered yet.')
-                    : section.$2.trim(),
-              ),
-            ],
-          ),
-        ),
-      )).toList(),
+            ),
+          )
+          .toList(),
     );
 
 class MedicineEditor extends StatefulWidget {
@@ -2699,47 +3058,62 @@ class MedicineEditor extends StatefulWidget {
 
 class _MedicineEditor extends State<MedicineEditor> {
   late final name = TextEditingController(
-        text: widget.medicine?.name ??
+        text:
+            widget.medicine?.name ??
             widget.registryMedicine?.name ??
             _guessName(widget.sourceText),
       ),
       sub = TextEditingController(
-        text: widget.medicine?.substance ?? widget.registryMedicine?.substance ?? '',
+        text:
+            widget.medicine?.substance ??
+            widget.registryMedicine?.substance ??
+            '',
       ),
       strength = TextEditingController(
-        text: widget.medicine?.strength ??
+        text:
+            widget.medicine?.strength ??
             widget.registryMedicine?.strength ??
             _guessStrength(widget.sourceText),
       ),
       manufacturer = TextEditingController(
-        text: widget.medicine?.manufacturer ?? widget.registryMedicine?.registrant ?? '',
+        text:
+            widget.medicine?.manufacturer ??
+            widget.registryMedicine?.registrant ??
+            '',
       ),
       dosageForm = TextEditingController(
-        text: widget.medicine?.dosageForm ?? widget.registryMedicine?.dosageForm ?? '',
+        text:
+            widget.medicine?.dosageForm ??
+            widget.registryMedicine?.dosageForm ??
+            '',
       ),
       packageSize = TextEditingController(
-        text: widget.medicine?.packageSize ??
+        text:
+            widget.medicine?.packageSize ??
             widget.registryMedicine?.packageDescription ??
             _guessPackageSize(widget.sourceText),
       ),
       purpose = TextEditingController(text: widget.medicine?.purpose ?? ''),
       dosage = TextEditingController(text: widget.medicine?.dosage ?? ''),
       warnings = TextEditingController(text: widget.medicine?.warnings ?? ''),
-      sideEffects = TextEditingController(text: widget.medicine?.sideEffects ?? ''),
-      interactions = TextEditingController(text: widget.medicine?.interactions ?? ''),
+      sideEffects = TextEditingController(
+        text: widget.medicine?.sideEffects ?? '',
+      ),
+      interactions = TextEditingController(
+        text: widget.medicine?.interactions ?? '',
+      ),
       expiry = TextEditingController(
-        text: widget.medicine?.expiry ?? MedicineMatcher.expiry(widget.sourceText) ?? '',
+        text:
+            widget.medicine?.expiry ??
+            MedicineMatcher.expiry(widget.sourceText) ??
+            '',
       ),
       prescriptionValidUntil = TextEditingController(
         text: widget.medicine?.prescriptionValidUntil ?? '',
       ),
-      treatmentUntil = TextEditingController(
-        text: widget.medicine?.treatmentUntil ?? '',
-      ),
+      treatmentUntil = TextEditingController(text: widget.medicine?.treatmentUntil ?? ''),
       stock = TextEditingController(text: quantityLabel(widget.medicine?.stock ?? 1)),
-      lowStockThreshold = TextEditingController(
-        text: quantityLabel(widget.medicine?.lowStockThreshold ?? 10),
-      ),
+      lowStockThreshold = TextEditingController(text: quantityLabel(widget.medicine?.lowStockThreshold ?? 10)),
       batchNumber = TextEditingController(text: widget.medicine?.batchNumber ?? ''),
       barcode = TextEditingController(text: widget.medicine?.barcode ?? ''),
       storageLocation = TextEditingController(text: widget.medicine?.storageLocation ?? ''),
@@ -2753,8 +3127,10 @@ class _MedicineEditor extends State<MedicineEditor> {
       unitStrengthMg = TextEditingController(text: widget.medicine?.unitStrengthMg ?? ''),
       doseRuleSource = TextEditingController(text: widget.medicine?.doseRuleSource ?? ''),
       notes = TextEditingController(text: widget.medicine?.notes ?? '');
-  late bool prescription = widget.medicine?.prescription ??
-      (widget.registryMedicine?.prescriptionStatus.toLowerCase() == 'receptinis');
+  late bool prescription =
+      widget.medicine?.prescription ??
+      (widget.registryMedicine?.prescriptionStatus.toLowerCase() ==
+          'receptinis');
   late bool doseRuleVerified = widget.medicine?.doseRuleVerified ?? false;
   late final Set<String> selectedCategories = {
     ..._splitCategories(widget.medicine?.category ?? ''),
@@ -2772,6 +3148,9 @@ class _MedicineEditor extends State<MedicineEditor> {
   Timer? _vvktDebounce;
   bool _applyingVvkt = false;
   bool _vvktSearchBusy = false;
+  bool _aiProfileBusy = false;
+  String _aiProfileMessage = '';
+  String _lastAiRegistration = '';
   String _vvktSearchError = '';
   List<VvktMedicine> _vvktSearchResults = [];
   late VvktMedicine? _registryMedicine = widget.registryMedicine;
@@ -2782,23 +3161,48 @@ class _MedicineEditor extends State<MedicineEditor> {
   Future<void> _importLeaflet() async {
     final identity = LeafletIdentity(name.text, strength.text, dosageForm.text);
     if (!identity.isComplete) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
-        'Pirmiausia įrašyk tikslų pavadinimą, stiprumą ir vaisto formą.',
-        'First enter the exact medicine name, strength and form.'))));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            tx(
+              context,
+              'Pirmiausia įrašyk tikslų pavadinimą, stiprumą ir vaisto formą.',
+              'First enter the exact medicine name, strength and form.',
+            ),
+          ),
+        ),
+      );
       return;
     }
     _vvktDebounce?.cancel();
-    final record = await Navigator.push<LeafletRecord>(context, MaterialPageRoute(
-      builder: (_) => LeafletImportPage(identity: identity,
-        initialUrl: leaflet.text.trim().isNotEmpty
-            ? leaflet.text : _leafletRecord?.sourceUrl ?? ''),
-    ));
+    final record = await Navigator.push<LeafletRecord>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LeafletImportPage(
+          identity: identity,
+          initialConsent: widget.data.aiConsentGranted,
+          initialUrl: leaflet.text.trim().isNotEmpty
+              ? leaflet.text
+              : _leafletRecord?.sourceUrl ?? '',
+        ),
+      ),
+    );
     if (!mounted || record == null) return;
     // An outstanding registry request may have changed the editor meanwhile.
-    if (!record.identity.matches(LeafletIdentity(name.text, strength.text, dosageForm.text))) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
-        'Vaisto duomenys pasikeitė. Lapelio ištraukos nepridėtos.',
-        'Medicine details changed. Leaflet extracts were not added.'))));
+    if (!record.identity.matches(
+      LeafletIdentity(name.text, strength.text, dosageForm.text),
+    )) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            tx(
+              context,
+              'Vaisto duomenys pasikeitė. Lapelio ištraukos nepridėtos.',
+              'Medicine details changed. Leaflet extracts were not added.',
+            ),
+          ),
+        ),
+      );
       return;
     }
     var filled = 0;
@@ -2809,6 +3213,7 @@ class _MedicineEditor extends State<MedicineEditor> {
         filled++;
       }
     }
+
     setState(() {
       _leafletRecord = record;
       fillMissing(purpose, 'purpose');
@@ -2819,11 +3224,19 @@ class _MedicineEditor extends State<MedicineEditor> {
       fillMissing(storageLocation, 'storage');
       if (leaflet.text.trim().isEmpty) leaflet.text = record.sourceUrl;
     });
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
-      'AI juodraštis patvirtintas: užpildyta $filled trūkstamų laukų. '
-          'Esami įrašai nepakeisti. Kad išliktų, išsaugok kortelę.',
-      'AI draft approved: $filled missing fields filled. Existing entries were '
-          'not changed. Save the card to keep them.'))));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          tx(
+            context,
+            'AI juodraštis patvirtintas: užpildyta $filled trūkstamų laukų. '
+                'Esami įrašai nepakeisti. Kad išliktų, išsaugok kortelę.',
+            'AI draft approved: $filled missing fields filled. Existing entries were '
+                'not changed. Save the card to keep them.',
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -2844,12 +3257,36 @@ class _MedicineEditor extends State<MedicineEditor> {
     _vvktDebounce?.cancel();
     name.removeListener(_scheduleVvktSearch);
     for (final x in [
-      name, sub, strength, manufacturer, dosageForm, packageSize, newCategory,
-      purpose, dosage, warnings, sideEffects, interactions, expiry,
-      prescriptionValidUntil, treatmentUntil,
-      stock, lowStockThreshold, batchNumber, barcode, storageLocation, leaflet, notes,
-      doseMgPerKg, doseFixedMg, doseMaxSingleMg, doseMaxDailyMg,
-      doseIntervalHours, concentrationMgPerMl, unitStrengthMg, doseRuleSource,
+      name,
+      sub,
+      strength,
+      manufacturer,
+      dosageForm,
+      packageSize,
+      newCategory,
+      purpose,
+      dosage,
+      warnings,
+      sideEffects,
+      interactions,
+      expiry,
+      prescriptionValidUntil,
+      treatmentUntil,
+      stock,
+      lowStockThreshold,
+      batchNumber,
+      barcode,
+      storageLocation,
+      leaflet,
+      notes,
+      doseMgPerKg,
+      doseFixedMg,
+      doseMaxSingleMg,
+      doseMaxDailyMg,
+      doseIntervalHours,
+      concentrationMgPerMl,
+      unitStrengthMg,
+      doseRuleSource,
     ]) {
       x.dispose();
     }
@@ -2919,7 +3356,8 @@ class _MedicineEditor extends State<MedicineEditor> {
     packageSize.text = medicine.packageDescription;
     prescription = medicine.prescriptionStatus.toLowerCase() == 'receptinis';
     if (dosage.text.trim().isEmpty && medicine.administrationRoute.isNotEmpty) {
-      dosage.text = '${tx(context, 'Vartojimo būdas', 'Administration route')}: '
+      dosage.text =
+          '${tx(context, 'Vartojimo būdas', 'Administration route')}: '
           '${medicine.administrationRoute}';
     }
     selectedCategories.remove('Kita');
@@ -2932,6 +3370,63 @@ class _MedicineEditor extends State<MedicineEditor> {
     _registryMedicine = medicine;
     _applyingVvkt = false;
     if (mounted) setState(() {});
+    if (widget.data.aiConsentGranted) _autoFillProfile(medicine);
+  }
+
+  Future<void> _autoFillProfile(VvktMedicine medicine) async {
+    if (_aiProfileBusy ||
+        _lastAiRegistration == medicine.registrationNumber ||
+        !FirebaseLeafletService.supported)
+      return;
+    _lastAiRegistration = medicine.registrationNumber;
+    setState(() {
+      _aiProfileBusy = true;
+      _aiProfileMessage = tx(
+        context,
+        'AI pildo vaisto kortelę…',
+        'AI is filling the medicine card…',
+      );
+    });
+    try {
+      final profile = await AiMedicineProfileService.generate(
+        medicine: medicine,
+        recognizedPackageText: widget.sourceText,
+      );
+      if (!mounted ||
+          _registryMedicine?.registrationNumber != medicine.registrationNumber)
+        return;
+      void fill(TextEditingController target, String value) {
+        if (target.text.trim().isEmpty && value.trim().isNotEmpty) {
+          target.text = value.trim();
+        }
+      }
+
+      setState(() {
+        fill(purpose, profile.purpose);
+        fill(dosage, profile.dosage);
+        fill(warnings, profile.warnings);
+        fill(sideEffects, profile.sideEffects);
+        fill(interactions, profile.interactions);
+        fill(storageLocation, profile.storage);
+        selectedCategories.addAll(profile.categories);
+        _aiProfileMessage = tx(
+          context,
+          'Kortelės informacija užpildyta automatiškai. Patikrinkite ir išsaugokite.',
+          'Card information was filled automatically. Review and save.',
+        );
+      });
+    } catch (_) {
+      if (mounted)
+        setState(
+          () => _aiProfileMessage = tx(
+            context,
+            'Automatinis papildymas nepavyko. Pagrindiniai VVKT duomenys išsaugoti.',
+            'Automatic enrichment failed. Core VVKT data is preserved.',
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _aiProfileBusy = false);
+    }
   }
 
   Widget _vvktNameResults(BuildContext c) {
@@ -2944,7 +3439,10 @@ class _MedicineEditor extends State<MedicineEditor> {
     if (_vvktSearchError.isNotEmpty) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 12),
-        child: Text(_vvktSearchError, style: const TextStyle(color: Color(0xffb45309))),
+        child: Text(
+          _vvktSearchError,
+          style: const TextStyle(color: Color(0xffb45309)),
+        ),
       );
     }
     if (_vvktSearchResults.isEmpty) return const SizedBox.shrink();
@@ -2954,20 +3452,33 @@ class _MedicineEditor extends State<MedicineEditor> {
         initiallyExpanded: _registryMedicine == null,
         leading: const Icon(Icons.verified_outlined, color: green),
         title: Text(
-          tx(c, 'VVKT rasta: ${_vvktSearchResults.length}', 'VVKT results: ${_vvktSearchResults.length}'),
+          tx(
+            c,
+            'VVKT rasta: ${_vvktSearchResults.length}',
+            'VVKT results: ${_vvktSearchResults.length}',
+          ),
           style: const TextStyle(fontWeight: FontWeight.w800),
         ),
         subtitle: _registryMedicine == null
             ? null
             : Text('${_registryMedicine!.name} ${_registryMedicine!.strength}'),
-        children: _vvktSearchResults.take(10).map((medicine) => ListTile(
-          title: Text('${medicine.name} ${medicine.strength}'),
-          subtitle: Text('${medicine.dosageForm} • ${medicine.packageDescription}'),
-          trailing: medicine.registrationNumber == _registryMedicine?.registrationNumber
-              ? const Icon(Icons.check_circle, color: green)
-              : null,
-          onTap: () => _applyVvktMedicine(medicine),
-        )).toList(),
+        children: _vvktSearchResults
+            .take(10)
+            .map(
+              (medicine) => ListTile(
+                title: Text('${medicine.name} ${medicine.strength}'),
+                subtitle: Text(
+                  '${medicine.dosageForm} • ${medicine.packageDescription}',
+                ),
+                trailing:
+                    medicine.registrationNumber ==
+                        _registryMedicine?.registrationNumber
+                    ? const Icon(Icons.check_circle, color: green)
+                    : null,
+                onTap: () => _applyVvktMedicine(medicine),
+              ),
+            )
+            .toList(),
       ),
     );
   }
@@ -2980,9 +3491,12 @@ class _MedicineEditor extends State<MedicineEditor> {
     );
     if (picked == null) return;
     final directory = await getApplicationDocumentsDirectory();
-    final extension = picked.path.contains('.') ? picked.path.split('.').last : 'jpg';
+    final extension = picked.path.contains('.')
+        ? picked.path.split('.').last
+        : 'jpg';
     final id = widget.medicine?.id ?? newId();
-    final saved = await File(picked.path).copy('${directory.path}/medicine_$id.$extension');
+    final saved = await File(picked.path)
+        .copy('${directory.path}/medicine_$id.$extension');
     if (mounted) setState(() => imagePath = saved.path);
   }
 
@@ -3004,22 +3518,24 @@ class _MedicineEditor extends State<MedicineEditor> {
           spacing: 8,
           runSpacing: 6,
           children: categories
-              .map((category) => FilterChip(
-                    label: Text(category),
-                    selected: selectedCategories.contains(category),
-                    onSelected: (selected) => setState(() {
-                      if (selected) {
-                        if (category == 'Kita') {
-                          selectedCategories.clear();
-                        } else {
-                          selectedCategories.remove('Kita');
-                        }
-                        selectedCategories.add(category);
+              .map(
+                (category) => FilterChip(
+                  label: Text(category),
+                  selected: selectedCategories.contains(category),
+                  onSelected: (selected) => setState(() {
+                    if (selected) {
+                      if (category == 'Kita') {
+                        selectedCategories.clear();
                       } else {
-                        selectedCategories.remove(category);
+                        selectedCategories.remove('Kita');
                       }
-                    }),
-                  ))
+                      selectedCategories.add(category);
+                    } else {
+                      selectedCategories.remove(category);
+                    }
+                  }),
+                ),
+              )
               .toList(),
         ),
         const SizedBox(height: 8),
@@ -3071,29 +3587,42 @@ class _MedicineEditor extends State<MedicineEditor> {
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
-          children: widget.data.members.map((member) => FilterChip(
-            avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
-            label: Text(member.name),
-            selected: selectedMemberIds.contains(member.id),
-            onSelected: (selected) => setState(() {
-              if (selected) {
-                selectedMemberIds.add(member.id);
-              } else {
-                selectedMemberIds.remove(member.id);
-              }
-            }),
-          )).toList(),
+          children: widget.data.members
+              .map(
+                (member) => FilterChip(
+                  avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
+                  label: Text(member.name),
+                  selected: selectedMemberIds.contains(member.id),
+                  onSelected: (selected) => setState(() {
+                    if (selected) {
+                      selectedMemberIds.add(member.id);
+                    } else {
+                      selectedMemberIds.remove(member.id);
+                    }
+                  }),
+                ),
+              )
+              .toList(),
         ),
         if (warningsForMembers.isNotEmpty)
           Card(
             color: const Color(0xffffe9e8),
             child: ListTile(
-              leading: const Icon(Icons.warning_amber_rounded, color: Color(0xffc62828)),
+              leading: const Icon(
+                Icons.warning_amber_rounded,
+                color: Color(0xffc62828),
+              ),
               title: Text(
-                tx(c, 'Patikrinkite alergijas ir netoleravimą', 'Check allergies and intolerances'),
+                tx(
+                  c,
+                  'Patikrinkite alergijas ir netoleravimą',
+                  'Check allergies and intolerances',
+                ),
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
-              subtitle: Text(warningsForMembers.map((member) => member.name).join(', ')),
+              subtitle: Text(
+                warningsForMembers.map((member) => member.name).join(', '),
+              ),
             ),
           ),
         const SizedBox(height: 8),
@@ -3104,9 +3633,11 @@ class _MedicineEditor extends State<MedicineEditor> {
   @override
   Widget build(c) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.medicine == null
-          ? tx(c, 'Pridėti vaistą', 'Add medicine')
-          : tx(c, 'Redaguoti vaistą', 'Edit medicine')),
+      title: Text(
+        widget.medicine == null
+            ? tx(c, 'Pridėti vaistą', 'Add medicine')
+            : tx(c, 'Redaguoti vaistą', 'Edit medicine'),
+      ),
     ),
     backgroundColor: const Color(0xfff6fbfa),
     body: ListView(
@@ -3157,49 +3688,168 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, sub, 'Veiklioji medžiaga', 'Active ingredient'),
         field(c, strength, 'Stiprumas', 'Strength'),
         field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
-        field(c, dosageForm, 'Vaisto forma (tabletės, sirupas...)', 'Dosage form'),
+        field(
+          c,
+          dosageForm,
+          'Vaisto forma (tabletės, sirupas...)',
+          'Dosage form',
+        ),
         field(c, packageSize, 'Pakuotės dydis', 'Package size'),
+        if (FirebaseLeafletService.supported && !widget.data.aiConsentGranted)
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            value: false,
+            onChanged: (value) {
+              if (value != true) return;
+              widget.data.aiConsentGranted = true;
+              widget.onChanged();
+              setState(() {});
+              final selected = _registryMedicine;
+              if (selected != null) _autoFillProfile(selected);
+            },
+            title: Text(
+              tx(
+                c,
+                'Sutinku vieną kartą įjungti „Firebase AI / Gemini“ automatiniam '
+                    'vaistų kortelių ir savijautos duomenų apdorojimui. Sutikimas bus įsimintas.',
+                'Enable Firebase AI / Gemini once for automatic medicine-card and '
+                    'symptom processing. This consent will be remembered.',
+              ),
+            ),
+          ),
+        if (_aiProfileBusy) const LinearProgressIndicator(),
+        if (_aiProfileMessage.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              _aiProfileMessage,
+              style: const TextStyle(color: green),
+            ),
+          ),
         if (FirebaseLeafletService.supported)
-          OutlinedButton.icon(onPressed: _importLeaflet,
+          OutlinedButton.icon(
+            onPressed: _importLeaflet,
             icon: const Icon(Icons.auto_awesome_outlined),
-            label: Text(tx(c, 'Papildyti iš lapelio su AI', 'Import leaflet with AI'))),
+            label: Text(
+              tx(c, 'Papildyti iš lapelio su AI', 'Import leaflet with AI'),
+            ),
+          ),
         if (_leafletRecord != null) ...[
           LeafletRecordCard(record: _leafletRecord!),
-          TextButton(onPressed: () => setState(() => _leafletRecord = null),
-            child: Text(tx(c, 'Pašalinti lapelio ištraukas', 'Remove leaflet extracts'))),
+          TextButton(
+            onPressed: () => setState(() => _leafletRecord = null),
+            child: Text(
+              tx(c, 'Pašalinti lapelio ištraukas', 'Remove leaflet extracts'),
+            ),
+          ),
         ],
         _categoryPicker(c),
         _memberPicker(c),
-        field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
+        field(
+          c,
+          purpose,
+          'Paskirtis / kam vartojamas',
+          'Purpose / use',
+          lines: 2,
+        ),
         field(c, dosage, 'Kaip vartoti', 'How to use', lines: 3),
         ExpansionTile(
           tilePadding: EdgeInsets.zero,
-          title: Text(tx(c, 'Patvirtinta dozavimo taisyklė', 'Approved dosing rule')),
-          subtitle: Text(tx(
-            c,
-            'Naudojama tik skaičiavimui pagal oficialų lapelį',
-            'Used only for calculation from an official leaflet',
-          )),
+          title: Text(
+            tx(c, 'Patvirtinta dozavimo taisyklė', 'Approved dosing rule'),
+          ),
+          subtitle: Text(
+            tx(
+              c,
+              'Naudojama tik skaičiavimui pagal oficialų lapelį',
+              'Used only for calculation from an official leaflet',
+            ),
+          ),
           children: [
-            field(c, doseMgPerKg, 'Vienkartinė dozė mg/kg', 'Single dose mg/kg', number: true),
-            field(c, doseFixedMg, 'Fiksuota vienkartinė dozė mg', 'Fixed single dose mg', number: true),
-            field(c, doseMaxSingleMg, 'Didžiausia vienkartinė dozė mg', 'Maximum single dose mg', number: true),
-            field(c, doseMaxDailyMg, 'Didžiausia paros dozė mg', 'Maximum daily dose mg', number: true),
-            field(c, doseIntervalHours, 'Mažiausias intervalas valandomis', 'Minimum interval in hours', number: true),
-            field(c, concentrationMgPerMl, 'Skysčio koncentracija mg/ml', 'Liquid concentration mg/ml', number: true),
-            field(c, unitStrengthMg, 'Vienos tabletės / vieneto stiprumas mg', 'Tablet / unit strength mg', number: true),
-            field(c, doseRuleSource, 'Oficialaus lapelio HTTPS nuoroda', 'Official leaflet HTTPS URL'),
+            field(
+              c,
+              doseMgPerKg,
+              'Vienkartinė dozė mg/kg',
+              'Single dose mg/kg',
+              number: true,
+            ),
+            field(
+              c,
+              doseFixedMg,
+              'Fiksuota vienkartinė dozė mg',
+              'Fixed single dose mg',
+              number: true,
+            ),
+            field(
+              c,
+              doseMaxSingleMg,
+              'Didžiausia vienkartinė dozė mg',
+              'Maximum single dose mg',
+              number: true,
+            ),
+            field(
+              c,
+              doseMaxDailyMg,
+              'Didžiausia paros dozė mg',
+              'Maximum daily dose mg',
+              number: true,
+            ),
+            field(
+              c,
+              doseIntervalHours,
+              'Mažiausias intervalas valandomis',
+              'Minimum interval in hours',
+              number: true,
+            ),
+            field(
+              c,
+              concentrationMgPerMl,
+              'Skysčio koncentracija mg/ml',
+              'Liquid concentration mg/ml',
+              number: true,
+            ),
+            field(
+              c,
+              unitStrengthMg,
+              'Vienos tabletės / vieneto stiprumas mg',
+              'Tablet / unit strength mg',
+              number: true,
+            ),
+            field(
+              c,
+              doseRuleSource,
+              'Oficialaus lapelio HTTPS nuoroda',
+              'Official leaflet HTTPS URL',
+            ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: doseRuleVerified,
               onChanged: (value) => setState(() => doseRuleVerified = value),
-              title: Text(tx(c, 'Taisyklė palyginta su oficialiu lapeliu', 'Rule checked against official leaflet')),
+              title: Text(
+                tx(
+                  c,
+                  'Taisyklė palyginta su oficialiu lapeliu',
+                  'Rule checked against official leaflet',
+                ),
+              ),
             ),
           ],
         ),
         field(c, warnings, 'Svarbūs įspėjimai', 'Important warnings', lines: 3),
-        field(c, sideEffects, 'Dažnesni šalutiniai poveikiai', 'Common side effects', lines: 3),
-        field(c, interactions, 'Sąveikos su kitais vaistais', 'Interactions', lines: 3),
+        field(
+          c,
+          sideEffects,
+          'Dažnesni šalutiniai poveikiai',
+          'Common side effects',
+          lines: 3,
+        ),
+        field(
+          c,
+          interactions,
+          'Sąveikos su kitais vaistais',
+          'Interactions',
+          lines: 3,
+        ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: Text(tx(c, 'Receptinis vaistas', 'Prescription medicine')),
@@ -3304,73 +3954,88 @@ class _MedicineEditor extends State<MedicineEditor> {
                 (!isLeafletUrl(doseRuleSource.text) ||
                     (doseMgPerKg.text.trim().isEmpty &&
                         doseFixedMg.text.trim().isEmpty))) {
-              ScaffoldMessenger.of(c).showSnackBar(SnackBar(
-                content: Text(tx(
-                  c,
-                  'Patvirtintai dozavimo taisyklei reikia oficialios HTTPS '
-                      'nuorodos ir mg/kg arba fiksuotos dozės.',
-                  'An approved dosing rule needs an official HTTPS source and '
-                      'either mg/kg or a fixed dose.',
-                )),
-              ));
+              ScaffoldMessenger.of(c).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    tx(
+                      c,
+                      'Patvirtintai dozavimo taisyklei reikia oficialios HTTPS '
+                          'nuorodos ir mg/kg arba fiksuotos dozės.',
+                      'An approved dosing rule needs an official HTTPS source and '
+                          'either mg/kg or a fixed dose.',
+                    ),
+                  ),
+                ),
+              );
               return;
             }
             final parsedStock =
                 double.tryParse(stock.text.trim().replaceAll(',', '.')) ?? 1;
-            final parsedThreshold = double.tryParse(
+            final parsedThreshold =
+                double.tryParse(
                   lowStockThreshold.text.trim().replaceAll(',', '.'),
                 ) ??
                 10;
             final existing = widget.medicine;
-            final leafletRecord = _leafletRecord?.identity.matches(
-              LeafletIdentity(name.text, strength.text, dosageForm.text)) == true
-                ? _leafletRecord : null;
+            final leafletRecord =
+                _leafletRecord?.identity.matches(
+                      LeafletIdentity(
+                        name.text,
+                        strength.text,
+                        dosageForm.text,
+                      ),
+                    ) ==
+                    true
+                ? _leafletRecord
+                : null;
             if (existing == null) {
-              widget.data.meds.add(Med(
-                id: newId(),
-                name: name.text.trim(),
-                substance: sub.text.trim(),
-                strength: strength.text.trim(),
-                purpose: purpose.text.trim(),
-                category: selectedCategories.isEmpty
-                    ? 'Kita'
-                    : selectedCategories.join('; '),
-                expiry: expiry.text.trim(),
-                prescriptionValidUntil: prescriptionValidUntil.text.trim(),
-                treatmentUntil: treatmentUntil.text.trim(),
-                stock: parsedStock,
-                lowStockThreshold: parsedThreshold,
-                prescription: prescription,
-                leaflet: leaflet.text.trim(),
-                imagePath: imagePath,
-                manufacturer: manufacturer.text.trim(),
-                dosageForm: dosageForm.text.trim(),
-                packageSize: packageSize.text.trim(),
-                dosage: dosage.text.trim(),
-                warnings: warnings.text.trim(),
-                sideEffects: sideEffects.text.trim(),
-                interactions: interactions.text.trim(),
-                doseMgPerKg: doseMgPerKg.text.trim(),
-                doseFixedMg: doseFixedMg.text.trim(),
-                doseMaxSingleMg: doseMaxSingleMg.text.trim(),
-                doseMaxDailyMg: doseMaxDailyMg.text.trim(),
-                doseIntervalHours: doseIntervalHours.text.trim(),
-                concentrationMgPerMl: concentrationMgPerMl.text.trim(),
-                unitStrengthMg: unitStrengthMg.text.trim(),
-                doseRuleSource: doseRuleSource.text.trim(),
-                doseRuleVerified: doseRuleVerified,
-                atcCode: _registryMedicine?.atcCode ?? '',
-                registrationNumber:
-                    _registryMedicine?.registrationNumber ?? '',
-                supplyStatus: _registryMedicine?.supplyStatus ?? '',
-                registryVerified: _registryMedicine != null,
-                leafletRecord: leafletRecord,
-                memberIds: selectedMemberIds.toList(),
-                batchNumber: batchNumber.text.trim(),
-                barcode: barcode.text.trim(),
-                storageLocation: storageLocation.text.trim(),
-                notes: notes.text.trim(),
-              ));
+              widget.data.meds.add(
+                Med(
+                  id: newId(),
+                  name: name.text.trim(),
+                  substance: sub.text.trim(),
+                  strength: strength.text.trim(),
+                  purpose: purpose.text.trim(),
+                  category: selectedCategories.isEmpty
+                      ? 'Kita'
+                      : selectedCategories.join('; '),
+                  expiry: expiry.text.trim(),
+                  prescriptionValidUntil: prescriptionValidUntil.text.trim(),
+                  treatmentUntil: treatmentUntil.text.trim(),
+                  stock: parsedStock,
+                  lowStockThreshold: parsedThreshold,
+                  prescription: prescription,
+                  leaflet: leaflet.text.trim(),
+                  imagePath: imagePath,
+                  manufacturer: manufacturer.text.trim(),
+                  dosageForm: dosageForm.text.trim(),
+                  packageSize: packageSize.text.trim(),
+                  dosage: dosage.text.trim(),
+                  warnings: warnings.text.trim(),
+                  sideEffects: sideEffects.text.trim(),
+                  interactions: interactions.text.trim(),
+                  doseMgPerKg: doseMgPerKg.text.trim(),
+                  doseFixedMg: doseFixedMg.text.trim(),
+                  doseMaxSingleMg: doseMaxSingleMg.text.trim(),
+                  doseMaxDailyMg: doseMaxDailyMg.text.trim(),
+                  doseIntervalHours: doseIntervalHours.text.trim(),
+                  concentrationMgPerMl: concentrationMgPerMl.text.trim(),
+                  unitStrengthMg: unitStrengthMg.text.trim(),
+                  doseRuleSource: doseRuleSource.text.trim(),
+                  doseRuleVerified: doseRuleVerified,
+                  atcCode: _registryMedicine?.atcCode ?? '',
+                  registrationNumber:
+                      _registryMedicine?.registrationNumber ?? '',
+                  supplyStatus: _registryMedicine?.supplyStatus ?? '',
+                  registryVerified: _registryMedicine != null,
+                  leafletRecord: leafletRecord,
+                  memberIds: selectedMemberIds.toList(),
+                  batchNumber: batchNumber.text.trim(),
+                  barcode: barcode.text.trim(),
+                  storageLocation: storageLocation.text.trim(),
+                  notes: notes.text.trim(),
+                ),
+              );
             } else {
               existing.memberIds = selectedMemberIds.toList();
               existing
@@ -3399,12 +4064,13 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..doseRuleSource = doseRuleSource.text.trim()
                 ..doseRuleVerified = doseRuleVerified
                 ..atcCode = (_registryMedicine?.atcCode ?? existing.atcCode)
-                ..registrationNumber = (_registryMedicine?.registrationNumber ??
+                ..registrationNumber =
+                    (_registryMedicine?.registrationNumber ??
                     existing.registrationNumber)
-                ..supplyStatus = (_registryMedicine?.supplyStatus ??
-                    existing.supplyStatus)
-                ..registryVerified = (existing.registryVerified ||
-                    _registryMedicine != null)
+                ..supplyStatus =
+                    (_registryMedicine?.supplyStatus ?? existing.supplyStatus)
+                ..registryVerified =
+                    (existing.registryVerified || _registryMedicine != null)
                 ..expiry = expiry.text.trim()
                 ..prescriptionValidUntil = prescriptionValidUntil.text.trim()
                 ..treatmentUntil = treatmentUntil.text.trim()
@@ -3464,9 +4130,11 @@ String _guessRegistryName(String source) {
 
 String _registryTitleCase(String value) => value
     .split(' ')
-    .map((word) => word.isEmpty
-        ? word
-        : '${word.substring(0, 1).toUpperCase()}${word.substring(1).toLowerCase()}')
+    .map(
+      (word) => word.isEmpty
+          ? word
+          : '${word.substring(0, 1).toUpperCase()}${word.substring(1).toLowerCase()}',
+    )
     .join(' ');
 
 String _guessStrength(String source) =>
@@ -3477,10 +4145,10 @@ String _guessStrength(String source) =>
     '';
 
 String _guessPackageSize(String source) =>
-    RegExp(r'\bN\s?\d+\b', caseSensitive: false)
-        .firstMatch(source)
-        ?.group(0)
-        ?.replaceAll(' ', '') ??
+    RegExp(
+      r'\bN\s?\d+\b',
+      caseSensitive: false,
+    ).firstMatch(source)?.group(0)?.replaceAll(' ', '') ??
     '';
 
 const defaultMedicineCategories = <String>{
@@ -3551,42 +4219,42 @@ class FamilyPage extends StatelessWidget {
     child: ListView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
       children: [
-      title(tx(c, 'Mano šeima', 'My family')),
-      const SizedBox(height: 16),
-      if (data.members.isEmpty)
-        card(
-          Text(
-            tx(
-              c,
-              'Šeimos narių dar nėra. Pridėk žmogų ir pasirink, kas jis tau.',
-              'No family members yet. Add a person and choose their relationship.',
+        title(tx(c, 'Mano šeima', 'My family')),
+        const SizedBox(height: 16),
+        if (data.members.isEmpty)
+          card(
+            Text(
+              tx(
+                c,
+                'Šeimos narių dar nėra. Pridėk žmogų ir pasirink, kas jis tau.',
+                'No family members yet. Add a person and choose their relationship.',
+              ),
             ),
           ),
-        ),
-      if (data.members.any((m) => m.ageGroup != 'child')) ...[
-        _familyGroupTitle(c, 'Suaugusieji', 'Adults'),
-        ...data.members
-            .where((m) => m.ageGroup != 'child')
-            .map((m) => _familyMemberCard(c, data, m, onChanged)),
-      ],
-      if (data.members.any((m) => m.ageGroup == 'child')) ...[
+        if (data.members.any((m) => m.ageGroup != 'child')) ...[
+          _familyGroupTitle(c, 'Suaugusieji', 'Adults'),
+          ...data.members
+              .where((m) => m.ageGroup != 'child')
+              .map((m) => _familyMemberCard(c, data, m, onChanged)),
+        ],
+        if (data.members.any((m) => m.ageGroup == 'child')) ...[
+          const SizedBox(height: 8),
+          _familyGroupTitle(c, 'Vaikai', 'Children'),
+          ...data.members
+              .where((m) => m.ageGroup == 'child')
+              .map((m) => _familyMemberCard(c, data, m, onChanged)),
+        ],
         const SizedBox(height: 8),
-        _familyGroupTitle(c, 'Vaikai', 'Children'),
-        ...data.members
-            .where((m) => m.ageGroup == 'child')
-            .map((m) => _familyMemberCard(c, data, m, onChanged)),
-      ],
-      const SizedBox(height: 8),
-      FilledButton.icon(
-        onPressed: () => Navigator.push(
-          c,
-          MaterialPageRoute(
-            builder: (_) => MemberEditor(data: data, onChanged: onChanged),
+        FilledButton.icon(
+          onPressed: () => Navigator.push(
+            c,
+            MaterialPageRoute(
+              builder: (_) => MemberEditor(data: data, onChanged: onChanged),
+            ),
           ),
+          icon: const Icon(Icons.person_add),
+          label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
         ),
-        icon: const Icon(Icons.person_add),
-        label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
-      ),
       ],
     ),
   );
@@ -3628,11 +4296,8 @@ Widget _familyMemberCard(
     onTap: () => Navigator.push(
       c,
       MaterialPageRoute(
-        builder: (_) => MemberEditor(
-          data: data,
-          member: member,
-          onChanged: onChanged,
-        ),
+        builder: (_) =>
+            MemberEditor(data: data, member: member, onChanged: onChanged),
       ),
     ),
   ),
@@ -3704,21 +4369,38 @@ class _MemberEditor extends State<MemberEditor> {
       healthcareFacility = TextEditingController(
         text: widget.member?.healthcareFacility ?? '',
       ),
-      familyDoctor = TextEditingController(text: widget.member?.familyDoctor ?? ''),
-      facilityPhone = TextEditingController(text: widget.member?.facilityPhone ?? ''),
-      facilityAddress = TextEditingController(text: widget.member?.facilityAddress ?? ''),
+      familyDoctor = TextEditingController(
+        text: widget.member?.familyDoctor ?? '',
+      ),
+      facilityPhone = TextEditingController(
+        text: widget.member?.facilityPhone ?? '',
+      ),
+      facilityAddress = TextEditingController(
+        text: widget.member?.facilityAddress ?? '',
+      ),
       notes = TextEditingController(text: widget.member?.notes ?? '');
   late String relation = widget.member?.relation ?? 'self';
   late String gender = widget.member?.gender ?? 'unspecified';
-  late String ageGroup = widget.member?.ageGroup ??
+  late String ageGroup =
+      widget.member?.ageGroup ??
       (widget.member?.relation == 'child' ? 'child' : 'adult');
   late String imagePath = widget.member?.imagePath ?? '';
   @override
   void dispose() {
     for (final x in [
-      name, birth, bloodType, height, weight, allergies, conditions,
-      intolerantMedicines, healthcareFacility, familyDoctor, facilityPhone,
-      facilityAddress, notes,
+      name,
+      birth,
+      bloodType,
+      height,
+      weight,
+      allergies,
+      conditions,
+      intolerantMedicines,
+      healthcareFacility,
+      familyDoctor,
+      facilityPhone,
+      facilityAddress,
+      notes,
     ]) {
       x.dispose();
     }
@@ -3733,9 +4415,12 @@ class _MemberEditor extends State<MemberEditor> {
     );
     if (picked == null) return;
     final directory = await getApplicationDocumentsDirectory();
-    final extension = picked.path.contains('.') ? picked.path.split('.').last : 'jpg';
+    final extension = picked.path.contains('.')
+        ? picked.path.split('.').last
+        : 'jpg';
     final id = widget.member?.id ?? newId();
-    final saved = await File(picked.path).copy('${directory.path}/member_$id.$extension');
+    final saved = await File(picked.path)
+        .copy('${directory.path}/member_$id.$extension');
     if (mounted) setState(() => imagePath = saved.path);
   }
 
@@ -3781,7 +4466,9 @@ class _MemberEditor extends State<MemberEditor> {
           child: CircleAvatar(
             radius: 54,
             backgroundColor: mint,
-            backgroundImage: imagePath.isNotEmpty ? FileImage(File(imagePath)) : null,
+            backgroundImage: imagePath.isNotEmpty
+                ? FileImage(File(imagePath))
+                : null,
             child: imagePath.isEmpty
                 ? Text(
                     _memberEmoji(gender, ageGroup),
@@ -3880,9 +4567,19 @@ class _MemberEditor extends State<MemberEditor> {
         field(c, bloodType, 'Kraujo grupė', 'Blood type'),
         Row(
           children: [
-            Expanded(child: field(c, height, 'Ūgis (cm)', 'Height (cm)', number: true)),
+            Expanded(
+              child: field(c, height, 'Ūgis (cm)', 'Height (cm)', number: true),
+            ),
             const SizedBox(width: 10),
-            Expanded(child: field(c, weight, 'Svoris (kg)', 'Weight (kg)', number: true)),
+            Expanded(
+              child: field(
+                c,
+                weight,
+                'Svoris (kg)',
+                'Weight (kg)',
+                number: true,
+              ),
+            ),
           ],
         ),
         field(c, allergies, 'Alergijos', 'Allergies', lines: 2),
@@ -3906,33 +4603,51 @@ class _MemberEditor extends State<MemberEditor> {
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 10),
-        field(c, healthcareFacility, 'Gydymo įstaigos pavadinimas', 'Facility name'),
+        field(
+          c,
+          healthcareFacility,
+          'Gydymo įstaigos pavadinimas',
+          'Facility name',
+        ),
         field(c, familyDoctor, 'Šeimos gydytojas', 'Family doctor'),
         field(c, facilityPhone, 'Gydymo įstaigos telefonas', 'Facility phone'),
-        field(c, facilityAddress, 'Gydymo įstaigos adresas', 'Facility address'),
+        field(
+          c,
+          facilityAddress,
+          'Gydymo įstaigos adresas',
+          'Facility address',
+        ),
         field(c, notes, 'Pastabos', 'Notes', lines: 3),
         if (widget.member != null) ...[
           const SizedBox(height: 4),
           Text(
-            tx(c, 'Priskirti vaistai ir priminimai', 'Assigned medicines and reminders'),
+            tx(
+              c,
+              'Priskirti vaistai ir priminimai',
+              'Assigned medicines and reminders',
+            ),
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
           ...widget.data.meds
               .where((m) => m.memberIds.contains(widget.member!.id))
-              .map((m) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.medication_outlined, color: green),
-                    title: Text('${m.name} ${m.strength}'.trim()),
-                  )),
+              .map(
+                (m) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.medication_outlined, color: green),
+                  title: Text('${m.name} ${m.strength}'.trim()),
+                ),
+              ),
           ...widget.data.reminders
               .where((r) => r.memberId == widget.member!.id)
-              .map((r) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.alarm_outlined, color: green),
-                    title: Text(r.title),
-                    subtitle: Text(r.time),
-                  )),
+              .map(
+                (r) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.alarm_outlined, color: green),
+                  title: Text(r.title),
+                  subtitle: Text(r.time),
+                ),
+              ),
           Row(
             children: [
               Expanded(
@@ -4039,7 +4754,11 @@ class _MemberEditor extends State<MemberEditor> {
 class HealthCalendarPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const HealthCalendarPage({super.key, required this.data, required this.onChanged});
+  const HealthCalendarPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
   @override
   State<HealthCalendarPage> createState() => _HealthCalendarPageState();
 }
@@ -4051,24 +4770,47 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
   @override
   Widget build(BuildContext context) {
     final key = dateKey(selectedDay);
-    final doses = widget.data.reminders.where((item) =>
-        reminderAppliesOn(item, selectedDay) &&
-        (memberId.isEmpty || item.memberId == memberId)).toList()
-      ..sort((a, b) => a.time.compareTo(b.time));
-    final appointments = widget.data.appointments.where((item) =>
-        item.date == key && (memberId.isEmpty || item.memberId == memberId)).toList()
-      ..sort((a, b) => a.time.compareTo(b.time));
+    final doses =
+        widget.data.reminders
+            .where(
+              (item) =>
+                  reminderAppliesOn(item, selectedDay) &&
+                  (memberId.isEmpty || item.memberId == memberId),
+            )
+            .toList()
+          ..sort((a, b) => a.time.compareTo(b.time));
+    final appointments =
+        widget.data.appointments
+            .where(
+              (item) =>
+                  item.date == key &&
+                  (memberId.isEmpty || item.memberId == memberId),
+            )
+            .toList()
+          ..sort((a, b) => a.time.compareTo(b.time));
     final medicineDeadlines = <(Med, String, String)>[];
     for (final medicine in widget.data.meds) {
-      if (memberId.isNotEmpty && medicine.memberIds.isNotEmpty &&
-          !medicine.memberIds.contains(memberId)) continue;
+      if (memberId.isNotEmpty &&
+          medicine.memberIds.isNotEmpty &&
+          !medicine.memberIds.contains(memberId))
+        continue;
       if (medicine.prescriptionValidUntil == key) {
-        medicineDeadlines.add((medicine, 'receptas',
-            tx(context, 'Baigiasi recepto galiojimas', 'Prescription expires')));
+        medicineDeadlines.add((
+          medicine,
+          'receptas',
+          tx(context, 'Baigiasi recepto galiojimas', 'Prescription expires'),
+        ));
       }
       if (medicine.treatmentUntil == key) {
-        medicineDeadlines.add((medicine, 'gydymas',
-            tx(context, 'Vaisto turi užtekti iki šios dienos', 'Medicine should last until this day')));
+        medicineDeadlines.add((
+          medicine,
+          'gydymas',
+          tx(
+            context,
+            'Vaisto turi užtekti iki šios dienos',
+            'Medicine should last until this day',
+          ),
+        ));
       }
     }
     final days = List.generate(7, (index) {
@@ -4078,43 +4820,55 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
       children: [
-        Row(children: [
-          Expanded(child: title(tx(context, 'Šeimos kalendorius', 'Family calendar'))),
-          IconButton(
-            tooltip: tx(context, 'Pasirinkti datą', 'Choose date'),
-            onPressed: () async {
-              final value = await showDatePicker(
-                context: context,
-                initialDate: selectedDay,
-                firstDate: DateTime(2020),
-                lastDate: DateTime(2100),
-              );
-              if (value != null) setState(() => selectedDay = value);
-            },
-            icon: const Icon(Icons.date_range_outlined),
-          ),
-        ]),
+        Row(
+          children: [
+            Expanded(
+              child: title(
+                tx(context, 'Šeimos kalendorius', 'Family calendar'),
+              ),
+            ),
+            IconButton(
+              tooltip: tx(context, 'Pasirinkti datą', 'Choose date'),
+              onPressed: () async {
+                final value = await showDatePicker(
+                  context: context,
+                  initialDate: selectedDay,
+                  firstDate: DateTime(2020),
+                  lastDate: DateTime(2100),
+                );
+                if (value != null) setState(() => selectedDay = value);
+              },
+              icon: const Icon(Icons.date_range_outlined),
+            ),
+          ],
+        ),
         const SizedBox(height: 12),
         if (widget.data.members.isNotEmpty)
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
-            child: Row(children: [
-              ChoiceChip(
-                label: Text(tx(context, 'Visa šeima', 'Whole family')),
-                selected: memberId.isEmpty,
-                onSelected: (_) => setState(() => memberId = ''),
-              ),
-              const SizedBox(width: 7),
-              ...widget.data.members.map((member) => Padding(
-                padding: const EdgeInsets.only(right: 7),
-                child: ChoiceChip(
-                  avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
-                  label: Text(member.name),
-                  selected: memberId == member.id,
-                  onSelected: (_) => setState(() => memberId = member.id),
+            child: Row(
+              children: [
+                ChoiceChip(
+                  label: Text(tx(context, 'Visa šeima', 'Whole family')),
+                  selected: memberId.isEmpty,
+                  onSelected: (_) => setState(() => memberId = ''),
                 ),
-              )),
-            ]),
+                const SizedBox(width: 7),
+                ...widget.data.members.map(
+                  (member) => Padding(
+                    padding: const EdgeInsets.only(right: 7),
+                    child: ChoiceChip(
+                      avatar: Text(
+                        _memberEmoji(member.gender, member.ageGroup),
+                      ),
+                      label: Text(member.name),
+                      selected: memberId == member.id,
+                      onSelected: (_) => setState(() => memberId = member.id),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         const SizedBox(height: 12),
         SizedBox(
@@ -4131,84 +4885,172 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
                 onSelected: (_) => setState(() => selectedDay = day),
                 label: SizedBox(
                   width: 47,
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Text(DateFormat('E', Localizations.localeOf(context).languageCode).format(day)),
-                    Text('${day.day}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                  ]),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        DateFormat(
+                          'E',
+                          Localizations.localeOf(context).languageCode,
+                        ).format(day),
+                      ),
+                      Text(
+                        '${day.day}',
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               );
             },
           ),
         ),
-        Text(DateFormat('yyyy-MM-dd').format(selectedDay),
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: navy)),
+        Text(
+          DateFormat('yyyy-MM-dd').format(selectedDay),
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            color: navy,
+          ),
+        ),
         const SizedBox(height: 8),
         if (doses.isEmpty && appointments.isEmpty && medicineDeadlines.isEmpty)
-          card(Text(tx(context, 'Šiai dienai įvykių nėra.', 'No events for this day.'))),
-        ...medicineDeadlines.map((entry) => Card(
-          color: const Color(0xfffff3df),
-          child: ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: Colors.white,
-              child: Icon(Icons.event_busy_outlined, color: Color(0xffff9f1c)),
+          card(
+            Text(
+              tx(
+                context,
+                'Šiai dienai įvykių nėra.',
+                'No events for this day.',
+              ),
             ),
-            title: Text('${entry.$1.name} ${entry.$1.strength}',
-                style: const TextStyle(fontWeight: FontWeight.w800)),
-            subtitle: Text('${entry.$3}\n${tx(context, 'Paspauskite suplanuoti vizitą pas gydytoją.', 'Tap to schedule a doctor appointment.')}'),
-            isThreeLine: true,
-            trailing: const Icon(Icons.add_circle_outline),
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
-              AppointmentEditor(
-                data: widget.data,
-                initialDate: key,
-                initialMemberId: memberId.isNotEmpty
-                    ? memberId
-                    : entry.$1.memberIds.firstOrNull ?? '',
-                initialTitle: tx(context, 'Vizitas dėl recepto', 'Prescription appointment'),
-                initialReason: '${entry.$1.name} ${entry.$1.strength}: ${entry.$3}',
-                onChanged: widget.onChanged,
-              ))),
           ),
-        )),
-        ...appointments.map((item) => Card(child: ListTile(
-          leading: const CircleAvatar(
-            backgroundColor: mint,
-            child: Icon(Icons.medical_services_outlined, color: green),
+        ...medicineDeadlines.map(
+          (entry) => Card(
+            color: const Color(0xfffff3df),
+            child: ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: Colors.white,
+                child: Icon(
+                  Icons.event_busy_outlined,
+                  color: Color(0xffff9f1c),
+                ),
+              ),
+              title: Text(
+                '${entry.$1.name} ${entry.$1.strength}',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                '${entry.$3}\n${tx(context, 'Paspauskite suplanuoti vizitą pas gydytoją.', 'Tap to schedule a doctor appointment.')}',
+              ),
+              isThreeLine: true,
+              trailing: const Icon(Icons.add_circle_outline),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => AppointmentEditor(
+                    data: widget.data,
+                    initialDate: key,
+                    initialMemberId: memberId.isNotEmpty
+                        ? memberId
+                        : entry.$1.memberIds.firstOrNull ?? '',
+                    initialTitle: tx(
+                      context,
+                      'Vizitas dėl recepto',
+                      'Prescription appointment',
+                    ),
+                    initialReason:
+                        '${entry.$1.name} ${entry.$1.strength}: ${entry.$3}',
+                    onChanged: widget.onChanged,
+                  ),
+                ),
+              ),
+            ),
           ),
-          title: Text('${item.time} • ${item.title}', style: const TextStyle(fontWeight: FontWeight.w800)),
-          subtitle: Text([
-            _memberName(widget.data, item.memberId),
-            item.doctor,
-            item.facility,
-          ].where((x) => x.isNotEmpty).join(' • ')),
-          trailing: Icon(item.completed ? Icons.check_circle : Icons.chevron_right,
-              color: item.completed ? green : null),
-          onTap: () async {
-            await Navigator.push(context, MaterialPageRoute(builder: (_) =>
-              AppointmentEditor(data: widget.data, appointment: item, onChanged: widget.onChanged)));
-            setState(() {});
-          },
-        ))),
-        ...doses.map((item) => Card(child: ListTile(
-          leading: Icon(
-            item.takenDates.contains(key) ? Icons.check_circle : Icons.medication_outlined,
-            color: item.takenDates.contains(key) ? green : const Color(0xffff9f1c),
+        ),
+        ...appointments.map(
+          (item) => Card(
+            child: ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: mint,
+                child: Icon(Icons.medical_services_outlined, color: green),
+              ),
+              title: Text(
+                '${item.time} • ${item.title}',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                [
+                  _memberName(widget.data, item.memberId),
+                  item.doctor,
+                  item.facility,
+                ].where((x) => x.isNotEmpty).join(' • '),
+              ),
+              trailing: Icon(
+                item.completed ? Icons.check_circle : Icons.chevron_right,
+                color: item.completed ? green : null,
+              ),
+              onTap: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => AppointmentEditor(
+                      data: widget.data,
+                      appointment: item,
+                      onChanged: widget.onChanged,
+                    ),
+                  ),
+                );
+                setState(() {});
+              },
+            ),
           ),
-          title: Text('${item.time} • ${item.title}', style: const TextStyle(fontWeight: FontWeight.w700)),
-          subtitle: Text(_who(widget.data, item, tx(context, 'Aš', 'Me'))),
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
-            ReminderEditor(data: widget.data, reminder: item, onChanged: widget.onChanged))),
-        ))),
+        ),
+        ...doses.map(
+          (item) => Card(
+            child: ListTile(
+              leading: Icon(
+                item.takenDates.contains(key)
+                    ? Icons.check_circle
+                    : Icons.medication_outlined,
+                color: item.takenDates.contains(key)
+                    ? green
+                    : const Color(0xffff9f1c),
+              ),
+              title: Text(
+                '${item.time} • ${item.title}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(_who(widget.data, item, tx(context, 'Aš', 'Me'))),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ReminderEditor(
+                    data: widget.data,
+                    reminder: item,
+                    onChanged: widget.onChanged,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
         const SizedBox(height: 10),
         FilledButton.icon(
           onPressed: () async {
-            await Navigator.push(context, MaterialPageRoute(builder: (_) =>
-              AppointmentEditor(
-                data: widget.data,
-                initialDate: key,
-                initialMemberId: memberId,
-                onChanged: widget.onChanged,
-              )));
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => AppointmentEditor(
+                  data: widget.data,
+                  initialDate: key,
+                  initialMemberId: memberId,
+                  onChanged: widget.onChanged,
+                ),
+              ),
+            );
             setState(() {});
           },
           icon: const Icon(Icons.add),
@@ -4216,20 +5058,35 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) =>
-            ReminderRoutePage(data: widget.data, onChanged: widget.onChanged))),
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ReminderRoutePage(
+                data: widget.data,
+                onChanged: widget.onChanged,
+              ),
+            ),
+          ),
           icon: const Icon(Icons.notifications_outlined),
-          label: Text(tx(context, 'Tvarkyti vaistų priminimus', 'Manage medicine reminders')),
+          label: Text(
+            tx(
+              context,
+              'Tvarkyti vaistų priminimus',
+              'Manage medicine reminders',
+            ),
+          ),
         ),
       ],
     );
   }
 }
 
-String _memberName(AppData data, String id) => data.members
-    .where((member) => member.id == id)
-    .map((member) => member.name)
-    .firstOrNull ?? '';
+String _memberName(AppData data, String id) =>
+    data.members
+        .where((member) => member.id == id)
+        .map((member) => member.name)
+        .firstOrNull ??
+    '';
 
 class AppointmentEditor extends StatefulWidget {
   final AppData data;
@@ -4255,9 +5112,13 @@ class _AppointmentEditorState extends State<AppointmentEditor> {
         text: widget.appointment?.title ?? widget.initialTitle,
       ),
       doctor = TextEditingController(text: widget.appointment?.doctor ?? ''),
-      facility = TextEditingController(text: widget.appointment?.facility ?? ''),
+      facility = TextEditingController(
+        text: widget.appointment?.facility ?? '',
+      ),
       address = TextEditingController(text: widget.appointment?.address ?? ''),
-      date = TextEditingController(text: widget.appointment?.date ?? widget.initialDate),
+      date = TextEditingController(
+        text: widget.appointment?.date ?? widget.initialDate,
+      ),
       reason = TextEditingController(
         text: widget.appointment?.reason ?? widget.initialReason,
       ),
@@ -4269,7 +5130,15 @@ class _AppointmentEditorState extends State<AppointmentEditor> {
 
   @override
   void dispose() {
-    for (final item in [titleC, doctor, facility, address, date, reason, notes]) {
+    for (final item in [
+      titleC,
+      doctor,
+      facility,
+      address,
+      date,
+      reason,
+      notes,
+    ]) {
       item.dispose();
     }
     super.dispose();
@@ -4278,14 +5147,18 @@ class _AppointmentEditorState extends State<AppointmentEditor> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.appointment == null
-          ? tx(context, 'Naujas vizitas', 'New appointment')
-          : tx(context, 'Redaguoti vizitą', 'Edit appointment')),
+      title: Text(
+        widget.appointment == null
+            ? tx(context, 'Naujas vizitas', 'New appointment')
+            : tx(context, 'Redaguoti vizitą', 'Edit appointment'),
+      ),
       actions: [
         if (widget.appointment != null)
           IconButton(
             onPressed: () async {
-              if (!await confirmDelete(context, widget.appointment!.title) || !context.mounted) return;
+              if (!await confirmDelete(context, widget.appointment!.title) ||
+                  !context.mounted)
+                return;
               widget.data.appointments.remove(widget.appointment);
               widget.onChanged();
               Navigator.pop(context);
@@ -4295,53 +5168,111 @@ class _AppointmentEditorState extends State<AppointmentEditor> {
       ],
     ),
     body: ListView(
-      padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.paddingOf(context).bottom + 30),
+      padding: EdgeInsets.fromLTRB(
+        18,
+        18,
+        18,
+        MediaQuery.paddingOf(context).bottom + 30,
+      ),
       children: [
-        field(context, titleC, 'Vizitas / specialistas', 'Appointment / specialist'),
+        field(
+          context,
+          titleC,
+          'Vizitas / specialistas',
+          'Appointment / specialist',
+        ),
         if (widget.data.members.isNotEmpty)
           DropdownButtonFormField<String>(
-            initialValue: widget.data.members.any((x) => x.id == memberId) ? memberId : null,
-            decoration: InputDecoration(labelText: tx(context, 'Šeimos narys', 'Family member')),
-            items: widget.data.members.map((member) => DropdownMenuItem(
-              value: member.id,
-              child: Text('${_memberEmoji(member.gender, member.ageGroup)} ${member.name}'),
-            )).toList(),
+            initialValue: widget.data.members.any((x) => x.id == memberId)
+                ? memberId
+                : null,
+            decoration: InputDecoration(
+              labelText: tx(context, 'Šeimos narys', 'Family member'),
+            ),
+            items: widget.data.members
+                .map(
+                  (member) => DropdownMenuItem(
+                    value: member.id,
+                    child: Text(
+                      '${_memberEmoji(member.gender, member.ageGroup)} ${member.name}',
+                    ),
+                  ),
+                )
+                .toList(),
             onChanged: (value) => setState(() => memberId = value ?? ''),
           ),
         const SizedBox(height: 12),
         field(context, doctor, 'Gydytojas', 'Doctor'),
         field(context, facility, 'Gydymo įstaiga', 'Healthcare facility'),
         field(context, address, 'Adresas / kabinetas', 'Address / room'),
-        dateField(context, date, 'Vizito data YYYY-MM-DD', 'Appointment date YYYY-MM-DD'),
+        dateField(
+          context,
+          date,
+          'Vizito data YYYY-MM-DD',
+          'Appointment date YYYY-MM-DD',
+        ),
         ListTile(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: Color(0xff808b89))),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Color(0xff808b89)),
+          ),
           leading: const Icon(Icons.schedule),
           title: Text('${tx(context, 'Laikas', 'Time')}: $time'),
           onTap: () async {
             final parts = time.split(':');
             final value = await showTimePicker(
               context: context,
-              initialTime: TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1])),
+              initialTime: TimeOfDay(
+                hour: int.parse(parts[0]),
+                minute: int.parse(parts[1]),
+              ),
             );
-            if (value != null) setState(() => time = '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}');
+            if (value != null)
+              setState(
+                () => time =
+                    '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}',
+              );
           },
         ),
         const SizedBox(height: 12),
         DropdownButtonFormField<int>(
           initialValue: remindBefore,
-          decoration: InputDecoration(labelText: tx(context, 'Priminti prieš', 'Remind before')),
+          decoration: InputDecoration(
+            labelText: tx(context, 'Priminti prieš', 'Remind before'),
+          ),
           items: [
-            DropdownMenuItem(value: 60, child: Text(tx(context, '1 valandą', '1 hour'))),
-            DropdownMenuItem(value: 180, child: Text(tx(context, '3 valandas', '3 hours'))),
-            DropdownMenuItem(value: 1440, child: Text(tx(context, '1 dieną', '1 day'))),
-            DropdownMenuItem(value: 2880, child: Text(tx(context, '2 dienas', '2 days'))),
-            DropdownMenuItem(value: 10080, child: Text(tx(context, '1 savaitę', '1 week'))),
+            DropdownMenuItem(
+              value: 60,
+              child: Text(tx(context, '1 valandą', '1 hour')),
+            ),
+            DropdownMenuItem(
+              value: 180,
+              child: Text(tx(context, '3 valandas', '3 hours')),
+            ),
+            DropdownMenuItem(
+              value: 1440,
+              child: Text(tx(context, '1 dieną', '1 day')),
+            ),
+            DropdownMenuItem(
+              value: 2880,
+              child: Text(tx(context, '2 dienas', '2 days')),
+            ),
+            DropdownMenuItem(
+              value: 10080,
+              child: Text(tx(context, '1 savaitę', '1 week')),
+            ),
           ],
           onChanged: (value) => setState(() => remindBefore = value ?? 1440),
         ),
         const SizedBox(height: 12),
         field(context, reason, 'Vizito priežastis', 'Reason', lines: 2),
-        field(context, notes, 'Ką pasiimti / pastabos', 'What to bring / notes', lines: 3),
+        field(
+          context,
+          notes,
+          'Ką pasiimti / pastabos',
+          'What to bring / notes',
+          lines: 3,
+        ),
         if (widget.appointment != null)
           SwitchListTile(
             value: completed,
@@ -4350,15 +5281,29 @@ class _AppointmentEditorState extends State<AppointmentEditor> {
           ),
         FilledButton(
           onPressed: () {
-            if (titleC.text.trim().isEmpty || DateTime.tryParse(date.text) == null) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(tx(context, 'Įveskite vizitą ir teisingą datą.', 'Enter an appointment and valid date.')),
-              ));
+            if (titleC.text.trim().isEmpty ||
+                DateTime.tryParse(date.text) == null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    tx(
+                      context,
+                      'Įveskite vizitą ir teisingą datą.',
+                      'Enter an appointment and valid date.',
+                    ),
+                  ),
+                ),
+              );
               return;
             }
-            final item = widget.appointment ?? HealthAppointment(
-              id: newId(), title: titleC.text.trim(), date: date.text, time: time,
-            );
+            final item =
+                widget.appointment ??
+                HealthAppointment(
+                  id: newId(),
+                  title: titleC.text.trim(),
+                  date: date.text,
+                  time: time,
+                );
             item
               ..memberId = memberId
               ..title = titleC.text.trim()
@@ -4403,25 +5348,35 @@ class RemindersPage extends StatelessWidget {
           title(tx(c, 'Priminimai', 'Reminders')),
           const SizedBox(height: 10),
         ],
-        Row(children: [
-          Expanded(child: OutlinedButton.icon(
-            onPressed: () async {
-              await ReminderNotifications.requestPermissions();
-              await ReminderNotifications.scheduleAll(data);
-              await ReminderNotifications.showTest();
-            },
-            icon: const Icon(Icons.notifications_active_outlined),
-            label: Text(tx(c, 'Patikrinti pranešimus', 'Test notifications')),
-          )),
-          const SizedBox(width: 8),
-          IconButton.filledTonal(
-            tooltip: tx(c, 'Vartojimo istorija', 'Dose history'),
-            onPressed: () => Navigator.push(c, MaterialPageRoute(
-              builder: (_) => DoseHistoryPage(data: data, onChanged: onChanged),
-            )),
-            icon: const Icon(Icons.history),
-          ),
-        ]),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  await ReminderNotifications.requestPermissions();
+                  await ReminderNotifications.scheduleAll(data);
+                  await ReminderNotifications.showTest();
+                },
+                icon: const Icon(Icons.notifications_active_outlined),
+                label: Text(
+                  tx(c, 'Patikrinti pranešimus', 'Test notifications'),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filledTonal(
+              tooltip: tx(c, 'Vartojimo istorija', 'Dose history'),
+              onPressed: () => Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      DoseHistoryPage(data: data, onChanged: onChanged),
+                ),
+              ),
+              icon: const Icon(Icons.history),
+            ),
+          ],
+        ),
         const SizedBox(height: 8),
         if (rs.isEmpty)
           card(
@@ -4608,7 +5563,9 @@ class _ReminderEditor extends State<ReminderEditor> {
           onChanged: (v) {
             setState(() => medId = v!);
             if (medId.isNotEmpty) {
-              final medicine = widget.data.meds.firstWhere((x) => x.id == medId);
+              final medicine = widget.data.meds.firstWhere(
+                (x) => x.id == medId,
+              );
               if (titleC.text.isEmpty) titleC.text = medicine.name;
               if (endDate.text.isEmpty && medicine.treatmentUntil.isNotEmpty) {
                 endDate.text = medicine.treatmentUntil;
@@ -4756,10 +5713,8 @@ class _ReminderEditor extends State<ReminderEditor> {
                 days.isEmpty ||
                 amount == null ||
                 amount <= 0 ||
-                (startDate.text.isNotEmpty &&
-                    start == null) ||
-                (endDate.text.isNotEmpty &&
-                    end == null) ||
+                (startDate.text.isNotEmpty && start == null) ||
+                (endDate.text.isNotEmpty && end == null) ||
                 (start != null && end != null && end.isBefore(start))) {
               ScaffoldMessenger.of(c).showSnackBar(
                 SnackBar(
@@ -4814,7 +5769,10 @@ Widget _profileToolTile(
       backgroundColor: mint,
       child: Icon(icon, color: green),
     ),
-    title: Text(tx(c, lt, en), style: const TextStyle(fontWeight: FontWeight.w700)),
+    title: Text(
+      tx(c, lt, en),
+      style: const TextStyle(fontWeight: FontWeight.w700),
+    ),
     trailing: const Icon(Icons.chevron_right_rounded),
     onTap: onTap,
   ),
@@ -4823,7 +5781,11 @@ Widget _profileToolTile(
 class DoseHistoryPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const DoseHistoryPage({super.key, required this.data, required this.onChanged});
+  const DoseHistoryPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
   @override
   State<DoseHistoryPage> createState() => _DoseHistoryPageState();
 }
@@ -4847,17 +5809,22 @@ class _DoseHistoryPageState extends State<DoseHistoryPage> {
         final status = reminder.takenDates.contains(key)
             ? DoseStatus.taken
             : reminder.skippedDates.contains(key)
-                ? DoseStatus.skipped
-                : day.isBefore(DateTime(now.year, now.month, now.day))
-                    ? DoseStatus.missed
-                    : reminderStatus(reminder, now);
+            ? DoseStatus.skipped
+            : day.isBefore(DateTime(now.year, now.month, now.day))
+            ? DoseStatus.missed
+            : reminderStatus(reminder, now);
         entries.add((day, reminder, status));
       }
     }
     final taken = entries.where((entry) => entry.$3 == DoseStatus.taken).length;
-    final completed = entries.where((entry) =>
-        entry.$3 == DoseStatus.taken || entry.$3 == DoseStatus.skipped ||
-        entry.$3 == DoseStatus.missed).length;
+    final completed = entries
+        .where(
+          (entry) =>
+              entry.$3 == DoseStatus.taken ||
+              entry.$3 == DoseStatus.skipped ||
+              entry.$3 == DoseStatus.missed,
+        )
+        .length;
     final percent = completed == 0 ? 0 : (taken * 100 / completed).round();
     return Scaffold(
       appBar: AppBar(title: Text(tx(c, 'Vartojimo istorija', 'Dose history'))),
@@ -4866,23 +5833,37 @@ class _DoseHistoryPageState extends State<DoseHistoryPage> {
         children: [
           DropdownButtonFormField<int>(
             initialValue: periodDays,
-            decoration: InputDecoration(labelText: tx(c, 'Laikotarpis', 'Period')),
-            items: [7, 30, 90].map((days) => DropdownMenuItem(
-              value: days,
-              child: Text(tx(c, '$days dienų', '$days days')),
-            )).toList(),
+            decoration: InputDecoration(
+              labelText: tx(c, 'Laikotarpis', 'Period'),
+            ),
+            items: [7, 30, 90]
+                .map(
+                  (days) => DropdownMenuItem(
+                    value: days,
+                    child: Text(tx(c, '$days dienų', '$days days')),
+                  ),
+                )
+                .toList(),
             onChanged: (value) => setState(() => periodDays = value ?? 30),
           ),
           const SizedBox(height: 8),
           if (widget.data.members.isNotEmpty)
             DropdownButtonFormField<String>(
               initialValue: memberId,
-              decoration: InputDecoration(labelText: tx(c, 'Šeimos narys', 'Family member')),
+              decoration: InputDecoration(
+                labelText: tx(c, 'Šeimos narys', 'Family member'),
+              ),
               items: [
-                DropdownMenuItem(value: '', child: Text(tx(c, 'Visa šeima', 'Whole family'))),
-                ...widget.data.members.map((member) => DropdownMenuItem(
-                  value: member.id, child: Text(member.name),
-                )),
+                DropdownMenuItem(
+                  value: '',
+                  child: Text(tx(c, 'Visa šeima', 'Whole family')),
+                ),
+                ...widget.data.members.map(
+                  (member) => DropdownMenuItem(
+                    value: member.id,
+                    child: Text(member.name),
+                  ),
+                ),
               ],
               onChanged: (value) => setState(() => memberId = value ?? ''),
             ),
@@ -4890,26 +5871,42 @@ class _DoseHistoryPageState extends State<DoseHistoryPage> {
           if (widget.data.meds.isNotEmpty)
             DropdownButtonFormField<String>(
               initialValue: medicineId,
-              decoration: InputDecoration(labelText: tx(c, 'Vaistas', 'Medicine')),
+              decoration: InputDecoration(
+                labelText: tx(c, 'Vaistas', 'Medicine'),
+              ),
               items: [
-                DropdownMenuItem(value: '', child: Text(tx(c, 'Visi vaistai', 'All medicines'))),
-                ...widget.data.meds.map((medicine) => DropdownMenuItem(
-                  value: medicine.id,
-                  child: Text('${medicine.name} ${medicine.strength}'),
-                )),
+                DropdownMenuItem(
+                  value: '',
+                  child: Text(tx(c, 'Visi vaistai', 'All medicines')),
+                ),
+                ...widget.data.meds.map(
+                  (medicine) => DropdownMenuItem(
+                    value: medicine.id,
+                    child: Text('${medicine.name} ${medicine.strength}'),
+                  ),
+                ),
               ],
               onChanged: (value) => setState(() => medicineId = value ?? ''),
             ),
           const SizedBox(height: 12),
-          card(Row(children: [
-            const Icon(Icons.insights, color: green, size: 34),
-            const SizedBox(width: 12),
-            Expanded(child: Text(
-              tx(c, 'Per $periodDays dienų išgerta $taken iš $completed dozių ($percent %).',
-                  '$taken of $completed doses taken in $periodDays days ($percent%).'),
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            )),
-          ])),
+          card(
+            Row(
+              children: [
+                const Icon(Icons.insights, color: green, size: 34),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    tx(
+                      c,
+                      'Per $periodDays dienų išgerta $taken iš $completed dozių ($percent %).',
+                      '$taken of $completed doses taken in $periodDays days ($percent%).',
+                    ),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ],
+            ),
+          ),
           ...entries.map((entry) {
             final (day, reminder, status) = entry;
             final statusText = switch (status) {
@@ -4922,25 +5919,33 @@ class _DoseHistoryPageState extends State<DoseHistoryPage> {
             final color = status == DoseStatus.taken
                 ? green
                 : status == DoseStatus.upcoming
-                    ? const Color(0xff7b8ba1)
-                    : const Color(0xffc62828);
-            return Card(child: ListTile(
-              leading: Icon(status == DoseStatus.taken
-                  ? Icons.check_circle : Icons.schedule, color: color),
-              title: Text('${DateFormat('yyyy-MM-dd').format(day)} • ${reminder.time} • ${reminder.title}'),
-              subtitle: Text(statusText),
-              trailing: status == DoseStatus.taken
-                  ? IconButton(
-                      tooltip: tx(c, 'Atšaukti pažymėjimą', 'Undo'),
-                      icon: const Icon(Icons.undo),
-                      onPressed: () {
-                        undoDoseTaken(widget.data, reminder, day);
-                        widget.onChanged();
-                        setState(() {});
-                      },
-                    )
-                  : null,
-            ));
+                ? const Color(0xff7b8ba1)
+                : const Color(0xffc62828);
+            return Card(
+              child: ListTile(
+                leading: Icon(
+                  status == DoseStatus.taken
+                      ? Icons.check_circle
+                      : Icons.schedule,
+                  color: color,
+                ),
+                title: Text(
+                  '${DateFormat('yyyy-MM-dd').format(day)} • ${reminder.time} • ${reminder.title}',
+                ),
+                subtitle: Text(statusText),
+                trailing: status == DoseStatus.taken
+                    ? IconButton(
+                        tooltip: tx(c, 'Atšaukti pažymėjimą', 'Undo'),
+                        icon: const Icon(Icons.undo),
+                        onPressed: () {
+                          undoDoseTaken(widget.data, reminder, day);
+                          widget.onChanged();
+                          setState(() {});
+                        },
+                      )
+                    : null,
+              ),
+            );
           }),
         ],
       ),
@@ -4966,16 +5971,22 @@ class _ShoppingPageState extends State<ShoppingPage> {
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text(tx(context, 'Pridėti į sąrašą', 'Add to list')),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            field(context, name, 'Vaistas ar prekė', 'Medicine or item'),
-            field(context, quantity, 'Kiekis', 'Quantity', number: true),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: prescription,
-              title: Text(tx(context, 'Reikalingas receptas', 'Prescription required')),
-              onChanged: (value) => setDialogState(() => prescription = value),
-            ),
-          ]),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              field(context, name, 'Vaistas ar prekė', 'Medicine or item'),
+              field(context, quantity, 'Kiekis', 'Quantity', number: true),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: prescription,
+                title: Text(
+                  tx(context, 'Reikalingas receptas', 'Prescription required'),
+                ),
+                onChanged: (value) =>
+                    setDialogState(() => prescription = value),
+              ),
+            ],
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
@@ -4983,14 +5994,19 @@ class _ShoppingPageState extends State<ShoppingPage> {
             ),
             FilledButton(
               onPressed: () {
-                final value = double.tryParse(quantity.text.replaceAll(',', '.'));
-                if (name.text.trim().isEmpty || value == null || value <= 0) return;
-                widget.data.shopping.add(ShoppingItem(
-                  id: newId(),
-                  name: name.text.trim(),
-                  quantity: value,
-                  prescription: prescription,
-                ));
+                final value = double.tryParse(
+                  quantity.text.replaceAll(',', '.'),
+                );
+                if (name.text.trim().isEmpty || value == null || value <= 0)
+                  return;
+                widget.data.shopping.add(
+                  ShoppingItem(
+                    id: newId(),
+                    name: name.text.trim(),
+                    quantity: value,
+                    prescription: prescription,
+                  ),
+                );
                 widget.onChanged();
                 Navigator.pop(dialogContext);
                 setState(() {});
@@ -5006,14 +6022,21 @@ class _ShoppingPageState extends State<ShoppingPage> {
   }
 
   void _addLowStock() {
-    for (final medicine in widget.data.meds.where((medicine) => medicine.stock <= 10)) {
-      if (widget.data.shopping.any((item) => item.medId == medicine.id && !item.purchased)) continue;
-      widget.data.shopping.add(ShoppingItem(
-        id: newId(),
-        medId: medicine.id,
-        name: '${medicine.name} ${medicine.strength}'.trim(),
-        prescription: medicine.prescription,
-      ));
+    for (final medicine in widget.data.meds.where(
+      (medicine) => medicine.stock <= 10,
+    )) {
+      if (widget.data.shopping.any(
+        (item) => item.medId == medicine.id && !item.purchased,
+      ))
+        continue;
+      widget.data.shopping.add(
+        ShoppingItem(
+          id: newId(),
+          medId: medicine.id,
+          name: '${medicine.name} ${medicine.strength}'.trim(),
+          prescription: medicine.prescription,
+        ),
+      );
     }
     widget.onChanged();
     setState(() {});
@@ -5028,7 +6051,9 @@ class _ShoppingPageState extends State<ShoppingPage> {
         OutlinedButton.icon(
           onPressed: _addLowStock,
           icon: const Icon(Icons.playlist_add),
-          label: Text(tx(c, 'Įtraukti mažo likučio vaistus', 'Add low-stock medicines')),
+          label: Text(
+            tx(c, 'Įtraukti mažo likučio vaistus', 'Add low-stock medicines'),
+          ),
         ),
         const SizedBox(height: 8),
         FilledButton.icon(
@@ -5037,33 +6062,44 @@ class _ShoppingPageState extends State<ShoppingPage> {
           label: Text(tx(c, 'Pridėti rankiniu būdu', 'Add manually')),
         ),
         if (widget.data.shopping.isEmpty)
-          card(Text(tx(c, 'Pirkinių sąrašas tuščias.', 'Shopping list is empty.'))),
-        ...widget.data.shopping.map((item) => Card(child: CheckboxListTile(
-          value: item.purchased,
-          title: Text(item.name),
-          subtitle: Text([
-            '${tx(c, 'Kiekis', 'Quantity')}: ${quantityLabel(item.quantity)}',
-            if (item.prescription) tx(c, 'Reikalingas receptas', 'Prescription required'),
-          ].join(' • ')),
-          secondary: IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: () {
-              widget.data.shopping.remove(item);
-              widget.onChanged();
-              setState(() {});
-            },
+          card(
+            Text(tx(c, 'Pirkinių sąrašas tuščias.', 'Shopping list is empty.')),
           ),
-          onChanged: (checked) {
-            final wasPurchased = item.purchased;
-            item.purchased = checked ?? false;
-            final medicine = widget.data.meds.where((med) => med.id == item.medId).firstOrNull;
-            if (medicine != null && !wasPurchased && item.purchased) {
-              medicine.stock += item.quantity;
-            }
-            widget.onChanged();
-            setState(() {});
-          },
-        ))),
+        ...widget.data.shopping.map(
+          (item) => Card(
+            child: CheckboxListTile(
+              value: item.purchased,
+              title: Text(item.name),
+              subtitle: Text(
+                [
+                  '${tx(c, 'Kiekis', 'Quantity')}: ${quantityLabel(item.quantity)}',
+                  if (item.prescription)
+                    tx(c, 'Reikalingas receptas', 'Prescription required'),
+                ].join(' • '),
+              ),
+              secondary: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () {
+                  widget.data.shopping.remove(item);
+                  widget.onChanged();
+                  setState(() {});
+                },
+              ),
+              onChanged: (checked) {
+                final wasPurchased = item.purchased;
+                item.purchased = checked ?? false;
+                final medicine = widget.data.meds
+                    .where((med) => med.id == item.medId)
+                    .firstOrNull;
+                if (medicine != null && !wasPurchased && item.purchased) {
+                  medicine.stock += item.quantity;
+                }
+                widget.onChanged();
+                setState(() {});
+              },
+            ),
+          ),
+        ),
       ],
     ),
   );
@@ -5077,23 +6113,33 @@ String _doctorSummary(AppData data) {
     ..writeln('Kraujo grupė: ${p.bloodType}')
     ..writeln('Alergijos: ${p.allergies}')
     ..writeln('Sveikatos būklės: ${p.conditions}')
-    ..writeln('Skubios pagalbos kontaktas: ${p.emergencyName} ${p.emergencyPhone}')
+    ..writeln(
+      'Skubios pagalbos kontaktas: ${p.emergencyName} ${p.emergencyPhone}',
+    )
     ..writeln('\nVARTOJAMI VAISTAI');
   for (final medicine in data.meds) {
-    buffer.writeln('• ${medicine.name} ${medicine.strength} – ${medicine.dosage}');
+    buffer.writeln(
+      '• ${medicine.name} ${medicine.strength} – ${medicine.dosage}',
+    );
   }
-  final upcomingAppointments = data.appointments.where((item) {
-    final at = DateTime.tryParse('${item.date}T${item.time}');
-    return !item.completed && at != null && at.isAfter(DateTime.now());
-  }).toList()..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
+  final upcomingAppointments =
+      data.appointments.where((item) {
+          final at = DateTime.tryParse('${item.date}T${item.time}');
+          return !item.completed && at != null && at.isAfter(DateTime.now());
+        }).toList()
+        ..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
   if (upcomingAppointments.isNotEmpty) {
     buffer.writeln('\nARTĖJANTYS VIZITAI');
     for (final item in upcomingAppointments) {
-      buffer.writeln('• ${item.date} ${item.time} – ${item.title}'
-          '${item.doctor.isEmpty ? '' : ', ${item.doctor}'}');
+      buffer.writeln(
+        '• ${item.date} ${item.time} – ${item.title}'
+        '${item.doctor.isEmpty ? '' : ', ${item.doctor}'}',
+      );
     }
   }
-  buffer.writeln('\nSukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}');
+  buffer.writeln(
+    '\nSukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}',
+  );
   return buffer.toString();
 }
 
@@ -5104,20 +6150,30 @@ class DoctorSummaryPage extends StatelessWidget {
   Widget build(BuildContext c) {
     final summary = _doctorSummary(data);
     return Scaffold(
-      appBar: AppBar(title: Text(tx(c, 'Santrauka gydytojui', 'Doctor summary'))),
-      body: ListView(padding: const EdgeInsets.all(18), children: [
-        card(SelectableText(summary)),
-        FilledButton.icon(
-          onPressed: () async {
-            await Clipboard.setData(ClipboardData(text: summary));
-            if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
-              SnackBar(content: Text(tx(c, 'Santrauka nukopijuota.', 'Summary copied.'))),
-            );
-          },
-          icon: const Icon(Icons.copy),
-          label: Text(tx(c, 'Kopijuoti santrauką', 'Copy summary')),
-        ),
-      ]),
+      appBar: AppBar(
+        title: Text(tx(c, 'Santrauka gydytojui', 'Doctor summary')),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          card(SelectableText(summary)),
+          FilledButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: summary));
+              if (c.mounted)
+                ScaffoldMessenger.of(c).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      tx(c, 'Santrauka nukopijuota.', 'Summary copied.'),
+                    ),
+                  ),
+                );
+            },
+            icon: const Icon(Icons.copy),
+            label: Text(tx(c, 'Kopijuoti santrauką', 'Copy summary')),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -5129,20 +6185,45 @@ class EmergencyInfoPage extends StatelessWidget {
   Widget build(BuildContext c) {
     final p = data.profile;
     return Scaffold(
-      appBar: AppBar(title: Text(tx(c, 'Kritinė informacija', 'Emergency information'))),
-      body: ListView(padding: const EdgeInsets.all(18), children: [
-        card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(p.name, style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w800, color: navy)),
-          const Divider(),
-          Text('${tx(c, 'Kraujo grupė', 'Blood type')}: ${p.bloodType}'),
-          Text('${tx(c, 'Alergijos', 'Allergies')}: ${p.allergies}'),
-          Text('${tx(c, 'Būklės', 'Conditions')}: ${p.conditions}'),
-          Text('${tx(c, 'Vaistai', 'Medicines')}: ${data.meds.map((m) => '${m.name} ${m.strength}').join(', ')}'),
-          const Divider(),
-          Text('${tx(c, 'Kontaktas', 'Contact')}: ${p.emergencyName}'),
-          SelectableText(p.emergencyPhone, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800)),
-        ])),
-      ]),
+      appBar: AppBar(
+        title: Text(tx(c, 'Kritinė informacija', 'Emergency information')),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.name,
+                  style: const TextStyle(
+                    fontSize: 25,
+                    fontWeight: FontWeight.w800,
+                    color: navy,
+                  ),
+                ),
+                const Divider(),
+                Text('${tx(c, 'Kraujo grupė', 'Blood type')}: ${p.bloodType}'),
+                Text('${tx(c, 'Alergijos', 'Allergies')}: ${p.allergies}'),
+                Text('${tx(c, 'Būklės', 'Conditions')}: ${p.conditions}'),
+                Text(
+                  '${tx(c, 'Vaistai', 'Medicines')}: ${data.meds.map((m) => '${m.name} ${m.strength}').join(', ')}',
+                ),
+                const Divider(),
+                Text('${tx(c, 'Kontaktas', 'Contact')}: ${p.emergencyName}'),
+                SelectableText(
+                  p.emergencyPhone,
+                  style: const TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -5163,7 +6244,11 @@ Map<String, dynamic> _backupMap(AppData data) => {
 class DataTransferPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const DataTransferPage({super.key, required this.data, required this.onChanged});
+  const DataTransferPage({
+    super.key,
+    required this.data,
+    required this.onChanged,
+  });
   @override
   State<DataTransferPage> createState() => _DataTransferPageState();
 }
@@ -5175,60 +6260,109 @@ class _DataTransferPageState extends State<DataTransferPage> {
     importController.dispose();
     super.dispose();
   }
+
   @override
   Widget build(BuildContext c) => Scaffold(
-    appBar: AppBar(title: Text(tx(c, 'Atsarginė kopija', 'Backup and restore'))),
-    body: ListView(padding: const EdgeInsets.all(18), children: [
-      card(Text(tx(c,
-        'Kopijoje yra vaistai, šeimos nariai, priminimai, istorija, profilis ir pirkinių sąrašas. Saugokite ją privačiai.',
-        'The backup contains medicines, family, reminders, history, profile and shopping data. Keep it private.'))),
-      FilledButton.icon(
-        onPressed: () async {
-          await Clipboard.setData(ClipboardData(text: jsonEncode(_backupMap(widget.data))));
-          if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
-            SnackBar(content: Text(tx(c, 'Atsarginė kopija nukopijuota.', 'Backup copied.'))),
-          );
-        },
-        icon: const Icon(Icons.copy_all),
-        label: Text(tx(c, 'Kopijuoti atsarginę kopiją', 'Copy backup')),
-      ),
-      const SizedBox(height: 18),
-      TextField(
-        controller: importController,
-        minLines: 4,
-        maxLines: 8,
-        decoration: InputDecoration(labelText: tx(c, 'Įklijuokite atsarginę kopiją', 'Paste backup')),
-      ),
-      const SizedBox(height: 10),
-      OutlinedButton.icon(
-        onPressed: () async {
-          try {
-            final decoded = Map<String, dynamic>.from(jsonDecode(importController.text));
-            if (decoded['format'] != 'medibox-backup-v1') throw const FormatException();
-            widget.data.meds = (decoded['meds'] as List).map((x) => Med.fromJson(Map<String, dynamic>.from(x))).toList();
-            widget.data.members = (decoded['members'] as List).map((x) => Member.fromJson(Map<String, dynamic>.from(x))).toList();
-            widget.data.reminders = (decoded['reminders'] as List).map((x) => Reminder.fromJson(Map<String, dynamic>.from(x))).toList();
-            widget.data.shopping = (decoded['shopping'] as List? ?? []).map((x) => ShoppingItem.fromJson(Map<String, dynamic>.from(x))).toList();
-            widget.data.appointments = (decoded['appointments'] as List? ?? [])
-                .map((x) => HealthAppointment.fromJson(Map<String, dynamic>.from(x)))
-                .toList();
-            widget.data.profile = UserProfile.fromJson(Map<String, dynamic>.from(decoded['profile']));
-            widget.data.language = '${decoded['language'] ?? 'system'}';
-            widget.data.privacyLock = decoded['privacyLock'] == true;
-            widget.onChanged();
-            if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
-              SnackBar(content: Text(tx(c, 'Duomenys atkurti.', 'Data restored.'))),
+    appBar: AppBar(
+      title: Text(tx(c, 'Atsarginė kopija', 'Backup and restore')),
+    ),
+    body: ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        card(
+          Text(
+            tx(
+              c,
+              'Kopijoje yra vaistai, šeimos nariai, priminimai, istorija, profilis ir pirkinių sąrašas. Saugokite ją privačiai.',
+              'The backup contains medicines, family, reminders, history, profile and shopping data. Keep it private.',
+            ),
+          ),
+        ),
+        FilledButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(
+              ClipboardData(text: jsonEncode(_backupMap(widget.data))),
             );
-          } catch (_) {
-            if (c.mounted) ScaffoldMessenger.of(c).showSnackBar(
-              SnackBar(content: Text(tx(c, 'Netinkama atsarginė kopija.', 'Invalid backup.'))),
-            );
-          }
-        },
-        icon: const Icon(Icons.restore),
-        label: Text(tx(c, 'Atkurti duomenis', 'Restore data')),
-      ),
-    ]),
+            if (c.mounted)
+              ScaffoldMessenger.of(c).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    tx(c, 'Atsarginė kopija nukopijuota.', 'Backup copied.'),
+                  ),
+                ),
+              );
+          },
+          icon: const Icon(Icons.copy_all),
+          label: Text(tx(c, 'Kopijuoti atsarginę kopiją', 'Copy backup')),
+        ),
+        const SizedBox(height: 18),
+        TextField(
+          controller: importController,
+          minLines: 4,
+          maxLines: 8,
+          decoration: InputDecoration(
+            labelText: tx(c, 'Įklijuokite atsarginę kopiją', 'Paste backup'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () async {
+            try {
+              final decoded = Map<String, dynamic>.from(
+                jsonDecode(importController.text),
+              );
+              if (decoded['format'] != 'medibox-backup-v1')
+                throw const FormatException();
+              widget.data.meds = (decoded['meds'] as List)
+                  .map((x) => Med.fromJson(Map<String, dynamic>.from(x)))
+                  .toList();
+              widget.data.members = (decoded['members'] as List)
+                  .map((x) => Member.fromJson(Map<String, dynamic>.from(x)))
+                  .toList();
+              widget.data.reminders = (decoded['reminders'] as List)
+                  .map((x) => Reminder.fromJson(Map<String, dynamic>.from(x)))
+                  .toList();
+              widget.data.shopping = (decoded['shopping'] as List? ?? [])
+                  .map(
+                    (x) => ShoppingItem.fromJson(Map<String, dynamic>.from(x)),
+                  )
+                  .toList();
+              widget.data.appointments =
+                  (decoded['appointments'] as List? ?? [])
+                      .map(
+                        (x) => HealthAppointment.fromJson(
+                          Map<String, dynamic>.from(x),
+                        ),
+                      )
+                      .toList();
+              widget.data.profile = UserProfile.fromJson(
+                Map<String, dynamic>.from(decoded['profile']),
+              );
+              widget.data.language = '${decoded['language'] ?? 'system'}';
+              widget.data.privacyLock = decoded['privacyLock'] == true;
+              widget.onChanged();
+              if (c.mounted)
+                ScaffoldMessenger.of(c).showSnackBar(
+                  SnackBar(
+                    content: Text(tx(c, 'Duomenys atkurti.', 'Data restored.')),
+                  ),
+                );
+            } catch (_) {
+              if (c.mounted)
+                ScaffoldMessenger.of(c).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      tx(c, 'Netinkama atsarginė kopija.', 'Invalid backup.'),
+                    ),
+                  ),
+                );
+            }
+          },
+          icon: const Icon(Icons.restore),
+          label: Text(tx(c, 'Atkurti duomenis', 'Restore data')),
+        ),
+      ],
+    ),
   );
 }
 
@@ -5335,40 +6469,69 @@ class _ProfilePage extends State<ProfilePage> {
             Icons.history,
             'Vartojimo istorija',
             'Dose history',
-            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                DoseHistoryPage(data: widget.data, onChanged: widget.onChanged))),
+            () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => DoseHistoryPage(
+                  data: widget.data,
+                  onChanged: widget.onChanged,
+                ),
+              ),
+            ),
           ),
           _profileToolTile(
             c,
             Icons.shopping_cart_outlined,
             'Pirkinių sąrašas',
             'Shopping list',
-            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                ShoppingPage(data: widget.data, onChanged: widget.onChanged))),
+            () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => ShoppingPage(
+                  data: widget.data,
+                  onChanged: widget.onChanged,
+                ),
+              ),
+            ),
           ),
           _profileToolTile(
             c,
             Icons.medical_information_outlined,
             'Santrauka gydytojui',
             'Doctor summary',
-            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                DoctorSummaryPage(data: widget.data))),
+            () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => DoctorSummaryPage(data: widget.data),
+              ),
+            ),
           ),
           _profileToolTile(
             c,
             Icons.emergency_outlined,
             'Kritinė informacija',
             'Emergency information',
-            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                EmergencyInfoPage(data: widget.data))),
+            () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => EmergencyInfoPage(data: widget.data),
+              ),
+            ),
           ),
           _profileToolTile(
             c,
             Icons.backup_outlined,
             'Atsarginė kopija',
             'Backup and restore',
-            () => Navigator.push(c, MaterialPageRoute(builder: (_) =>
-                DataTransferPage(data: widget.data, onChanged: widget.onChanged))),
+            () => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => DataTransferPage(
+                  data: widget.data,
+                  onChanged: widget.onChanged,
+                ),
+              ),
+            ),
           ),
           Card(
             child: SwitchListTile(
@@ -5377,13 +6540,17 @@ class _ProfilePage extends State<ProfilePage> {
                 child: Icon(Icons.fingerprint, color: green),
               ),
               value: widget.data.privacyLock,
-              title: Text(tx(c, 'Programėlės užraktas', 'App lock'),
-                  style: const TextStyle(fontWeight: FontWeight.w700)),
-              subtitle: Text(tx(
-                c,
-                'Naudoti telefono PIN, piršto atspaudą arba veido atpažinimą',
-                'Use device PIN, fingerprint or face authentication',
-              )),
+              title: Text(
+                tx(c, 'Programėlės užraktas', 'App lock'),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                tx(
+                  c,
+                  'Naudoti telefono PIN, piršto atspaudą arba veido atpažinimą',
+                  'Use device PIN, fingerprint or face authentication',
+                ),
+              ),
               onChanged: (value) {
                 setState(() => widget.data.privacyLock = value);
                 widget.onChanged();
@@ -5565,16 +6732,21 @@ class _ScanPage extends State<ScanPage> {
         matches = await VvktService.search(candidate);
         if (matches.isNotEmpty) break;
       }
-      final match = VvktService.bestMatch(matches, _guessStrength(recognizedText));
-      if (mounted) setState(() {
-        vvktMatches = matches;
-        vvktMatch = match;
-      });
+      final match = VvktService.bestMatch(
+        matches,
+        _guessStrength(recognizedText),
+      );
+      if (mounted)
+        setState(() {
+          vvktMatches = matches;
+          vvktMatch = match;
+        });
     } catch (error) {
-      if (mounted) setState(() {
-        vvktMatch = null;
-        vvktError = '$error';
-      });
+      if (mounted)
+        setState(() {
+          vvktMatch = null;
+          vvktError = '$error';
+        });
     } finally {
       if (mounted) {
         setState(() {
@@ -5597,8 +6769,15 @@ class _ScanPage extends State<ScanPage> {
               Padding(
                 padding: const EdgeInsets.all(18),
                 child: Text(
-                  tx(sheetContext, 'Pasirinkite tikslų vaisto variantą', 'Choose the exact medicine variant'),
-                  style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800),
+                  tx(
+                    sheetContext,
+                    'Pasirinkite tikslų vaisto variantą',
+                    'Choose the exact medicine variant',
+                  ),
+                  style: const TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
               Expanded(
@@ -5615,7 +6794,9 @@ class _ScanPage extends State<ScanPage> {
                         color: green,
                       ),
                       title: Text('${item.name} ${item.strength}'),
-                      subtitle: Text('${item.dosageForm}\n${item.packageDescription}'),
+                      subtitle: Text(
+                        '${item.dosageForm}\n${item.packageDescription}',
+                      ),
                       isThreeLine: true,
                       onTap: () => Navigator.pop(sheetContext, item),
                     );
@@ -5629,6 +6810,7 @@ class _ScanPage extends State<ScanPage> {
     );
     if (selected != null && mounted) setState(() => vvktMatch = selected);
   }
+
   Future<void> ocr(ImageSource src) async {
     if (busy) return;
     setState(() => busy = true);
@@ -5637,9 +6819,8 @@ class _ScanPage extends State<ScanPage> {
       final f = await ImagePicker().pickImage(source: src, imageQuality: 90);
       if (f == null || !mounted) return;
       final directory = await getApplicationDocumentsDirectory();
-      final saved = await File(f.path).copy(
-        '${directory.path}/scan_${newId()}.jpg',
-      );
+      final saved = await File(f.path)
+          .copy('${directory.path}/scan_${newId()}.jpg');
       r = TextRecognizer(script: TextRecognitionScript.latin);
       final out = await r.processImage(InputImage.fromFilePath(saved.path));
       if (mounted) {
@@ -5732,7 +6913,10 @@ class _ScanPage extends State<ScanPage> {
                 const SizedBox(height: 8),
                 Text(
                   '${_guessName(text)}\n${_guessStrength(text)}',
-                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const Divider(),
                 Text(
@@ -5749,7 +6933,9 @@ class _ScanPage extends State<ScanPage> {
                 ),
                 ExpansionTile(
                   tilePadding: EdgeInsets.zero,
-                  title: Text(tx(c, 'Visas atpažintas tekstas', 'All recognized text')),
+                  title: Text(
+                    tx(c, 'Visas atpažintas tekstas', 'All recognized text'),
+                  ),
                   children: [SelectableText(text)],
                 ),
               ],
@@ -5765,7 +6951,15 @@ class _ScanPage extends State<ScanPage> {
                     child: CircularProgressIndicator(strokeWidth: 3),
                   ),
                   const SizedBox(width: 12),
-                  Expanded(child: Text(tx(c, 'Tikrinama VVKT registre…', 'Checking the VVKT register…'))),
+                  Expanded(
+                    child: Text(
+                      tx(
+                        c,
+                        'Tikrinama VVKT registre…',
+                        'Checking the VVKT register…',
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -5783,25 +6977,50 @@ class _ScanPage extends State<ScanPage> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            tx(c, 'Rastas oficialiame VVKT duomenų rinkinyje', 'Found in official VVKT data'),
-                            style: const TextStyle(fontWeight: FontWeight.w800, color: green),
+                            tx(
+                              c,
+                              'Rastas oficialiame VVKT duomenų rinkinyje',
+                              'Found in official VVKT data',
+                            ),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              color: green,
+                            ),
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 8),
-                    Text('${vvktMatch!.name} ${vvktMatch!.strength}', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+                    Text(
+                      '${vvktMatch!.name} ${vvktMatch!.strength}',
+                      style: const TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
                     Text(vvktMatch!.substance),
-                    Text('${vvktMatch!.dosageForm} • ${vvktMatch!.packageDescription}'),
-                    Text('${tx(c, 'Tiekimas', 'Supply')}: ${vvktMatch!.supplyStatus}'),
-                    Text('${tx(c, 'Registracijos Nr.', 'Registration No.')}: ${vvktMatch!.registrationNumber}'),
+                    Text(
+                      '${vvktMatch!.dosageForm} • ${vvktMatch!.packageDescription}',
+                    ),
+                    Text(
+                      '${tx(c, 'Tiekimas', 'Supply')}: ${vvktMatch!.supplyStatus}',
+                    ),
+                    Text(
+                      '${tx(c, 'Registracijos Nr.', 'Registration No.')}: ${vvktMatch!.registrationNumber}',
+                    ),
                     if (vvktMatches.length > 1)
                       Align(
                         alignment: Alignment.centerLeft,
                         child: TextButton.icon(
                           onPressed: _chooseVvktVariant,
                           icon: const Icon(Icons.swap_horiz),
-                          label: Text(tx(c, 'Keisti variantą (${vvktMatches.length})', 'Change variant (${vvktMatches.length})')),
+                          label: Text(
+                            tx(
+                              c,
+                              'Keisti variantą (${vvktMatches.length})',
+                              'Change variant (${vvktMatches.length})',
+                            ),
+                          ),
                         ),
                       ),
                   ],
@@ -5812,13 +7031,38 @@ class _ScanPage extends State<ScanPage> {
             Card(
               color: const Color(0xfffff4dc),
               child: ListTile(
-                leading: Icon(vvktError.isEmpty ? Icons.info_outline : Icons.cloud_off_outlined, color: const Color(0xffbd7200)),
-                title: Text(vvktError.isEmpty
-                    ? tx(c, 'VVKT registre automatiškai nepatvirtinta', 'Not automatically confirmed in VVKT')
-                    : tx(c, 'Nepavyko prisijungti prie VVKT', 'Could not connect to VVKT')),
-                subtitle: Text(vvktError.isEmpty
-                    ? tx(c, 'Patikrinkite nuskaitytą pavadinimą arba įveskite duomenis rankiniu būdu.', 'Check the recognized name or enter the details manually.')
-                    : tx(c, 'Patikrinkite interneto ryšį ir nuskaitykite dar kartą. Duomenis taip pat galite įvesti rankiniu būdu.', 'Check your connection and scan again. You can also enter the details manually.')),
+                leading: Icon(
+                  vvktError.isEmpty
+                      ? Icons.info_outline
+                      : Icons.cloud_off_outlined,
+                  color: const Color(0xffbd7200),
+                ),
+                title: Text(
+                  vvktError.isEmpty
+                      ? tx(
+                          c,
+                          'VVKT registre automatiškai nepatvirtinta',
+                          'Not automatically confirmed in VVKT',
+                        )
+                      : tx(
+                          c,
+                          'Nepavyko prisijungti prie VVKT',
+                          'Could not connect to VVKT',
+                        ),
+                ),
+                subtitle: Text(
+                  vvktError.isEmpty
+                      ? tx(
+                          c,
+                          'Patikrinkite nuskaitytą pavadinimą arba įveskite duomenis rankiniu būdu.',
+                          'Check the recognized name or enter the details manually.',
+                        )
+                      : tx(
+                          c,
+                          'Patikrinkite interneto ryšį ir nuskaitykite dar kartą. Duomenis taip pat galite įvesti rankiniu būdu.',
+                          'Check your connection and scan again. You can also enter the details manually.',
+                        ),
+                ),
               ),
             ),
           const SizedBox(height: 10),
@@ -5920,9 +7164,8 @@ class _CameraCapturePage extends State<CameraCapturePage> {
         InputImage.fromFilePath(file.path),
       );
       final directory = await getApplicationDocumentsDirectory();
-      final saved = await File(file.path).copy(
-        '${directory.path}/scan_${newId()}.jpg',
-      );
+      final saved = await File(file.path)
+          .copy('${directory.path}/scan_${newId()}.jpg');
       if (mounted) {
         Navigator.pop(context, ScanCaptureResult(result.text, saved.path));
       }
@@ -6145,11 +7388,7 @@ class _BarcodePage extends State<BarcodePage> {
 class SymptomsPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
-  const SymptomsPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
+  const SymptomsPage({super.key, required this.data, required this.onChanged});
   @override
   State<SymptomsPage> createState() => _SymptomsPageState();
 }
@@ -6168,18 +7407,38 @@ class _SymptomsPageState extends State<SymptomsPage> {
   Widget build(c) {
     final cats = <(String, String, IconData, Color)>[
       ('Skausmas', 'Pain', Icons.healing_rounded, const Color(0xffe53935)),
-      ('Karščiavimas', 'Fever', Icons.thermostat_rounded, const Color(0xffe53935)),
+      (
+        'Karščiavimas',
+        'Fever',
+        Icons.thermostat_rounded,
+        const Color(0xffe53935),
+      ),
       ('Peršalimas', 'Cold', Icons.sick_outlined, green),
-      ('Pilvo problemos', 'Stomach problems', Icons.health_and_safety_rounded, green),
+      (
+        'Pilvo problemos',
+        'Stomach problems',
+        Icons.health_and_safety_rounded,
+        green,
+      ),
       ('Alergija', 'Allergy', Icons.air_rounded, navy),
-      ('Viduriavimas / užkietėjimas', 'Diarrhea / constipation', Icons.wc_rounded, navy),
+      (
+        'Viduriavimas / užkietėjimas',
+        'Diarrhea / constipation',
+        Icons.wc_rounded,
+        navy,
+      ),
       ('Odos problemos', 'Skin problems', Icons.water_drop_outlined, navy),
       ('Galvos svaigimas', 'Dizziness', Icons.sync_problem_outlined, navy),
     ];
     return Scaffold(
       appBar: AppBar(title: Text(tx(c, 'Man bloga', 'Symptoms'))),
       body: ListView(
-        padding: EdgeInsets.fromLTRB(18, 18, 18, MediaQuery.paddingOf(c).bottom + 32),
+        padding: EdgeInsets.fromLTRB(
+          18,
+          18,
+          18,
+          MediaQuery.paddingOf(c).bottom + 32,
+        ),
         children: [
           title(tx(c, 'Kas labiausiai vargina?', 'What bothers you most?')),
           Text(
@@ -6191,20 +7450,35 @@ class _SymptomsPageState extends State<SymptomsPage> {
           ),
           const SizedBox(height: 16),
           if (widget.data.members.isNotEmpty) ...[
-            Text(tx(c, 'Kam pasireiškė simptomai?', 'Who has symptoms?'),
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: navy)),
+            Text(
+              tx(c, 'Kam pasireiškė simptomai?', 'Who has symptoms?'),
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: navy,
+              ),
+            ),
             const SizedBox(height: 8),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
-              child: Row(children: widget.data.members.map((member) => Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
-                  label: Text(member.name),
-                  selected: memberId == member.id,
-                  onSelected: (_) => setState(() => memberId = member.id),
-                ),
-              )).toList()),
+              child: Row(
+                children: widget.data.members
+                    .map(
+                      (member) => Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          avatar: Text(
+                            _memberEmoji(member.gender, member.ageGroup),
+                          ),
+                          label: Text(member.name),
+                          selected: memberId == member.id,
+                          onSelected: (_) =>
+                              setState(() => memberId = member.id),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
             ),
             const SizedBox(height: 14),
           ],
@@ -6215,8 +7489,10 @@ class _SymptomsPageState extends State<SymptomsPage> {
                   backgroundColor: x.$4.withValues(alpha: .11),
                   child: Icon(x.$3, color: x.$4),
                 ),
-                title: Text(tx(c, x.$1, x.$2),
-                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                title: Text(
+                  tx(c, x.$1, x.$2),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _openWizard(c, x.$1),
               ),
@@ -6229,8 +7505,16 @@ class _SymptomsPageState extends State<SymptomsPage> {
             minLines: 2,
             maxLines: 4,
             decoration: InputDecoration(
-              labelText: tx(c, 'Aprašyti kitus simptomus', 'Describe other symptoms'),
-              hintText: tx(c, 'Pvz., silpna, pykina ir svaigsta galva…', 'For example: weakness, nausea and dizziness…'),
+              labelText: tx(
+                c,
+                'Aprašyti kitus simptomus',
+                'Describe other symptoms',
+              ),
+              hintText: tx(
+                c,
+                'Pvz., silpna, pykina ir svaigsta galva…',
+                'For example: weakness, nausea and dizziness…',
+              ),
               prefixIcon: const Icon(Icons.auto_awesome_outlined),
             ),
           ),
@@ -6238,7 +7522,11 @@ class _SymptomsPageState extends State<SymptomsPage> {
           FilledButton.icon(
             onPressed: customSymptom.text.trim().isEmpty
                 ? null
-                : () => _openWizard(c, 'Kiti simptomai', customSymptom.text.trim()),
+                : () => _openWizard(
+                    c,
+                    'Kiti simptomai',
+                    customSymptom.text.trim(),
+                  ),
             icon: const Icon(Icons.arrow_forward_rounded),
             label: Text(tx(c, 'Tęsti', 'Continue')),
           ),
@@ -6247,11 +7535,23 @@ class _SymptomsPageState extends State<SymptomsPage> {
     );
   }
 
-  Future<void> _openWizard(BuildContext context, String category, [String details = '']) async {
+  Future<void> _openWizard(
+    BuildContext context,
+    String category, [
+    String details = '',
+  ]) async {
     if (widget.data.members.isNotEmpty && memberId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(tx(context, 'Pirmiausia pasirinkite šeimos narį.', 'Choose a family member first.')),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            tx(
+              context,
+              'Pirmiausia pasirinkite šeimos narį.',
+              'Choose a family member first.',
+            ),
+          ),
+        ),
+      );
       return;
     }
     await Navigator.push(
@@ -6304,14 +7604,43 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   bool swelling = false;
   bool cannotDrink = false;
   bool neurologicDeficit = false;
-  bool aiConsent = false;
+  late bool aiConsent;
   final Set<String> selectedSymptoms = {};
   Future<String?>? aiAssessment;
 
+  @override
+  void initState() {
+    super.initState();
+    aiConsent = widget.data.aiConsentGranted;
+  }
+
   List<String> get locations => switch (widget.category) {
-    'Pilvo problemos' => ['Viršutinėje pilvo dalyje', 'Dešinėje', 'Kairėje', 'Apatinėje dalyje', 'Visą pilvą', 'Sunku pasakyti'],
-    'Skausmas' => ['Galva', 'Gerklė', 'Krūtinė', 'Pilvas', 'Nugara', 'Sąnariai / raumenys', 'Kita vieta'],
-    'Odos problemos' => ['Galva / veidas', 'Krūtinė / liemuo', 'Pilvas', 'Nugara', 'Rankos', 'Kojos', 'Kelios kūno vietos'],
+    'Pilvo problemos' => [
+      'Viršutinėje pilvo dalyje',
+      'Dešinėje',
+      'Kairėje',
+      'Apatinėje dalyje',
+      'Visą pilvą',
+      'Sunku pasakyti',
+    ],
+    'Skausmas' => [
+      'Galva',
+      'Gerklė',
+      'Krūtinė',
+      'Pilvas',
+      'Nugara',
+      'Sąnariai / raumenys',
+      'Kita vieta',
+    ],
+    'Odos problemos' => [
+      'Galva / veidas',
+      'Krūtinė / liemuo',
+      'Pilvas',
+      'Nugara',
+      'Rankos',
+      'Kojos',
+      'Kelios kūno vietos',
+    ],
     _ => const [],
   };
 
@@ -6337,11 +7666,46 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   }
 
   List<String> get symptomOptions => switch (widget.category) {
-    'Peršalimas' => ['Sloga', 'Užgulta nosis', 'Gerklės skausmas', 'Kosulys', 'Užkimimas', 'Bendras silpnumas'],
-    'Karščiavimas' => ['Iki 38 °C', '38–39 °C', '39 °C ar daugiau', 'Šaltkrėtis', 'Prakaitavimas', 'Silpnumas'],
-    'Alergija' => ['Sloga / čiaudulys', 'Akių niežėjimas', 'Odos bėrimas', 'Niežėjimas', 'Veido ar lūpų tinimas', 'Sunku kvėpuoti'],
-    'Viduriavimas / užkietėjimas' => ['Viduriavimas', 'Užkietėjimas', 'Pilvo pūtimas', 'Pilvo spazmai', 'Pykinimas', 'Vėmimas'],
-    'Galvos svaigimas' => ['Sukasi aplinka', 'Silpnumas / aptemimas', 'Pusiausvyros sutrikimas', 'Pykinimas', 'Galvos skausmas', 'Ūžimas ausyse'],
+    'Peršalimas' => [
+      'Sloga',
+      'Užgulta nosis',
+      'Gerklės skausmas',
+      'Kosulys',
+      'Užkimimas',
+      'Bendras silpnumas',
+    ],
+    'Karščiavimas' => [
+      'Iki 38 °C',
+      '38–39 °C',
+      '39 °C ar daugiau',
+      'Šaltkrėtis',
+      'Prakaitavimas',
+      'Silpnumas',
+    ],
+    'Alergija' => [
+      'Sloga / čiaudulys',
+      'Akių niežėjimas',
+      'Odos bėrimas',
+      'Niežėjimas',
+      'Veido ar lūpų tinimas',
+      'Sunku kvėpuoti',
+    ],
+    'Viduriavimas / užkietėjimas' => [
+      'Viduriavimas',
+      'Užkietėjimas',
+      'Pilvo pūtimas',
+      'Pilvo spazmai',
+      'Pykinimas',
+      'Vėmimas',
+    ],
+    'Galvos svaigimas' => [
+      'Sukasi aplinka',
+      'Silpnumas / aptemimas',
+      'Pusiausvyros sutrikimas',
+      'Pykinimas',
+      'Galvos skausmas',
+      'Ūžimas ausyse',
+    ],
     _ => ['Kitas simptomas'],
   };
 
@@ -6355,31 +7719,51 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       cannotDrink ||
       highFever ||
       (widget.category == 'Alergija' && swelling) ||
-      (widget.category == 'Pilvo problemos' && location == 'Dešinėje' && fever && vomiting);
+      (widget.category == 'Pilvo problemos' &&
+          location == 'Dešinėje' &&
+          fever &&
+          vomiting);
 
   @override
   Widget build(c) => Scaffold(
-    appBar: AppBar(title: Text(step == 0 ? widget.category : tx(c, 'Simptomų įvertinimas', 'Symptom assessment'))),
+    appBar: AppBar(
+      title: Text(
+        step == 0
+            ? widget.category
+            : tx(c, 'Simptomų įvertinimas', 'Symptom assessment'),
+      ),
+    ),
     body: SafeArea(
       top: false,
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 220),
-        child: step == 0 ? _firstStep(c) : step == 1 ? _questionsStep(c) : _resultStep(c),
+        child: step == 0
+            ? _firstStep(c)
+            : step == 1
+            ? _questionsStep(c)
+            : _resultStep(c),
       ),
     ),
   );
 
-  Widget _firstStep(BuildContext c) => usesBodyMap ? _locationStep(c) : _symptomStep(c);
+  Widget _firstStep(BuildContext c) =>
+      usesBodyMap ? _locationStep(c) : _symptomStep(c);
 
   Widget _locationStep(BuildContext c) => ListView(
     key: const ValueKey('location'),
     padding: const EdgeInsets.all(18),
     children: [
-      title(tx(
-        c,
-        widget.category == 'Pilvo problemos' ? 'Kurioje pilvo vietoje jaučiate problemą?' : 'Kurioje vietoje jaučiate problemą?',
-        widget.category == 'Pilvo problemos' ? 'Where in the abdomen is the problem?' : 'Where do you feel the problem?',
-      )),
+      title(
+        tx(
+          c,
+          widget.category == 'Pilvo problemos'
+              ? 'Kurioje pilvo vietoje jaučiate problemą?'
+              : 'Kurioje vietoje jaučiate problemą?',
+          widget.category == 'Pilvo problemos'
+              ? 'Where in the abdomen is the problem?'
+              : 'Where do you feel the problem?',
+        ),
+      ),
       const SizedBox(height: 12),
       Center(
         child: Container(
@@ -6395,20 +7779,31 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             child: BodyMapView(
               asset: bodyMapAsset,
               location: location,
-              errorLabel: tx(c, 'Kūno vaizdo nepavyko įkelti', 'Body image could not be loaded'),
+              errorLabel: tx(
+                c,
+                'Kūno vaizdo nepavyko įkelti',
+                'Body image could not be loaded',
+              ),
             ),
           ),
         ),
       ),
       const SizedBox(height: 12),
-      ...locations.map((item) => Card(
-        color: location == item ? mint : Colors.white,
-        child: ListTile(
-          leading: Icon(location == item ? Icons.check_circle : Icons.radio_button_unchecked, color: green),
-          title: Text(item),
-          onTap: () => setState(() => location = item),
+      ...locations.map(
+        (item) => Card(
+          color: location == item ? mint : Colors.white,
+          child: ListTile(
+            leading: Icon(
+              location == item
+                  ? Icons.check_circle
+                  : Icons.radio_button_unchecked,
+              color: green,
+            ),
+            title: Text(item),
+            onTap: () => setState(() => location = item),
+          ),
         ),
-      )),
+      ),
       const SizedBox(height: 10),
       FilledButton(
         onPressed: location.isEmpty ? null : () => setState(() => step = 1),
@@ -6423,7 +7818,13 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
     children: [
       title(tx(c, 'Ką jaučiate?', 'What are you experiencing?')),
       const SizedBox(height: 6),
-      Text(tx(c, 'Galite pasirinkti kelis simptomus.', 'You can select more than one symptom.')),
+      Text(
+        tx(
+          c,
+          'Galite pasirinkti kelis simptomus.',
+          'You can select more than one symptom.',
+        ),
+      ),
       const SizedBox(height: 14),
       ...symptomOptions.map((item) {
         final selected = selectedSymptoms.contains(item);
@@ -6435,10 +7836,15 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             secondary: Icon(_symptomIcon(item), color: selected ? green : navy),
             title: Text(item),
             onChanged: (_) => setState(() {
-              selected ? selectedSymptoms.remove(item) : selectedSymptoms.add(item);
-              if (item == '39 °C ar daugiau') highFever = selectedSymptoms.contains(item);
-              if (item == 'Sunku kvėpuoti') breathingProblem = selectedSymptoms.contains(item);
-              if (item == 'Veido ar lūpų tinimas') swelling = selectedSymptoms.contains(item);
+              selected
+                  ? selectedSymptoms.remove(item)
+                  : selectedSymptoms.add(item);
+              if (item == '39 °C ar daugiau')
+                highFever = selectedSymptoms.contains(item);
+              if (item == 'Sunku kvėpuoti')
+                breathingProblem = selectedSymptoms.contains(item);
+              if (item == 'Veido ar lūpų tinimas')
+                swelling = selectedSymptoms.contains(item);
               if (item == 'Vėmimas') vomiting = selectedSymptoms.contains(item);
             }),
           ),
@@ -6446,20 +7852,29 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       }),
       const SizedBox(height: 10),
       FilledButton(
-        onPressed: selectedSymptoms.isEmpty ? null : () => setState(() => step = 1),
+        onPressed: selectedSymptoms.isEmpty
+            ? null
+            : () => setState(() => step = 1),
         child: Text(tx(c, 'Tęsti', 'Continue')),
       ),
     ],
   );
 
   IconData _symptomIcon(String item) {
-    if (item.contains('Kosul') || item.contains('Gerkl')) return Icons.record_voice_over_outlined;
-    if (item.contains('nos') || item.contains('Sloga')) return Icons.air_rounded;
-    if (item.contains('39') || item.contains('38') || item.contains('Šaltkr')) return Icons.thermostat_rounded;
-    if (item.contains('Odos') || item.contains('Niež')) return Icons.water_drop_outlined;
-    if (item.contains('Viduri') || item.contains('Užkiet')) return Icons.wc_rounded;
-    if (item.contains('Vėm') || item.contains('Pykin')) return Icons.sick_outlined;
-    if (item.contains('kvėpuoti') || item.contains('tinimas')) return Icons.warning_amber_rounded;
+    if (item.contains('Kosul') || item.contains('Gerkl'))
+      return Icons.record_voice_over_outlined;
+    if (item.contains('nos') || item.contains('Sloga'))
+      return Icons.air_rounded;
+    if (item.contains('39') || item.contains('38') || item.contains('Šaltkr'))
+      return Icons.thermostat_rounded;
+    if (item.contains('Odos') || item.contains('Niež'))
+      return Icons.water_drop_outlined;
+    if (item.contains('Viduri') || item.contains('Užkiet'))
+      return Icons.wc_rounded;
+    if (item.contains('Vėm') || item.contains('Pykin'))
+      return Icons.sick_outlined;
+    if (item.contains('kvėpuoti') || item.contains('tinimas'))
+      return Icons.warning_amber_rounded;
     return Icons.health_and_safety_outlined;
   }
 
@@ -6473,42 +7888,71 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
         card(Text(widget.initialDetails)),
       ],
       const SizedBox(height: 12),
-      _choice(c, tx(c, 'Koks simptomų stiprumas?', 'How severe are the symptoms?'),
-          ['lengvas', 'vidutinis', 'stiprus', 'labai stiprus'], severity, (v) => severity = v),
+      _choice(
+        c,
+        tx(c, 'Koks simptomų stiprumas?', 'How severe are the symptoms?'),
+        ['lengvas', 'vidutinis', 'stiprus', 'labai stiprus'],
+        severity,
+        (v) => severity = v,
+      ),
       const SizedBox(height: 14),
-      _choice(c, tx(c, 'Kiek laiko tai tęsiasi?', 'How long has this lasted?'),
-          ['kelias valandas', '1 dieną', '2–3 dienas', 'ilgiau'], duration, (v) => duration = v),
-      if (widget.category == 'Skausmas' || widget.category == 'Pilvo problemos') ...[
+      _choice(
+        c,
+        tx(c, 'Kiek laiko tai tęsiasi?', 'How long has this lasted?'),
+        ['kelias valandas', '1 dieną', '2–3 dienas', 'ilgiau'],
+        duration,
+        (v) => duration = v,
+      ),
+      if (widget.category == 'Skausmas' ||
+          widget.category == 'Pilvo problemos') ...[
         const SizedBox(height: 14),
-        _choice(c, tx(c, 'Koks skausmas?', 'What is the pain like?'),
-            ['spazminis', 'degina', 'maudžia', 'aštrus'], painType, (v) => painType = v),
+        _choice(
+          c,
+          tx(c, 'Koks skausmas?', 'What is the pain like?'),
+          ['spazminis', 'degina', 'maudžia', 'aštrus'],
+          painType,
+          (v) => painType = v,
+        ),
       ],
       const SizedBox(height: 14),
       ..._categoryQuestions(c),
       const SizedBox(height: 14),
-      if (AiSymptomService.isConfigured)
+      if (AiSymptomService.isConfigured && !widget.data.aiConsentGranted)
         CheckboxListTile(
           key: const ValueKey('symptom-ai-consent'),
           contentPadding: EdgeInsets.zero,
           value: aiConsent,
-          onChanged: (value) => setState(() => aiConsent = value == true),
-          title: Text(tx(
-            c,
-            'Sutinku per „Firebase AI / Google Gemini“ analizuoti amžių, svorį, '
-                'alergijas, ligas, simptomus ir tinkamus vaistinėlės įrašus. Vardas '
-                'nesiunčiamas. AI dozės neskaičiuoja.',
-            'I agree to send age, weight, allergies, conditions, symptoms and '
-                'eligible cabinet entries to Firebase AI / Google Gemini. The name '
-                'is not sent. AI does not calculate doses.',
-          )),
+          onChanged: (value) {
+            final granted = value == true;
+            setState(() => aiConsent = granted);
+            if (granted) {
+              widget.data.aiConsentGranted = true;
+              widget.onChanged();
+            }
+          },
+          title: Text(
+            tx(
+              c,
+              'Sutinku per „Firebase AI / Google Gemini“ analizuoti amžių, svorį, '
+                  'alergijas, ligas, simptomus ir tinkamus vaistinėlės įrašus. Vardas '
+                  'nesiunčiamas. Dozė rodoma tik iš patvirtintos oficialios '
+                  'taisyklės. Šis sutikimas bus įsimintas.',
+              'I agree to send age, weight, allergies, conditions, symptoms and '
+                  'eligible cabinet entries to Firebase AI / Google Gemini. The name '
+                  'is not sent. Doses come only from verified official rules. '
+                  'This consent is remembered.',
+            ),
+          ),
         ),
       FilledButton(
-        onPressed: duration.isEmpty ? null : () {
-          setState(() {
-            step = 2;
-            aiAssessment = aiConsent ? _requestAiAssessment() : null;
-          });
-        },
+        onPressed: duration.isEmpty
+            ? null
+            : () {
+                setState(() {
+                  step = 2;
+                  aiAssessment = aiConsent ? _requestAiAssessment() : null;
+                });
+              },
         child: Text(tx(c, 'Atlikti saugumo patikrą', 'Run safety check')),
       ),
     ],
@@ -6528,150 +7972,419 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
         age--;
       }
     }
-    final eligibleMedicines = widget.data.meds.where((medicine) =>
-        medicine.memberIds.isEmpty ||
-        medicine.memberIds.contains(widget.memberId));
+    final eligibleMedicines = widget.data.meds.where(
+      (medicine) =>
+          medicine.memberIds.isEmpty ||
+          medicine.memberIds.contains(widget.memberId),
+    );
     return AiSymptomService.assess(
-    category: widget.category,
-    location: location,
-    symptoms: selectedSymptoms.toList(),
-    severity: severity,
-    duration: duration,
-    safetyAnswers: {
-      'highFever': highFever,
-      'vomiting': vomiting,
-      'persistentVomiting': persistentVomiting,
-      'blood': blood,
-      'breathingProblem': breathingProblem,
-      'faintingOrConfusion': faintingOrConfusion,
-      'swelling': swelling,
-      'cannotDrink': cannotDrink,
-      'neurologicDeficit': neurologicDeficit,
-    },
-    patient: <String, Object?>{
-      'ageGroup': member?.ageGroup ?? '',
-      'ageYears': age,
-      'weightKg': member?.weight ?? '',
-      'allergies': member?.allergies ?? '',
-      'conditions': member?.conditions ?? '',
-      'intolerantMedicines': member?.intolerantMedicines ?? '',
-    },
-    cabinetMedicines: eligibleMedicines.map((medicine) => <String, Object?>{
-      'name': medicine.name,
-      'substance': medicine.substance,
-      'strength': medicine.strength,
-      'form': medicine.dosageForm,
-      'category': medicine.category,
-      'purpose': medicine.purpose,
-      'prescription': medicine.prescription,
-      'officialUseText': medicine.dosage,
-      'warnings': medicine.warnings,
-      'interactions': medicine.interactions,
-    }).toList(),
-  );
+      category: widget.category,
+      location: location,
+      symptoms: selectedSymptoms.toList(),
+      severity: severity,
+      duration: duration,
+      details: widget.initialDetails,
+      safetyAnswers: {
+        'highFever': highFever,
+        'vomiting': vomiting,
+        'persistentVomiting': persistentVomiting,
+        'blood': blood,
+        'breathingProblem': breathingProblem,
+        'faintingOrConfusion': faintingOrConfusion,
+        'swelling': swelling,
+        'cannotDrink': cannotDrink,
+        'neurologicDeficit': neurologicDeficit,
+      },
+      patient: <String, Object?>{
+        'ageGroup': member?.ageGroup ?? '',
+        'ageYears': age,
+        'weightKg': member?.weight ?? '',
+        'allergies': member?.allergies ?? '',
+        'conditions': member?.conditions ?? '',
+        'intolerantMedicines': member?.intolerantMedicines ?? '',
+      },
+      cabinetMedicines: eligibleMedicines.map((medicine) {
+        final guidance = member == null
+            ? null
+            : calculateDoseGuidance(medicine, member);
+        return <String, Object?>{
+          'name': medicine.name,
+          'substance': medicine.substance,
+          'strength': medicine.strength,
+          'form': medicine.dosageForm,
+          'category': medicine.category,
+          'purpose': medicine.purpose,
+          'prescription': medicine.prescription,
+          'officialUseText': medicine.dosage,
+          'warnings': medicine.warnings,
+          'interactions': medicine.interactions,
+          'expired':
+              (daysUntilMedicineExpiry(medicine.expiry, DateTime.now()) ?? 0) <
+              0,
+          'stock': medicine.stock,
+          'verifiedDose': guidance == null
+              ? null
+              : <String, Object?>{
+                  'doseMg': guidance.doseMg,
+                  'volumeMl': guidance.volumeMl,
+                  'units': guidance.units,
+                  'source': guidance.source,
+                },
+        };
+      }).toList(),
+    );
   }
 
   Widget _aiCard(BuildContext c) {
     if (!aiConsent) {
-      return card(Text(tx(
-        c,
-        'AI analizė nevykdyta – sveikatos duomenys neišsiųsti.',
-        'AI analysis was not run — no health data was sent.',
-      )));
+      return card(
+        Text(
+          tx(
+            c,
+            'AI analizė nevykdyta – sveikatos duomenys neišsiųsti.',
+            'AI analysis was not run — no health data was sent.',
+          ),
+        ),
+      );
     }
     if (!AiSymptomService.isConfigured) {
-      return card(Row(children: [
-        const Icon(Icons.auto_awesome_rounded, color: green),
-        const SizedBox(width: 10),
-        Expanded(child: Text(tx(c,
-          'AI analizė paruošta. Ji bus aktyvuota prijungus saugų „Firebase“ servisą.',
-          'AI analysis is ready and will activate after connecting the secure Firebase service.'))),
-      ]));
+      return card(
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome_rounded, color: green),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                tx(
+                  c,
+                  'AI analizė paruošta. Ji bus aktyvuota prijungus saugų „Firebase“ servisą.',
+                  'AI analysis is ready and will activate after connecting the secure Firebase service.',
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
     }
     return FutureBuilder<String?>(
       future: aiAssessment,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return card(const Row(children: [
-            SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5)),
-            SizedBox(width: 12),
-            Expanded(child: Text('AI analizuoja pateiktą informaciją…')),
-          ]));
+          return card(
+            const Row(
+              children: [
+                SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('AI analizuoja pateiktą informaciją…')),
+              ],
+            ),
+          );
         }
         if (snapshot.data == null) return const SizedBox.shrink();
-        return card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Row(children: [Icon(Icons.auto_awesome_rounded, color: green), SizedBox(width: 8), Text('AI paaiškinimas', style: TextStyle(fontWeight: FontWeight.w700, color: navy))]),
-          const SizedBox(height: 8),
-          Text(snapshot.data!),
-          const SizedBox(height: 6),
-          Text(tx(c, 'Tai nėra diagnozė ar gydymo paskyrimas.', 'This is not a diagnosis or treatment prescription.'), style: const TextStyle(fontSize: 12, color: Color(0xff526572))),
-        ]));
+        return card(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.auto_awesome_rounded, color: green),
+                  SizedBox(width: 8),
+                  Text(
+                    'AI paaiškinimas',
+                    style: TextStyle(fontWeight: FontWeight.w700, color: navy),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(snapshot.data!),
+              const SizedBox(height: 6),
+              Text(
+                tx(
+                  c,
+                  'Tai nėra diagnozė ar gydymo paskyrimas.',
+                  'This is not a diagnosis or treatment prescription.',
+                ),
+                style: const TextStyle(fontSize: 12, color: Color(0xff526572)),
+              ),
+            ],
+          ),
+        );
       },
     );
   }
 
   List<Widget> _categoryQuestions(BuildContext c) => switch (widget.category) {
     'Peršalimas' => [
-      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
-      if (fever) _yesNo(c, tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'), highFever, (v) => highFever = v),
-      _yesNo(c, tx(c, 'Ar sunku kvėpuoti arba jaučiate dusulį?', 'Difficulty breathing or shortness of breath?'), breathingProblem, (v) => breathingProblem = v),
+      _yesNo(
+        c,
+        tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'),
+        fever,
+        (v) => fever = v,
+      ),
+      if (fever)
+        _yesNo(
+          c,
+          tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'),
+          highFever,
+          (v) => highFever = v,
+        ),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar sunku kvėpuoti arba jaučiate dusulį?',
+          'Difficulty breathing or shortness of breath?',
+        ),
+        breathingProblem,
+        (v) => breathingProblem = v,
+      ),
     ],
     'Karščiavimas' => [
-      _yesNo(c, tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'), highFever, (v) => highFever = v),
-      _yesNo(c, tx(c, 'Ar yra neįprastas bėrimas?', 'Is there an unusual rash?'), rash, (v) => rash = v),
-      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
-      _yesNo(c, tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+      _yesNo(
+        c,
+        tx(c, 'Ar temperatūra 39 °C ar aukštesnė?', 'Is it 39°C or higher?'),
+        highFever,
+        (v) => highFever = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar yra neįprastas bėrimas?', 'Is there an unusual rash?'),
+        rash,
+        (v) => rash = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'),
+        breathingProblem,
+        (v) => breathingProblem = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'),
+        faintingOrConfusion,
+        (v) => faintingOrConfusion = v,
+      ),
     ],
     'Alergija' => [
-      _yesNo(c, tx(c, 'Ar tinsta veidas, lūpos arba liežuvis?', 'Swelling of the face, lips or tongue?'), swelling, (v) => swelling = v),
-      _yesNo(c, tx(c, 'Ar sunku kvėpuoti arba ryti?', 'Difficulty breathing or swallowing?'), breathingProblem, (v) => breathingProblem = v),
-      _yesNo(c, tx(c, 'Ar bėrimas greitai plinta?', 'Is the rash spreading quickly?'), rash, (v) => rash = v),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar tinsta veidas, lūpos arba liežuvis?',
+          'Swelling of the face, lips or tongue?',
+        ),
+        swelling,
+        (v) => swelling = v,
+      ),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar sunku kvėpuoti arba ryti?',
+          'Difficulty breathing or swallowing?',
+        ),
+        breathingProblem,
+        (v) => breathingProblem = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar bėrimas greitai plinta?', 'Is the rash spreading quickly?'),
+        rash,
+        (v) => rash = v,
+      ),
     ],
     'Viduriavimas / užkietėjimas' => [
-      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
-      if (vomiting) _yesNo(c, tx(c, 'Ar vėmimas kartojasi?', 'Is vomiting persistent?'), persistentVomiting, (v) => persistentVomiting = v),
-      _yesNo(c, tx(c, 'Ar nepavyksta gerti arba išlaikyti skysčių?', 'Unable to drink or keep fluids down?'), cannotDrink, (v) => cannotDrink = v),
-      _yesNo(c, tx(c, 'Ar išmatose pastebėjote kraujo?', 'Have you noticed blood in stool?'), blood, (v) => blood = v),
+      _yesNo(
+        c,
+        tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'),
+        vomiting,
+        (v) => vomiting = v,
+      ),
+      if (vomiting)
+        _yesNo(
+          c,
+          tx(c, 'Ar vėmimas kartojasi?', 'Is vomiting persistent?'),
+          persistentVomiting,
+          (v) => persistentVomiting = v,
+        ),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar nepavyksta gerti arba išlaikyti skysčių?',
+          'Unable to drink or keep fluids down?',
+        ),
+        cannotDrink,
+        (v) => cannotDrink = v,
+      ),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar išmatose pastebėjote kraujo?',
+          'Have you noticed blood in stool?',
+        ),
+        blood,
+        (v) => blood = v,
+      ),
     ],
     'Pilvo problemos' => [
-      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
-      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
-      if (vomiting) _yesNo(c, tx(c, 'Ar vėmimas kartojasi ir nepavyksta gerti?', 'Persistent vomiting or unable to drink?'), persistentVomiting, (v) => persistentVomiting = v),
-      _yesNo(c, tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'), blood, (v) => blood = v),
+      _yesNo(
+        c,
+        tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'),
+        fever,
+        (v) => fever = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'),
+        vomiting,
+        (v) => vomiting = v,
+      ),
+      if (vomiting)
+        _yesNo(
+          c,
+          tx(
+            c,
+            'Ar vėmimas kartojasi ir nepavyksta gerti?',
+            'Persistent vomiting or unable to drink?',
+          ),
+          persistentVomiting,
+          (v) => persistentVomiting = v,
+        ),
+      _yesNo(
+        c,
+        tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'),
+        blood,
+        (v) => blood = v,
+      ),
     ],
     'Odos problemos' => [
-      _yesNo(c, tx(c, 'Ar bėrimas arba paraudimas greitai plinta?', 'Is the rash or redness spreading quickly?'), rash, (v) => rash = v),
-      _yesNo(c, tx(c, 'Ar tinsta veidas arba lūpos?', 'Swelling of the face or lips?'), swelling, (v) => swelling = v),
-      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
-      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar bėrimas arba paraudimas greitai plinta?',
+          'Is the rash or redness spreading quickly?',
+        ),
+        rash,
+        (v) => rash = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar tinsta veidas arba lūpos?', 'Swelling of the face or lips?'),
+        swelling,
+        (v) => swelling = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'),
+        breathingProblem,
+        (v) => breathingProblem = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'),
+        fever,
+        (v) => fever = v,
+      ),
     ],
     'Galvos svaigimas' => [
-      _yesNo(c, tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
-      _yesNo(c, tx(c, 'Ar sunku kalbėti, matyti arba valdyti galūnes?', 'Difficulty speaking, seeing or controlling a limb?'), neurologicDeficit, (v) => neurologicDeficit = v),
-      _yesNo(c, tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'), vomiting, (v) => vomiting = v),
+      _yesNo(
+        c,
+        tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'),
+        faintingOrConfusion,
+        (v) => faintingOrConfusion = v,
+      ),
+      _yesNo(
+        c,
+        tx(
+          c,
+          'Ar sunku kalbėti, matyti arba valdyti galūnes?',
+          'Difficulty speaking, seeing or controlling a limb?',
+        ),
+        neurologicDeficit,
+        (v) => neurologicDeficit = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'),
+        vomiting,
+        (v) => vomiting = v,
+      ),
     ],
     _ => [
-      _yesNo(c, tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'), fever, (v) => fever = v),
-      _yesNo(c, tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'), blood, (v) => blood = v),
-      _yesNo(c, tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'), breathingProblem, (v) => breathingProblem = v),
-      _yesNo(c, tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'), faintingOrConfusion, (v) => faintingOrConfusion = v),
+      _yesNo(
+        c,
+        tx(c, 'Ar yra temperatūra?', 'Do you have a fever?'),
+        fever,
+        (v) => fever = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar pastebėjote kraujo?', 'Have you noticed blood?'),
+        blood,
+        (v) => blood = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar sunku kvėpuoti?', 'Difficulty breathing?'),
+        breathingProblem,
+        (v) => breathingProblem = v,
+      ),
+      _yesNo(
+        c,
+        tx(c, 'Ar alpstate arba esate sumišę?', 'Fainting or confusion?'),
+        faintingOrConfusion,
+        (v) => faintingOrConfusion = v,
+      ),
     ],
   };
 
-  Widget _choice(BuildContext c, String label, List<String> values, String selected, ValueChanged<String> onSelect) => Column(
+  Widget _choice(
+    BuildContext c,
+    String label,
+    List<String> values,
+    String selected,
+    ValueChanged<String> onSelect,
+  ) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: navy)),
+      Text(
+        label,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w700,
+          color: navy,
+        ),
+      ),
       const SizedBox(height: 7),
-      Wrap(spacing: 7, runSpacing: 7, children: values.map((value) => ChoiceChip(
-        label: Text(value),
-        selected: selected == value,
-        onSelected: (_) => setState(() => onSelect(value)),
-      )).toList()),
+      Wrap(
+        spacing: 7,
+        runSpacing: 7,
+        children: values
+            .map(
+              (value) => ChoiceChip(
+                label: Text(value),
+                selected: selected == value,
+                onSelected: (_) => setState(() => onSelect(value)),
+              ),
+            )
+            .toList(),
+      ),
     ],
   );
 
-  Widget _yesNo(BuildContext c, String label, bool value, ValueChanged<bool> onChanged) => SwitchListTile(
+  Widget _yesNo(
+    BuildContext c,
+    String label,
+    bool value,
+    ValueChanged<bool> onChanged,
+  ) => SwitchListTile(
     contentPadding: EdgeInsets.zero,
     title: Text(label),
     value: value,
@@ -6680,68 +8393,155 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
 
   Widget _resultStep(BuildContext c) {
     if (dangerous) return _dangerResult(c);
-    final member = widget.data.members.where((x) => x.id == widget.memberId).firstOrNull;
-    final allergyText = '${member?.allergies ?? ''} '
-        '${member?.intolerantMedicines ?? ''}'.toLowerCase();
+    final member = widget.data.members
+        .where((x) => x.id == widget.memberId)
+        .firstOrNull;
+    final allergyText =
+        '${member?.allergies ?? ''} '
+                '${member?.intolerantMedicines ?? ''}'
+            .toLowerCase();
     final matches = widget.data.meds.where((medicine) {
       if (medicine.prescription || medicine.stock <= 0) return false;
-      if (widget.memberId.isNotEmpty && medicine.memberIds.isNotEmpty && !medicine.memberIds.contains(widget.memberId)) return false;
+      if (widget.memberId.isNotEmpty &&
+          medicine.memberIds.isNotEmpty &&
+          !medicine.memberIds.contains(widget.memberId))
+        return false;
       if (!_matchesSymptomCategory(medicine, widget.category)) return false;
-      final expiryDays = daysUntilMedicineExpiry(medicine.expiry, DateTime.now());
+      final expiryDays = daysUntilMedicineExpiry(
+        medicine.expiry,
+        DateTime.now(),
+      );
       if (expiryDays != null && expiryDays < 0) return false;
       final identity = '${medicine.name} ${medicine.substance}'.toLowerCase();
-      final allergyWords = allergyText.split(RegExp(r'[,;\s]+')).where((word) => word.length > 3);
+      final allergyWords = allergyText
+          .split(RegExp(r'[,;\s]+'))
+          .where((word) => word.length > 3);
       return !allergyWords.any(identity.contains);
     }).toList();
     return ListView(
       key: const ValueKey('safe'),
       padding: const EdgeInsets.all(18),
       children: [
-        const Center(child: CircleAvatar(radius: 42, backgroundColor: mint, child: Icon(Icons.check_circle, size: 58, color: green))),
+        const Center(
+          child: CircleAvatar(
+            radius: 42,
+            backgroundColor: mint,
+            child: Icon(Icons.check_circle, size: 58, color: green),
+          ),
+        ),
         const SizedBox(height: 14),
-        Text(tx(c, 'Pagal pateiktus atsakymus pavojingų požymių nenustatyta', 'No danger signs identified from the answers provided'),
-            textAlign: TextAlign.center, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700, color: green)),
+        Text(
+          tx(
+            c,
+            'Pagal pateiktus atsakymus pavojingų požymių nenustatyta',
+            'No danger signs identified from the answers provided',
+          ),
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 21,
+            fontWeight: FontWeight.w700,
+            color: green,
+          ),
+        ),
         const SizedBox(height: 10),
-        card(Text(tx(c,
-          'Tai nėra diagnozė. Jei būklė blogėja, simptomai stiprėja ar kelia nerimą – kreipkitės į gydytoją.',
-          'This is not a diagnosis. Seek medical care if symptoms worsen or concern you.'))),
+        card(
+          Text(
+            tx(
+              c,
+              'Tai nėra diagnozė. Jei būklė blogėja, simptomai stiprėja ar kelia nerimą – kreipkitės į gydytoją.',
+              'This is not a diagnosis. Seek medical care if symptoms worsen or concern you.',
+            ),
+          ),
+        ),
         const SizedBox(height: 10),
         _aiCard(c),
         const SizedBox(height: 14),
-        Text(tx(c, 'Asmens ir bendroje vaistinėlėje radome:', 'Found in the personal and shared medicine cabinet:'),
-            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: navy)),
+        Text(
+          tx(
+            c,
+            'Asmens ir bendroje vaistinėlėje radome:',
+            'Found in the personal and shared medicine cabinet:',
+          ),
+          style: const TextStyle(
+            fontSize: 19,
+            fontWeight: FontWeight.w700,
+            color: navy,
+          ),
+        ),
         const SizedBox(height: 8),
-        if (matches.isEmpty) card(Text(tx(c, 'Tinkamų ir galiojančių nereceptinių vaistų nerasta.', 'No suitable, unexpired non-prescription medicines found.'))),
+        if (matches.isEmpty)
+          card(
+            Text(
+              tx(
+                c,
+                'Tinkamų ir galiojančių nereceptinių vaistų nerasta.',
+                'No suitable, unexpired non-prescription medicines found.',
+              ),
+            ),
+          ),
         ...matches.map((medicine) {
           final isShared = medicine.memberIds.isEmpty;
           final source = isShared
               ? tx(c, 'Bendra vaistinėlė', 'Shared medicine cabinet')
-              : tx(c, 'Priskirta pasirinktam asmeniui', 'Assigned to selected person');
+              : tx(
+                  c,
+                  'Priskirta pasirinktam asmeniui',
+                  'Assigned to selected person',
+                );
           final guidance = member == null
               ? null
               : calculateDoseGuidance(medicine, member);
           final doseLine = guidance == null
-              ? tx(c,
+              ? tx(
+                  c,
                   'Dozė nerodoma – nėra patvirtintos struktūrinės lapelio taisyklės.',
-                  'Dose not shown — no approved structured leaflet rule.')
+                  'Dose not shown — no approved structured leaflet rule.',
+                )
               : '${tx(c, 'Pagal patvirtintą lapelį', 'From approved leaflet')}: '
-                  '${quantityLabel(guidance.doseMg)} mg'
-                  '${guidance.volumeMl == null ? '' : ' • ${quantityLabel(guidance.volumeMl!)} ml'}'
-                  '${guidance.units == null ? '' : ' • ${quantityLabel(guidance.units!)} vnt.'}';
+                    '${quantityLabel(guidance.doseMg)} mg'
+                    '${guidance.volumeMl == null ? '' : ' • ${quantityLabel(guidance.volumeMl!)} ml'}'
+                    '${guidance.units == null ? '' : ' • ${quantityLabel(guidance.units!)} vnt.'}';
           return Card(
-          child: ListTile(
-            leading: medicine.imagePath.isNotEmpty && File(medicine.imagePath).existsSync()
-                ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(File(medicine.imagePath), width: 52, height: 52, fit: BoxFit.cover))
-                : const CircleAvatar(backgroundColor: mint, child: Icon(Icons.medication, color: green)),
-            title: Text('${medicine.name} ${medicine.strength}', style: const TextStyle(fontWeight: FontWeight.w700)),
-            subtitle: Text('$source • ${medicine.substance}\n'
+            child: ListTile(
+              leading:
+                  medicine.imagePath.isNotEmpty &&
+                      File(medicine.imagePath).existsSync()
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.file(
+                        File(medicine.imagePath),
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
+                      ),
+                    )
+                  : const CircleAvatar(
+                      backgroundColor: mint,
+                      child: Icon(Icons.medication, color: green),
+                    ),
+              title: Text(
+                '${medicine.name} ${medicine.strength}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                '$source • ${medicine.substance}\n'
                 '${_matchReason(c, widget.category)}\n$doseLine\n'
-                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}'),
-            isThreeLine: false,
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => MedicinePage(data: widget.data, med: medicine, onChanged: widget.onChanged))),
-          ),
-        );
+                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}',
+              ),
+              isThreeLine: false,
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) => MedicinePage(
+                    data: widget.data,
+                    med: medicine,
+                    onChanged: widget.onChanged,
+                  ),
+                ),
+              ),
+            ),
+          );
         }),
         const SizedBox(height: 10),
         OutlinedButton.icon(
@@ -6755,68 +8555,167 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
 
   Widget _dangerResult(BuildContext c) {
     final signs = <String>[
-      if (severity == 'labai stiprus') tx(c, 'Labai stiprūs simptomai', 'Very severe symptoms'),
-      if (highFever) tx(c, 'Temperatūra 39 °C ar aukštesnė', 'Temperature of 39°C or higher'),
-      if (persistentVomiting) tx(c, 'Nuolatinis vėmimas arba nepavyksta gerti', 'Persistent vomiting or unable to drink'),
-      if (cannotDrink) tx(c, 'Nepavyksta gerti arba išlaikyti skysčių', 'Unable to drink or keep fluids down'),
+      if (severity == 'labai stiprus')
+        tx(c, 'Labai stiprūs simptomai', 'Very severe symptoms'),
+      if (highFever)
+        tx(
+          c,
+          'Temperatūra 39 °C ar aukštesnė',
+          'Temperature of 39°C or higher',
+        ),
+      if (persistentVomiting)
+        tx(
+          c,
+          'Nuolatinis vėmimas arba nepavyksta gerti',
+          'Persistent vomiting or unable to drink',
+        ),
+      if (cannotDrink)
+        tx(
+          c,
+          'Nepavyksta gerti arba išlaikyti skysčių',
+          'Unable to drink or keep fluids down',
+        ),
       if (blood) tx(c, 'Pastebėtas kraujas', 'Blood reported'),
       if (breathingProblem) tx(c, 'Sunku kvėpuoti', 'Difficulty breathing'),
-      if (swelling) tx(c, 'Tinsta veidas, lūpos arba liežuvis', 'Swelling of the face, lips or tongue'),
-      if (faintingOrConfusion) tx(c, 'Alpimas arba sumišimas', 'Fainting or confusion'),
-      if (neurologicDeficit) tx(c, 'Kalbos, regėjimo arba galūnių valdymo sutrikimas', 'Speech, vision or limb control problem'),
-      if (widget.category == 'Pilvo problemos' && location == 'Dešinėje' && fever && vomiting)
-        tx(c, 'Pilvo skausmas dešinėje su temperatūra ir vėmimu', 'Right-sided abdominal pain with fever and vomiting'),
+      if (swelling)
+        tx(
+          c,
+          'Tinsta veidas, lūpos arba liežuvis',
+          'Swelling of the face, lips or tongue',
+        ),
+      if (faintingOrConfusion)
+        tx(c, 'Alpimas arba sumišimas', 'Fainting or confusion'),
+      if (neurologicDeficit)
+        tx(
+          c,
+          'Kalbos, regėjimo arba galūnių valdymo sutrikimas',
+          'Speech, vision or limb control problem',
+        ),
+      if (widget.category == 'Pilvo problemos' &&
+          location == 'Dešinėje' &&
+          fever &&
+          vomiting)
+        tx(
+          c,
+          'Pilvo skausmas dešinėje su temperatūra ir vėmimu',
+          'Right-sided abdominal pain with fever and vomiting',
+        ),
     ];
     return ListView(
       key: const ValueKey('danger'),
       padding: const EdgeInsets.all(18),
       children: [
-        const Center(child: CircleAvatar(radius: 42, backgroundColor: Color(0xffffe7e7), child: Icon(Icons.warning_rounded, size: 54, color: Colors.red))),
+        const Center(
+          child: CircleAvatar(
+            radius: 42,
+            backgroundColor: Color(0xffffe7e7),
+            child: Icon(Icons.warning_rounded, size: 54, color: Colors.red),
+          ),
+        ),
         const SizedBox(height: 14),
-        Text(tx(c, 'Galimi pavojingi požymiai', 'Possible danger signs'), textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: Colors.red)),
+        Text(
+          tx(c, 'Galimi pavojingi požymiai', 'Possible danger signs'),
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 23,
+            fontWeight: FontWeight.w700,
+            color: Colors.red,
+          ),
+        ),
         const SizedBox(height: 12),
-        ...signs.map((sign) => ListTile(leading: const Icon(Icons.circle, size: 10, color: Colors.red), title: Text(sign))),
+        ...signs.map(
+          (sign) => ListTile(
+            leading: const Icon(Icons.circle, size: 10, color: Colors.red),
+            title: Text(sign),
+          ),
+        ),
         Card(
           color: const Color(0xffffe7e7),
           child: Padding(
             padding: const EdgeInsets.all(16),
-            child: Text(tx(c,
-              'Rekomenduojama nedelsiant kreiptis į gydytoją arba skubios pagalbos skyrių. Jei kyla grėsmė gyvybei – skambinkite 112.',
-              'Seek urgent medical assessment. Call emergency services if there is an immediate threat to life.'),
-              textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xffa31717))),
+            child: Text(
+              tx(
+                c,
+                'Rekomenduojama nedelsiant kreiptis į gydytoją arba skubios pagalbos skyrių. Jei kyla grėsmė gyvybei – skambinkite 112.',
+                'Seek urgent medical assessment. Call emergency services if there is an immediate threat to life.',
+              ),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: Color(0xffa31717),
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 10),
         FilledButton.icon(
           style: FilledButton.styleFrom(backgroundColor: Colors.red),
-          onPressed: () => Clipboard.setData(const ClipboardData(text: '112')).then((_) => ScaffoldMessenger.of(c).showSnackBar(
-            SnackBar(content: Text(tx(c, 'Numeris 112 nukopijuotas.', '112 copied.'))),
-          )),
+          onPressed: () => Clipboard.setData(const ClipboardData(text: '112'))
+              .then(
+                (_) => ScaffoldMessenger.of(c).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      tx(c, 'Numeris 112 nukopijuotas.', '112 copied.'),
+                    ),
+                  ),
+                ),
+              ),
           icon: const Icon(Icons.emergency_outlined),
           label: Text(tx(c, 'Kopijuoti numerį 112', 'Copy emergency number')),
         ),
         const SizedBox(height: 8),
-        OutlinedButton(onPressed: () => setState(() => step = 1), child: Text(tx(c, 'Patikslinti atsakymus', 'Review answers'))),
+        OutlinedButton(
+          onPressed: () => setState(() => step = 1),
+          child: Text(tx(c, 'Patikslinti atsakymus', 'Review answers')),
+        ),
       ],
     );
   }
 }
 
 String _matchReason(BuildContext c, String category) => switch (category) {
-  'Skausmas' => tx(c, 'Gali būti susijęs su pasirinktu skausmo simptomu.', 'May relate to the selected pain symptom.'),
-  'Karščiavimas' => tx(c, 'Paskirtis susijusi su karščiavimu.', 'Its purpose relates to fever.'),
-  'Peršalimas' => tx(c, 'Paskirtis susijusi su peršalimo simptomais.', 'Its purpose relates to cold symptoms.'),
-  'Pilvo problemos' || 'Viduriavimas / užkietėjimas' => tx(c, 'Paskirtis susijusi su virškinimo simptomais.', 'Its purpose relates to digestive symptoms.'),
-  'Alergija' => tx(c, 'Paskirtis susijusi su alergijos simptomais.', 'Its purpose relates to allergy symptoms.'),
-  _ => tx(c, 'Atitinka vaisto kortelėje nurodytą paskirtį.', 'Matches the purpose recorded on the medicine card.'),
+  'Skausmas' => tx(
+    c,
+    'Gali būti susijęs su pasirinktu skausmo simptomu.',
+    'May relate to the selected pain symptom.',
+  ),
+  'Karščiavimas' => tx(
+    c,
+    'Paskirtis susijusi su karščiavimu.',
+    'Its purpose relates to fever.',
+  ),
+  'Peršalimas' => tx(
+    c,
+    'Paskirtis susijusi su peršalimo simptomais.',
+    'Its purpose relates to cold symptoms.',
+  ),
+  'Pilvo problemos' || 'Viduriavimas / užkietėjimas' => tx(
+    c,
+    'Paskirtis susijusi su virškinimo simptomais.',
+    'Its purpose relates to digestive symptoms.',
+  ),
+  'Alergija' => tx(
+    c,
+    'Paskirtis susijusi su alergijos simptomais.',
+    'Its purpose relates to allergy symptoms.',
+  ),
+  _ => tx(
+    c,
+    'Atitinka vaisto kortelėje nurodytą paskirtį.',
+    'Matches the purpose recorded on the medicine card.',
+  ),
 };
 
 class MatchesPage extends StatelessWidget {
   final AppData data;
   final String category;
   final VoidCallback onChanged;
-  const MatchesPage({super.key, required this.data, required this.category, required this.onChanged});
+  const MatchesPage({
+    super.key,
+    required this.data,
+    required this.category,
+    required this.onChanged,
+  });
   @override
   Widget build(c) {
     final m = data.meds
@@ -6856,11 +8755,8 @@ class MatchesPage extends StatelessWidget {
                 onTap: () => Navigator.push(
                   c,
                   MaterialPageRoute(
-                    builder: (_) => MedicinePage(
-                      data: data,
-                      med: x,
-                      onChanged: onChanged,
-                    ),
+                    builder: (_) =>
+                        MedicinePage(data: data, med: x, onChanged: onChanged),
                   ),
                 ),
               ),
@@ -6879,7 +8775,8 @@ bool _matchesSymptomCategory(Med medicine, String symptom) {
   final expected = switch (symptom) {
     'Skausmas' || 'Karščiavimas' => {'skausmas', 'skausmas ir karščiavimas'},
     'Peršalimas' => {'peršalimas', 'kvėpavimo sistema'},
-    'Pilvo problemos' || 'Viduriavimas / užkietėjimas' => {'pilvo problemos', 'virškinimas'},
+    'Pilvo problemos' ||
+    'Viduriavimas / užkietėjimas' => {'pilvo problemos', 'virškinimas'},
     'Alergija' => {'alergija'},
     'Odos problemos' => {'oda'},
     'Galvos svaigimas' => {'nervų sistema', 'kraujas', 'širdis ir kraujotaka'},
