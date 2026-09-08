@@ -72,6 +72,7 @@ class Med {
   List<String> memberIds;
   List<String> aiSourceTitles;
   List<String> aiSourceUrls;
+  Map<String, Map<String, String>> aiLocalized;
   List<MedicineStockBatch> batches;
   LeafletRecord? leafletRecord;
   Med({
@@ -117,13 +118,27 @@ class Med {
     this.aiSearchHtml = '',
     List<String>? aiSourceTitles,
     List<String>? aiSourceUrls,
+    Map<String, Map<String, String>>? aiLocalized,
     this.leafletRecord,
     List<String>? memberIds,
     List<MedicineStockBatch>? batches,
   }) : memberIds = memberIds ?? [],
        aiSourceTitles = aiSourceTitles ?? [],
        aiSourceUrls = aiSourceUrls ?? [],
+       aiLocalized = aiLocalized ?? {},
        batches = batches ?? [];
+  String information(String field, String language) {
+    final original = switch (field) {
+      'purpose' => purpose, 'dosage' => dosage, 'warnings' => warnings,
+      'sideEffects' => sideEffects, 'interactions' => interactions,
+      'storage' => storageLocation, _ => '',
+    };
+    final translated = aiLocalized[language]?[field];
+    // Do not hide a manually edited value behind an old AI translation.
+    if (translated != null && (original.isEmpty ||
+        aiLocalized.values.any((fields) => fields[field] == original))) return translated;
+    return original;
+  }
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
@@ -168,6 +183,7 @@ class Med {
     'aiSearchHtml': aiSearchHtml,
     'aiSourceTitles': aiSourceTitles,
     'aiSourceUrls': aiSourceUrls,
+    'aiLocalized': aiLocalized,
     'leafletRecord': leafletRecord?.toJson(),
     'batches': batches.map((batch) => batch.toJson()).toList(),
   };
@@ -215,6 +231,9 @@ class Med {
     aiSearchHtml: '${j['aiSearchHtml'] ?? ''}',
     aiSourceTitles: (j['aiSourceTitles'] as List?)?.map((x) => '$x').toList(),
     aiSourceUrls: (j['aiSourceUrls'] as List?)?.map((x) => '$x').toList(),
+    aiLocalized: (j['aiLocalized'] as Map?)?.map<String, Map<String, String>>((language, fields) => MapEntry(
+      '$language', fields is Map ? fields.map((k, v) => MapEntry('$k', '$v')) : <String, String>{},
+    )),
     leafletRecord: LeafletRecord.tryRead(j['leafletRecord']),
     batches: (j['batches'] as List?)
         ?.map(

@@ -2136,7 +2136,11 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
 
   Future<void> ask([String? suggested]) async {
     final value = (suggested ?? question.text).trim().isEmpty
-        ? 'Trumpai paaiškink, kam skirtas šis vaistas, kaip jį saugiai vartoti ir į ką atkreipti dėmesį.'
+        ? tx(
+            context,
+            'Trumpai paaiškink, kam skirtas šis vaistas, kaip jį saugiai vartoti ir į ką atkreipti dėmesį.',
+            'Briefly explain what this medicine is for, how to use it safely, and what to watch for.',
+          )
         : (suggested ?? question.text).trim();
     if (busy) return;
     // Automatically generated patient context is sent to AI but never exposed
@@ -2144,9 +2148,16 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
     if (suggested == null) question.text = value;
     setState(() { busy = true; error = ''; answer = null; });
     try {
+      if (widget.data.aiConsentGranted && AiMedicineProfileService.needsInformation(widget.medicine)) {
+        try {
+          if (await AiMedicineProfileService.populate(widget.medicine)) await Store.save(widget.data);
+        } catch (_) { /* The advisor may still answer from available data. */ }
+      }
+      if (!mounted) return;
       final result = await AiMedicineAdvisorService.ask(
         medicine: widget.medicine,
         question: value,
+        language: Localizations.localeOf(context).languageCode,
       );
       if (mounted) setState(() => answer = result);
     } catch (_) {
@@ -2155,6 +2166,7 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
           answer = AiMedicineAdvisorService.localFallback(
             widget.medicine,
             question: value,
+            language: Localizations.localeOf(context).languageCode,
           );
           error = tx(
             context,
@@ -2451,7 +2463,7 @@ class _MedicinePageState extends State<MedicinePage> {
                             label: Text('Patikrinta VVKT'),
                           ),
                         const Divider(),
-                        Text(med.purpose),
+                        Text(med.information('purpose', Localizations.localeOf(c).languageCode)),
                         if (med.manufacturer.isNotEmpty)
                           Text(
                             '${tx(c, 'Gamintojas', 'Manufacturer')}: ${med.manufacturer}',
@@ -2730,7 +2742,7 @@ class _MedicinePageState extends State<MedicinePage> {
                 ],
               ),
               _medicineSectionsTab(c, [
-                (tx(c, 'Kaip vartoti?', 'How to use?'), med.dosage),
+                (tx(c, 'Kaip vartoti?', 'How to use?'), med.information('dosage', Localizations.localeOf(c).languageCode)),
                 (
                   tx(c, 'Priminimai', 'Reminders'),
                   data.reminders
@@ -2740,10 +2752,10 @@ class _MedicinePageState extends State<MedicinePage> {
                 ),
               ]),
               _medicineSectionsTab(c, [
-                (tx(c, 'Svarbu žinoti', 'Important'), med.warnings),
+                (tx(c, 'Svarbu žinoti', 'Important'), med.information('warnings', Localizations.localeOf(c).languageCode)),
                 (
                   tx(c, 'Dažnesni šalutiniai poveikiai', 'Common side effects'),
-                  med.sideEffects,
+                  med.information('sideEffects', Localizations.localeOf(c).languageCode),
                 ),
               ]),
               _medicineSectionsTab(c, [
@@ -2753,7 +2765,7 @@ class _MedicinePageState extends State<MedicinePage> {
                     'Sąveikos su kitais vaistais',
                     'Interactions with medicines',
                   ),
-                  med.interactions,
+                  med.information('interactions', Localizations.localeOf(c).languageCode),
                 ),
               ]),
               _medicineSectionsTab(c, [
@@ -3390,14 +3402,14 @@ class _MedicineEditor extends State<MedicineEditor> {
             widget.registryMedicine?.packageDescription ??
             _guessPackageSize(widget.sourceText),
       ),
-      purpose = TextEditingController(text: widget.medicine?.purpose ?? ''),
-      dosage = TextEditingController(text: widget.medicine?.dosage ?? ''),
-      warnings = TextEditingController(text: widget.medicine?.warnings ?? ''),
+      purpose = TextEditingController(text: _initialInfo('purpose')),
+      dosage = TextEditingController(text: _initialInfo('dosage')),
+      warnings = TextEditingController(text: _initialInfo('warnings')),
       sideEffects = TextEditingController(
-        text: widget.medicine?.sideEffects ?? '',
+        text: _initialInfo('sideEffects'),
       ),
       interactions = TextEditingController(
-        text: widget.medicine?.interactions ?? '',
+        text: _initialInfo('interactions'),
       ),
       expiry = TextEditingController(
         text:
@@ -3458,6 +3470,9 @@ class _MedicineEditor extends State<MedicineEditor> {
   late List<String> _aiSourceUrls = [...?widget.medicine?.aiSourceUrls];
   late String _aiSearchHtml = widget.medicine?.aiSearchHtml ?? '';
   late String _aiUpdatedAt = widget.medicine?.aiUpdatedAt ?? '';
+  late Map<String, Map<String, String>> _aiLocalized = widget.medicine?.aiLocalized ?? {};
+  String _initialInfo(String field) => widget.medicine?.information(
+    field, Localizations.localeOf(context).languageCode) ?? '';
 
   @override
   void initState() {
@@ -3630,22 +3645,23 @@ class _MedicineEditor extends State<MedicineEditor> {
           target.text = value.trim();
         }
       }
-
+      final values = profile.localized[Localizations.localeOf(context).languageCode] ?? profile.fields;
       setState(() {
-        fill(purpose, profile.purpose);
+        fill(purpose, values['purpose'] ?? '');
         if (dosage.text.startsWith('Vartojimo būdas:') ||
             dosage.text.startsWith('Administration route:')) {
-          if (profile.dosage.isNotEmpty) dosage.text = profile.dosage;
+          if ((values['dosage'] ?? '').isNotEmpty) dosage.text = values['dosage']!;
         } else {
-          fill(dosage, profile.dosage);
+          fill(dosage, values['dosage'] ?? '');
         }
-        fill(warnings, profile.warnings);
-        fill(sideEffects, profile.sideEffects);
-        fill(interactions, profile.interactions);
-        fill(storageLocation, profile.storage);
+        fill(warnings, values['warnings'] ?? '');
+        fill(sideEffects, values['sideEffects'] ?? '');
+        fill(interactions, values['interactions'] ?? '');
+        fill(storageLocation, values['storage'] ?? '');
         selectedCategories.addAll(profile.categories);
         _aiSourceTitles = profile.sourceTitles;
         _aiSourceUrls = profile.sourceUrls;
+        _aiLocalized = profile.localized;
         _aiSearchHtml = profile.searchHtml;
         if (leaflet.text.trim().isEmpty && profile.sourceUrls.isNotEmpty) {
           leaflet.text = profile.sourceUrls.first;
@@ -4261,6 +4277,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                   aiSourceTitles: _aiSourceTitles,
                   aiSourceUrls: _aiSourceUrls,
                   aiSearchHtml: _aiSearchHtml,
+                  aiLocalized: _aiLocalized,
                   aiUpdatedAt: _aiUpdatedAt,
                 ),
               );
@@ -4292,6 +4309,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..aiSourceTitles = _aiSourceTitles
                 ..aiSourceUrls = _aiSourceUrls
                 ..aiSearchHtml = _aiSearchHtml
+                ..aiLocalized = _aiLocalized
                 ..aiUpdatedAt = _aiUpdatedAt
                 ..doseRuleSource = doseRuleSource.text.trim()
                 ..doseRuleVerified = doseRuleVerified
@@ -8259,6 +8277,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
         medicine.aiSourceTitles = profile.sourceTitles;
         medicine.aiSourceUrls = profile.sourceUrls;
         medicine.aiSearchHtml = profile.searchHtml;
+        medicine.aiLocalized = profile.localized;
         medicine.aiUpdatedAt = DateTime.now().toUtc().toIso8601String();
         enriched = true;
       } catch (_) {
@@ -8268,6 +8287,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
     if (!mounted) return null;
     if (enriched) await Store.save(widget.data);
     return AiSymptomService.assess(
+      language: Localizations.localeOf(context).languageCode,
       category: widget.category,
       location: location,
       symptoms: selectedSymptoms.toList(),
@@ -8405,13 +8425,13 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Row(
+              Row(
                 children: [
-                  Icon(Icons.auto_awesome_rounded, color: green),
-                  SizedBox(width: 8),
+                  const Icon(Icons.auto_awesome_rounded, color: green),
+                  const SizedBox(width: 8),
                   Text(
-                    'AI paaiškinimas',
-                    style: TextStyle(fontWeight: FontWeight.w700, color: navy),
+                    tx(c, 'AI paaiškinimas', 'AI explanation'),
+                    style: const TextStyle(fontWeight: FontWeight.w700, color: navy),
                   ),
                 ],
               ),
@@ -8421,7 +8441,12 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(section.key, style: const TextStyle(
+                    Text(tx(c, section.key, const {
+                      'Kas galėtų būti': 'Possible causes',
+                      'Ką daryti dabar': 'What to do now',
+                      'Vaistai ir vartojimas': 'Medicines and use',
+                      'Kada kreiptis pagalbos': 'When to seek help',
+                    }[section.key] ?? section.key), style: const TextStyle(
                       fontWeight: FontWeight.w700, color: navy)),
                     const SizedBox(height: 6),
                     Text(section.value),
@@ -8431,7 +8456,8 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
               ...widget.data.meds.where((m) =>
                 (m.memberIds.isEmpty || m.memberIds.contains(widget.memberId)) &&
                 m.aiSourceUrls.isNotEmpty).map((m) => ExpansionTile(
-                  title: Text('${m.name}: informacijos šaltiniai'),
+                  title: Text(tx(c, '${m.name}: informacijos šaltiniai',
+                    '${m.name}: information sources')),
                   children: [
                     if (m.aiSearchHtml.isNotEmpty)
                       GroundingSearchWidget(html: m.aiSearchHtml),
