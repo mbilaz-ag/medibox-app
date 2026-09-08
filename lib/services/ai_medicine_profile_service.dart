@@ -58,8 +58,10 @@ current official VVKT, EMA or exact manufacturer leaflet information found with
 Google Search and package text. Prefer official sources; commercial sites such as
 vaistai.lt may only help discovery and must not override an official source. Never invent a
 personalized dose, mg/kg formula, contraindication or interaction. In dosage,
-describe only general leaflet-style administration and explicitly say when the
-exact dose depends on the patient or leaflet. Preserve important age limits and
+retrieve and explain actual leaflet administration: route, timing with meals,
+frequency, duration limits and age restrictions where explicitly available.
+Do not replace available information with a generic instruction to read a leaflet.
+Do not calculate or infer a personalized dose. Leave unsupported fields empty. Preserve important age limits and
 warnings. Categories must be chosen from: Skausmas, Karščiavimas, Peršalimas,
 Kvėpavimo sistema, Pilvo problemos, Virškinimas, Alergija, Oda, Nervų sistema,
 Širdis ir kraujotaka, Kita. This is a draft for display, not a verified dose
@@ -105,6 +107,9 @@ rule.''',
         titles.add(web?.title?.trim().isNotEmpty == true ? web!.title! : uri);
         urls.add(uri);
       }
+    }
+    if (urls.isEmpty || value('purpose').isEmpty) {
+      throw const FormatException('No grounded medicine information');
     }
     return MedicineAiProfile(
       purpose: value('purpose'),

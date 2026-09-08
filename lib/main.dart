@@ -3584,7 +3584,12 @@ class _MedicineEditor extends State<MedicineEditor> {
 
       setState(() {
         fill(purpose, profile.purpose);
-        fill(dosage, profile.dosage);
+        if (dosage.text.startsWith('Vartojimo būdas:') ||
+            dosage.text.startsWith('Administration route:')) {
+          if (profile.dosage.isNotEmpty) dosage.text = profile.dosage;
+        } else {
+          fill(dosage, profile.dosage);
+        }
         fill(warnings, profile.warnings);
         fill(sideEffects, profile.sideEffects);
         fill(interactions, profile.interactions);
@@ -3604,6 +3609,7 @@ class _MedicineEditor extends State<MedicineEditor> {
         );
       });
     } catch (_) {
+      _lastAiRegistration = '';
       if (mounted)
         setState(
           () => _aiProfileMessage = tx(
@@ -7809,7 +7815,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   bool neurologicDeficit = false;
   late bool aiConsent;
   final Set<String> selectedSymptoms = {};
-  Future<String?>? aiAssessment;
+  Future<SymptomExplanation?>? aiAssessment;
 
   @override
   void initState() {
@@ -8152,7 +8158,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
     ],
   );
 
-  Future<String?> _requestAiAssessment() {
+  Future<SymptomExplanation?> _requestAiAssessment() async {
     final member = widget.data.members
         .where((item) => item.id == widget.memberId)
         .firstOrNull;
@@ -8171,6 +8177,47 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
           medicine.memberIds.isEmpty ||
           medicine.memberIds.contains(widget.memberId),
     );
+    // Retrieve public medicine information without sending the patient's data
+    // to the search request. A failed lookup must not block symptom guidance.
+    final missing = eligibleMedicines.where((m) => m.registryVerified &&
+        !m.prescription && m.stock > 0 &&
+        (daysUntilMedicineExpiry(m.expiry, DateTime.now()) ?? -1) >= 0 &&
+        (m.aiSourceUrls.isEmpty || m.dosage.trim().isEmpty));
+    var enriched = false;
+    await Future.wait(missing.toList().map((medicine) async {
+      try {
+        final profile = await AiMedicineProfileService.generate(
+          medicine: VvktMedicine(
+            name: medicine.name, substance: medicine.substance,
+            strength: medicine.strength, dosageForm: medicine.dosageForm,
+            administrationRoute: '', packageDescription: '',
+            prescriptionStatus: 'Nereceptinis',
+            registrationNumber: medicine.registrationNumber,
+            registrant: medicine.manufacturer, supplyStatus: medicine.supplyStatus,
+            registrationStatus: '', atcCode: medicine.atcCode,
+          ),
+          recognizedPackageText: '',
+        );
+        if (!mounted || !widget.data.meds.contains(medicine)) return;
+        if (medicine.purpose.isEmpty) medicine.purpose = profile.purpose;
+        if (medicine.dosage.isEmpty || medicine.dosage.startsWith('Vartojimo būdas:') ||
+            medicine.dosage.startsWith('Administration route:')) {
+          medicine.dosage = profile.dosage;
+        }
+        if (medicine.warnings.isEmpty) medicine.warnings = profile.warnings;
+        if (medicine.interactions.isEmpty) medicine.interactions = profile.interactions;
+        if (medicine.sideEffects.isEmpty) medicine.sideEffects = profile.sideEffects;
+        medicine.aiSourceTitles = profile.sourceTitles;
+        medicine.aiSourceUrls = profile.sourceUrls;
+        medicine.aiSearchHtml = profile.searchHtml;
+        medicine.aiUpdatedAt = DateTime.now().toUtc().toIso8601String();
+        enriched = true;
+      } catch (_) {
+        // Continue with known cabinet data; never manufacture missing facts.
+      }
+    }));
+    if (!mounted) return null;
+    if (enriched) await Store.save(widget.data);
     return AiSymptomService.assess(
       category: widget.category,
       location: location,
@@ -8260,7 +8307,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
         ),
       );
     }
-    return FutureBuilder<String?>(
+    return FutureBuilder<SymptomExplanation?>(
       future: aiAssessment,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -8320,7 +8367,33 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
                 ],
               ),
               const SizedBox(height: 8),
-              Text(snapshot.data!),
+              ...snapshot.data!.sections.entries.map((section) => Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(section.key, style: const TextStyle(
+                      fontWeight: FontWeight.w700, color: navy)),
+                    const SizedBox(height: 6),
+                    Text(section.value),
+                  ],
+                ),
+              )),
+              ...widget.data.meds.where((m) =>
+                (m.memberIds.isEmpty || m.memberIds.contains(widget.memberId)) &&
+                m.aiSourceUrls.isNotEmpty).map((m) => ExpansionTile(
+                  title: Text('${m.name}: informacijos šaltiniai'),
+                  children: [
+                    if (m.aiSearchHtml.isNotEmpty)
+                      GroundingSearchWidget(html: m.aiSearchHtml),
+                    ...List.generate(m.aiSourceUrls.length, (i) => ListTile(
+                      title: Text(i < m.aiSourceTitles.length
+                        ? m.aiSourceTitles[i] : m.aiSourceUrls[i]),
+                      onTap: () => launchUrl(Uri.parse(m.aiSourceUrls[i]),
+                        mode: LaunchMode.externalApplication),
+                    )),
+                  ],
+                )),
               const SizedBox(height: 6),
               Text(
                 tx(
@@ -8718,8 +8791,8 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
           final doseLine = guidance == null
               ? tx(
                   c,
-                  'Dozė nerodoma – nėra patvirtintos struktūrinės lapelio taisyklės.',
-                  'Dose not shown — no approved structured leaflet rule.',
+                  'Asmeninė dozė dar nenustatyta. Vartojimo informaciją rasite atidarę vaistą.',
+                  'A personal dose is not yet available. Open the medicine for use information.',
                 )
               : '${tx(c, 'Pagal patvirtintą lapelį', 'From approved leaflet')}: '
                     '${quantityLabel(guidance.doseMg)} mg'

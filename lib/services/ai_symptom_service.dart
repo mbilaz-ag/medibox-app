@@ -6,6 +6,30 @@ import 'firebase_leaflet_service.dart';
 
 /// Firebase AI explanation used only after deterministic danger-sign checks.
 /// It never calculates a dose or selects prescription treatment.
+class SymptomExplanation {
+  final Map<String, String> sections;
+  const SymptomExplanation(this.sections);
+
+  static SymptomExplanation? parse(Object? value) {
+    if (value is! Map<String, dynamic>) return null;
+    const headings = {
+      'scenarios': 'Kas galėtų būti',
+      'selfCare': 'Ką daryti dabar',
+      'medicines': 'Vaistai ir vartojimas',
+      'seekHelp': 'Kada kreiptis pagalbos',
+    };
+    final sections = <String, String>{};
+    for (final entry in headings.entries) {
+      final text = value[entry.key];
+      if (text is! String || text.trim().isEmpty || text.length > 1800) {
+        return null;
+      }
+      sections[entry.value] = text.trim();
+    }
+    return SymptomExplanation(sections);
+  }
+}
+
 class AiSymptomService {
   static const modelName = String.fromEnvironment(
     'MEDIBOX_SYMPTOM_MODEL',
@@ -14,7 +38,7 @@ class AiSymptomService {
 
   static bool get isConfigured => FirebaseLeafletService.supported;
 
-  static Future<String?> assess({
+  static Future<SymptomExplanation?> assess({
     required String category,
     required String location,
     required List<String> symptoms,
@@ -39,16 +63,29 @@ symptoms. For every medicine you mention, clearly explain why it may fit, how to
 use it according to officialUseText or verifiedDose, what warnings to check,
 when not to use it, and which worsening signs require help. Never add a medicine.
 Never calculate a dose. State a dose only when
-the exact value is supplied in verifiedDose; otherwise say to follow the leaflet
-or ask a pharmacist. Respect age, weight, allergies, conditions, expiry and
+the exact value is supplied in verifiedDose. Otherwise explain available general
+administration from officialUseText without inventing a personalized dose.
+Card text is an AI draft, not an independently verified dosing rule. Never claim
+it is verified. If a safe personal dose is unavailable, briefly say why and
+advise a pharmacist; do not tell the user to copy or fill in a leaflet.
+Never recommend expired, out-of-stock or prescription medicines. Do not treat
+unknown age, expiry or contraindications as safe. For children, recommend adult
+help. Do not equate treating bloating with treating nausea itself. Respect age, weight, allergies, conditions, expiry and
 contraindications. If information is missing, say so plainly. Use clear headings:
 "Galimi scenarijai", "Ką galima daryti", "Vaistai iš vaistinėlės", "Kada kreiptis".
-Maximum 1600 characters. Emergency triage is handled separately.''',
+Return four separate JSON fields: scenarios, selfCare, medicines, seekHelp.
+Use 1-3 short sentences per field, plain language, no repeated headings.
+Maximum 3000 characters total. Emergency triage is handled separately.''',
       ),
       generationConfig: GenerationConfig(
         responseMimeType: 'application/json',
-        responseSchema: Schema.object(properties: {'summary': Schema.string()}),
-        maxOutputTokens: 900,
+        responseSchema: Schema.object(properties: {
+          'scenarios': Schema.string(),
+          'selfCare': Schema.string(),
+          'medicines': Schema.string(),
+          'seekHelp': Schema.string(),
+        }),
+        maxOutputTokens: 1600,
       ),
     );
     final response = await model
@@ -69,14 +106,7 @@ Maximum 1600 characters. Emergency triage is handled separately.''',
         ])
         .timeout(const Duration(seconds: 30));
     final text = response.text;
-    if (text == null || text.length > 4000) return null;
-    final decoded = jsonDecode(text);
-    if (decoded is! Map<String, dynamic>) return null;
-    final summary = decoded['summary'];
-    return summary is String &&
-            summary.trim().isNotEmpty &&
-            summary.length <= 1600
-        ? summary.trim()
-        : null;
+    if (text == null || text.length > 10000) return null;
+    return SymptomExplanation.parse(jsonDecode(text));
   }
 }
