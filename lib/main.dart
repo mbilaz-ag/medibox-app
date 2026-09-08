@@ -2240,7 +2240,7 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
   );
 }
 
-class MedicinePage extends StatelessWidget {
+class MedicinePage extends StatefulWidget {
   final AppData data;
   final Med med;
   final VoidCallback onChanged;
@@ -2250,6 +2250,39 @@ class MedicinePage extends StatelessWidget {
     required this.med,
     required this.onChanged,
   });
+  @override
+  State<MedicinePage> createState() => _MedicinePageState();
+}
+
+class _MedicinePageState extends State<MedicinePage> {
+  AppData get data => widget.data;
+  Med get med => widget.med;
+  VoidCallback get onChanged => widget.onChanged;
+  bool filling = false;
+  String fillMessage = '';
+
+  @override
+  void initState() {
+    super.initState();
+    if (data.aiConsentGranted && AiMedicineProfileService.needsInformation(med)) {
+      filling = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _fillInformation());
+    }
+  }
+
+  Future<void> _fillInformation() async {
+    try {
+      final changed = await AiMedicineProfileService.populate(med);
+      if (!mounted || !data.meds.contains(med)) return;
+      if (changed) onChanged();
+    } catch (error) {
+      debugPrint('Medicine lookup: ${FirebaseLeafletService.readableError(error)}');
+      if (mounted) fillMessage = 'Informacijos šiuo metu gauti nepavyko.';
+    } finally {
+      if (mounted) setState(() => filling = false);
+    }
+  }
+
   @override
   Widget build(c) {
     final weeklyUse = data.reminders
@@ -2315,6 +2348,12 @@ class MedicinePage extends StatelessWidget {
               ListView(
                 padding: const EdgeInsets.all(18),
                 children: [
+                  if (filling) ...[
+                    const LinearProgressIndicator(),
+                    const Padding(padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text('Pildoma vaisto informacija…')),
+                  ],
+                  if (fillMessage.isNotEmpty) Text(fillMessage),
                   SizedBox(
                     height: 210,
                     width: double.infinity,
@@ -3424,6 +3463,16 @@ class _MedicineEditor extends State<MedicineEditor> {
   void initState() {
     super.initState();
     name.addListener(_scheduleVvktSearch);
+    final existing = widget.medicine;
+    if (_registryMedicine == null && existing != null && existing.registryVerified) {
+      _registryMedicine = AiMedicineProfileService.identity(existing);
+    }
+    if (widget.data.aiConsentGranted && _registryMedicine != null &&
+        (existing == null || AiMedicineProfileService.needsInformation(existing))) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _autoFillProfile(_registryMedicine!);
+      });
+    }
     if (widget.medicine == null &&
         widget.registryMedicine == null &&
         name.text.trim().length >= 3) {

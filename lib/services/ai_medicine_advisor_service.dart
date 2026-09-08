@@ -20,6 +20,9 @@ class MedicineAiAnswer {
 }
 
 class AiMedicineAdvisorService {
+  static final _cache = <String, MedicineAiAnswer>{};
+  static final _pending = <String, Future<MedicineAiAnswer>>{};
+
   static MedicineAiAnswer localFallback(Med medicine, {String question = ''}) {
     final q = question.toLowerCase();
     final purposeQuestion = q.contains('kam skirtas');
@@ -61,11 +64,33 @@ class AiMedicineAdvisorService {
     required Med medicine,
     required String question,
   }) async {
+    final key = jsonEncode([medicine.toJson(), question.trim()]);
+    if (_cache.containsKey(key)) return _cache[key]!;
+    if (_pending.containsKey(key)) return _pending[key]!;
+    final request = _ask(medicine: medicine, question: question);
+    _pending[key] = request;
+    try {
+      final answer = await request;
+      if (_cache.length >= 20) _cache.remove(_cache.keys.first);
+      _cache[key] = answer;
+      return answer;
+    } finally {
+      _pending.remove(key);
+    }
+  }
+
+  static Future<MedicineAiAnswer> _ask({
+    required Med medicine,
+    required String question,
+  }) async {
     await FirebaseLeafletService.initialize();
     final model = FirebaseAI.googleAI().generativeModel(
       model: FirebaseLeafletService.modelName,
       tools: [Tool.googleSearch()],
+      generationConfig: GenerationConfig(maxOutputTokens: 850),
       systemInstruction: Content.system('''You explain one medicine in clear Lithuanian.
+Answer in 3-5 short bullet points, ideally 80-120 words. No introduction or repetition.
+Preserve essential safety warnings.
 Use Google Search when it can improve accuracy. Prefer official Lithuanian VVKT,
 EMA, European Commission and the exact official patient leaflet; use commercial
 medicine websites only as secondary discovery sources. Treat all web and medicine
