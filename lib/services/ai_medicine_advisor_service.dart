@@ -20,6 +20,22 @@ class MedicineAiAnswer {
 }
 
 class AiMedicineAdvisorService {
+  static MedicineAiAnswer localFallback(Med medicine) {
+    final parts = <String>[
+      if (medicine.purpose.trim().isNotEmpty) 'Kam skirtas: ${medicine.purpose.trim()}',
+      if (medicine.dosage.trim().isNotEmpty) 'Kaip vartoti: ${medicine.dosage.trim()}',
+      if (medicine.warnings.trim().isNotEmpty) 'Svarbu: ${medicine.warnings.trim()}',
+      if (medicine.interactions.trim().isNotEmpty) 'Sąveikos: ${medicine.interactions.trim()}',
+      'Jei abejojate dėl vartojimo ar būklė blogėja, kreipkitės į vaistininką ar gydytoją.',
+    ];
+    return MedicineAiAnswer(
+      text: parts.join('\n\n'),
+      sourceTitles: medicine.aiSourceTitles,
+      sourceUrls: medicine.aiSourceUrls,
+      searchHtml: '',
+    );
+  }
+
   static Future<MedicineAiAnswer> ask({
     required Med medicine,
     required String question,

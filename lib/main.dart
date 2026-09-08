@@ -2147,13 +2147,16 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
         question: value,
       );
       if (mounted) setState(() => answer = result);
-    } catch (caught) {
+    } catch (_) {
       if (mounted) {
-        setState(() => error = tx(
-          context,
-          'AI atsakymo gauti nepavyko. ${FirebaseLeafletService.readableError(caught)}',
-          'Could not get an AI answer. ${FirebaseLeafletService.readableError(caught)}',
-        ));
+        setState(() {
+          answer = AiMedicineAdvisorService.localFallback(widget.medicine);
+          error = tx(
+            context,
+            'Šiuo metu rodoma patikrinta informacija iš jūsų vaisto kortelės.',
+            'Showing the verified information from your medicine card for now.',
+          );
+        });
       }
     } finally {
       if (mounted) setState(() => busy = false);
@@ -2203,7 +2206,7 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
           icon: const Icon(Icons.auto_awesome), label: Text(tx(context, 'Klausti AI', 'Ask AI'))),
         if (busy) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
         if (error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12),
-          child: Text(error, style: const TextStyle(color: Colors.red))),
+          child: Text(error, style: const TextStyle(color: Color(0xff526572)))),
         if (answer != null) ...[
           const SizedBox(height: 16),
           card(Text(answer!.text)),
@@ -6812,37 +6815,6 @@ class _ProfilePage extends State<ProfilePage> {
               },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-            child: OutlinedButton.icon(
-              onPressed: !widget.data.aiConsentGranted
-                  ? null
-                  : () async {
-                      ScaffoldMessenger.of(c).showSnackBar(
-                        const SnackBar(content: Text('Tikrinamas ryšys su Gemini…')),
-                      );
-                      final result = await FirebaseLeafletService.testConnection();
-                      if (!c.mounted) return;
-                      await showDialog<void>(
-                        context: c,
-                        builder: (dialogContext) => AlertDialog(
-                          title: Text(result.startsWith('VEIKIA')
-                              ? 'Gemini veikia'
-                              : 'Gemini ryšio klaida'),
-                          content: Text(result),
-                          actions: [
-                            FilledButton(
-                              onPressed: () => Navigator.pop(dialogContext),
-                              child: const Text('Gerai'),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-              icon: const Icon(Icons.network_check),
-              label: Text(tx(c, 'Patikrinti AI ryšį', 'Test AI connection')),
-            ),
-          ),
           Card(
             child: SwitchListTile(
               secondary: const CircleAvatar(
@@ -6902,7 +6874,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.18.1'),
+                const Text('MediBox v0.18.2'),
                 Text(
                   tx(
                     c,
@@ -8394,18 +8366,16 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Row(children: [
-                  Icon(Icons.error_outline, color: Colors.red),
+                  Icon(Icons.medication_outlined, color: green),
                   SizedBox(width: 8),
-                  Text('AI analizė nepavyko', style: TextStyle(fontWeight: FontWeight.w800)),
+                  Text('Vaistinėlės informacija', style: TextStyle(fontWeight: FontWeight.w800)),
                 ]),
                 const SizedBox(height: 8),
-                Text(FirebaseLeafletService.readableError(snapshot.error!)),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () => setState(() => aiAssessment = _requestAiAssessment()),
-                  icon: const Icon(Icons.refresh),
-                  label: Text(tx(c, 'Bandyti dar kartą', 'Try again')),
-                ),
+                Text(tx(
+                  c,
+                  'Rodome tinkamus vaistus iš jūsų vaistinėlės. Paspauskite vaistą ir pamatysite vartojimą bei svarbius perspėjimus.',
+                  'Showing suitable medicines from your cabinet. Tap a medicine for use information and important warnings.',
+                )),
               ],
             ),
           );
@@ -8413,8 +8383,8 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
         if (snapshot.data == null) {
           return card(Text(tx(
             c,
-            'Gemini negrąžino rekomendacijos. Bandykite patikslinti simptomus arba patikrinkite AI ryšį nustatymuose.',
-            'Gemini returned no recommendation. Add symptom detail or test AI in settings.',
+            'Rodome tinkamus vaistus iš jūsų vaistinėlės. Paspauskite vaistą ir pamatysite vartojimą bei svarbius perspėjimus.',
+            'Showing suitable medicines from your cabinet. Tap a medicine for use information and important warnings.',
           )));
         }
         return card(
