@@ -22,6 +22,7 @@ import 'services/expiry_status.dart';
 import 'services/store.dart';
 import 'services/vvkt_service.dart';
 import 'services/ai_symptom_service.dart';
+import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
 import 'widgets/leaflet_import_page.dart';
@@ -1165,6 +1166,16 @@ class HomePage extends StatelessWidget {
                 builder: (_) => CabinetPage(data: data, onChanged: onChanged),
               ),
             ),
+            onMedicineTap: (medicine) => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MedicinePage(
+                  data: data,
+                  med: medicine,
+                  onChanged: onChanged,
+                ),
+              ),
+            ),
           ),
           const SizedBox(height: 8),
             ],
@@ -1189,6 +1200,16 @@ class HomePage extends StatelessWidget {
                   data: data,
                   medicines: expiringMeds,
                   now: now,
+                  onChanged: onChanged,
+                ),
+              ),
+            ),
+            onMedicineTap: (medicine) => Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MedicinePage(
+                  data: data,
+                  med: medicine,
                   onChanged: onChanged,
                 ),
               ),
@@ -1284,6 +1305,7 @@ Widget _medicineStatusCard({
   bool expiry = false,
   DateTime? now,
   VoidCallback? onTap,
+  ValueChanged<Med>? onMedicineTap,
 }) => InkWell(
   onTap: onTap,
   borderRadius: BorderRadius.circular(16),
@@ -1321,16 +1343,30 @@ Widget _medicineStatusCard({
                   'liko ${quantityLabel(medicine.stock)} vnt.',
                   '${quantityLabel(medicine.stock)} remaining',
                 );
-          return Padding(
-            padding: const EdgeInsets.only(left: 36, top: 4),
-            child: Text(
-              '${medicine.name} ${medicine.strength} — $detail',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: expiry && (days ?? 0) < 0
-                    ? const Color(0xffb91c1c)
-                    : navy,
+          return InkWell(
+            onTap: onMedicineTap == null
+                ? null
+                : () => onMedicineTap(medicine),
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(36, 6, 4, 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${medicine.name} ${medicine.strength} — $detail',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: expiry && (days ?? 0) < 0
+                            ? const Color(0xffb91c1c)
+                            : navy,
+                      ),
+                    ),
+                  ),
+                  if (onMedicineTap != null)
+                    const Icon(Icons.open_in_new_rounded, size: 16),
+                ],
               ),
             ),
           );
@@ -1771,23 +1807,16 @@ class _CabinetPageState extends State<CabinetPage> {
             ),
           ),
         ),
-      ...medicines.map(
-        (m) => Card(
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            leading: const CircleAvatar(
-              radius: 25,
-              backgroundColor: mint,
-              child: Icon(Icons.medication, color: green),
-            ),
-            title: Text(
-              '${m.name} ${m.strength}',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text(
-              '${m.substance}\n${tx(c, 'Liko', 'Stock')}: ${quantityLabel(m.stock)} • ${m.expiry}',
-            ),
-            isThreeLine: true,
+      ...medicines.map((m) {
+        final days = daysUntilMedicineExpiry(m.expiry, DateTime.now());
+        final expiryColor = days != null && days < 0
+            ? const Color(0xffb91c1c)
+            : days != null && days <= 7
+                ? const Color(0xffd97706)
+                : green;
+        return Card(
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
             onTap: () async {
               await Navigator.push(
                 c,
@@ -1801,14 +1830,104 @@ class _CabinetPageState extends State<CabinetPage> {
               );
               if (mounted) setState(() {});
             },
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _medicineImage(m, size: 72),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${m.name} ${m.strength}'.trim(),
+                            style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                              color: navy,
+                            )),
+                        if (m.substance.isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(m.substance),
+                        ],
+                        const SizedBox(height: 8),
+                        Wrap(spacing: 7, runSpacing: 6, children: [
+                          _medicinePill(
+                            Icons.inventory_2_outlined,
+                            tx(c, '${quantityLabel(m.stock)} vnt.', '${quantityLabel(m.stock)} left'),
+                            green,
+                          ),
+                          if (m.expiry.isNotEmpty)
+                            _medicinePill(
+                              Icons.event_outlined,
+                              _expiryDetail(c, m.expiry, days),
+                              expiryColor,
+                            ),
+                          if (m.prescription)
+                            _medicinePill(Icons.receipt_long_outlined,
+                                tx(c, 'Receptinis', 'Prescription'), navy),
+                        ]),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right_rounded),
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      }),
       ],
     ),
   );
   }
 }
+
+Widget _medicineImage(Med medicine, {double size = 56}) {
+  final file = medicine.imagePath.isEmpty ? null : File(medicine.imagePath);
+  if (file != null && file.existsSync()) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: Image.file(
+        file,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _medicinePlaceholder(size),
+      ),
+    );
+  }
+  return _medicinePlaceholder(size);
+}
+
+Widget _medicinePlaceholder(double size) => Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: mint,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: const Icon(Icons.medication_rounded, color: green, size: 31),
+    );
+
+Widget _medicinePill(IconData icon, String label, Color color) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 15, color: color),
+        const SizedBox(width: 5),
+        Text(label,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            )),
+      ]),
+    );
 
 class MedicinePage extends StatelessWidget {
   final AppData data;
@@ -1883,17 +2002,42 @@ class MedicinePage extends StatelessWidget {
       ListView(
       padding: const EdgeInsets.all(18),
       children: [
-        if (med.imagePath.isNotEmpty)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(22),
-            child: Image.file(
-              File(med.imagePath),
-              height: 210,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) =>
-                  const SizedBox.shrink(),
-            ),
-          ),
+        SizedBox(
+          height: 210,
+          width: double.infinity,
+          child: med.imagePath.isNotEmpty && File(med.imagePath).existsSync()
+              ? ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: Image.file(File(med.imagePath), fit: BoxFit.cover),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: mint,
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: const Icon(Icons.medication_rounded,
+                      color: green, size: 78),
+                ),
+        ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: () async {
+            await Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MedicineEditor(
+                  data: data,
+                  medicine: med,
+                  onChanged: onChanged,
+                ),
+              ),
+            );
+            setPageState(() {});
+          },
+          icon: const Icon(Icons.edit_outlined),
+          label: Text(tx(c, 'Redaguoti vaisto kortelę', 'Edit medicine card')),
+        ),
+        const SizedBox(height: 4),
         card(
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2199,6 +2343,9 @@ class _PersonalizedMedicineGuidancePageState
     final allergyAlert = member != null &&
         (_mentionsMedicine(member.allergies) ||
             _mentionsMedicine(member.intolerantMedicines));
+    final doseGuidance = member == null
+        ? null
+        : calculateDoseGuidance(medicine, member);
     return Scaffold(
       backgroundColor: const Color(0xfff6fbfa),
       appBar: AppBar(title: Text(tx(context, 'Vartojimo patarimai', 'Use guidance'))),
@@ -2303,14 +2450,38 @@ class _PersonalizedMedicineGuidancePageState
                     )
                   : medicine.dosage.trim()),
               const SizedBox(height: 10),
-              Text(
-                tx(
-                  context,
-                  'Automatinė dozė pagal svorį neskaičiuojama, kol nėra oficialios struktūrizuotos mg/kg taisyklės. Vaikui, nėštumo metu, sergant lėtinėmis ligomis ar vartojant kitus vaistus dozę patvirtinkite su gydytoju arba vaistininku.',
-                  'A weight-based dose is not calculated without an official structured mg/kg rule. Confirm dosing with a doctor or pharmacist for children, pregnancy, chronic conditions, or other medicines.',
+              if (doseGuidance != null && !allergyAlert) ...[
+                const Divider(),
+                Text(
+                  tx(context, 'Pagal patvirtintą lapelio taisyklę', 'From the approved leaflet rule'),
+                  style: const TextStyle(color: green, fontWeight: FontWeight.w800),
                 ),
-                style: const TextStyle(color: Color(0xff5b6870)),
-              ),
+                Text(
+                  '${quantityLabel(doseGuidance.doseMg)} mg'
+                  '${doseGuidance.volumeMl == null ? '' : ' • ${quantityLabel(doseGuidance.volumeMl!)} ml'}'
+                  '${doseGuidance.units == null ? '' : ' • ${quantityLabel(doseGuidance.units!)} vnt.'}',
+                  style: const TextStyle(color: navy, fontSize: 22, fontWeight: FontWeight.w900),
+                ),
+                if (doseGuidance.intervalHours != null)
+                  Text(tx(context,
+                    'Ne dažniau kaip kas ${quantityLabel(doseGuidance.intervalHours!)} val.',
+                    'Not more often than every ${quantityLabel(doseGuidance.intervalHours!)} hours.')),
+                if (doseGuidance.maxDailyMg != null)
+                  Text(tx(context,
+                    'Didžiausia paros dozė: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.',
+                    'Maximum daily dose: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.')),
+                Text(tx(context,
+                  'Šaltinis: ${doseGuidance.source}',
+                  'Source: ${doseGuidance.source}')),
+              ] else
+                Text(
+                  tx(
+                    context,
+                    'Dozė neskaičiuojama, kol nėra su oficialiu lapeliu palygintos struktūrizuotos taisyklės, tikslaus svorio arba yra alergijos įspėjimas.',
+                    'A dose is not calculated without a structured rule checked against the official leaflet, an exact weight, or when an allergy warning exists.',
+                  ),
+                  style: const TextStyle(color: Color(0xff5b6870)),
+                ),
             ],
           )),
           if (medicine.warnings.isNotEmpty || medicine.interactions.isNotEmpty)
@@ -2573,9 +2744,18 @@ class _MedicineEditor extends State<MedicineEditor> {
       barcode = TextEditingController(text: widget.medicine?.barcode ?? ''),
       storageLocation = TextEditingController(text: widget.medicine?.storageLocation ?? ''),
       leaflet = TextEditingController(text: widget.medicine?.leaflet ?? ''),
+      doseMgPerKg = TextEditingController(text: widget.medicine?.doseMgPerKg ?? ''),
+      doseFixedMg = TextEditingController(text: widget.medicine?.doseFixedMg ?? ''),
+      doseMaxSingleMg = TextEditingController(text: widget.medicine?.doseMaxSingleMg ?? ''),
+      doseMaxDailyMg = TextEditingController(text: widget.medicine?.doseMaxDailyMg ?? ''),
+      doseIntervalHours = TextEditingController(text: widget.medicine?.doseIntervalHours ?? ''),
+      concentrationMgPerMl = TextEditingController(text: widget.medicine?.concentrationMgPerMl ?? ''),
+      unitStrengthMg = TextEditingController(text: widget.medicine?.unitStrengthMg ?? ''),
+      doseRuleSource = TextEditingController(text: widget.medicine?.doseRuleSource ?? ''),
       notes = TextEditingController(text: widget.medicine?.notes ?? '');
   late bool prescription = widget.medicine?.prescription ??
       (widget.registryMedicine?.prescriptionStatus.toLowerCase() == 'receptinis');
+  late bool doseRuleVerified = widget.medicine?.doseRuleVerified ?? false;
   late final Set<String> selectedCategories = {
     ..._splitCategories(widget.medicine?.category ?? ''),
     if (widget.medicine == null)
@@ -2621,10 +2801,29 @@ class _MedicineEditor extends State<MedicineEditor> {
         'Medicine details changed. Leaflet extracts were not added.'))));
       return;
     }
-    setState(() => _leafletRecord = record);
+    var filled = 0;
+    void fillMissing(TextEditingController controller, String key) {
+      final value = record.sections[key]?.trim() ?? '';
+      if (controller.text.trim().isEmpty && value.isNotEmpty) {
+        controller.text = value;
+        filled++;
+      }
+    }
+    setState(() {
+      _leafletRecord = record;
+      fillMissing(purpose, 'purpose');
+      fillMissing(dosage, 'usage');
+      fillMissing(warnings, 'warnings');
+      fillMissing(sideEffects, 'sideEffects');
+      fillMissing(interactions, 'interactions');
+      fillMissing(storageLocation, 'storage');
+      if (leaflet.text.trim().isEmpty) leaflet.text = record.sourceUrl;
+    });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context,
-      'Ištraukos perkeltos. Kad išliktų, išsaugok vaisto kortelę.',
-      'Extracts applied. Save the medicine card to keep them.'))));
+      'AI juodraštis patvirtintas: užpildyta $filled trūkstamų laukų. '
+          'Esami įrašai nepakeisti. Kad išliktų, išsaugok kortelę.',
+      'AI draft approved: $filled missing fields filled. Existing entries were '
+          'not changed. Save the card to keep them.'))));
   }
 
   @override
@@ -2649,6 +2848,8 @@ class _MedicineEditor extends State<MedicineEditor> {
       purpose, dosage, warnings, sideEffects, interactions, expiry,
       prescriptionValidUntil, treatmentUntil,
       stock, lowStockThreshold, batchNumber, barcode, storageLocation, leaflet, notes,
+      doseMgPerKg, doseFixedMg, doseMaxSingleMg, doseMaxDailyMg,
+      doseIntervalHours, concentrationMgPerMl, unitStrengthMg, doseRuleSource,
     ]) {
       x.dispose();
     }
@@ -2971,6 +3172,31 @@ class _MedicineEditor extends State<MedicineEditor> {
         _memberPicker(c),
         field(c, purpose, 'Paskirtis / kam vartojamas', 'Purpose / use', lines: 2),
         field(c, dosage, 'Kaip vartoti', 'How to use', lines: 3),
+        ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          title: Text(tx(c, 'Patvirtinta dozavimo taisyklė', 'Approved dosing rule')),
+          subtitle: Text(tx(
+            c,
+            'Naudojama tik skaičiavimui pagal oficialų lapelį',
+            'Used only for calculation from an official leaflet',
+          )),
+          children: [
+            field(c, doseMgPerKg, 'Vienkartinė dozė mg/kg', 'Single dose mg/kg', number: true),
+            field(c, doseFixedMg, 'Fiksuota vienkartinė dozė mg', 'Fixed single dose mg', number: true),
+            field(c, doseMaxSingleMg, 'Didžiausia vienkartinė dozė mg', 'Maximum single dose mg', number: true),
+            field(c, doseMaxDailyMg, 'Didžiausia paros dozė mg', 'Maximum daily dose mg', number: true),
+            field(c, doseIntervalHours, 'Mažiausias intervalas valandomis', 'Minimum interval in hours', number: true),
+            field(c, concentrationMgPerMl, 'Skysčio koncentracija mg/ml', 'Liquid concentration mg/ml', number: true),
+            field(c, unitStrengthMg, 'Vienos tabletės / vieneto stiprumas mg', 'Tablet / unit strength mg', number: true),
+            field(c, doseRuleSource, 'Oficialaus lapelio HTTPS nuoroda', 'Official leaflet HTTPS URL'),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: doseRuleVerified,
+              onChanged: (value) => setState(() => doseRuleVerified = value),
+              title: Text(tx(c, 'Taisyklė palyginta su oficialiu lapeliu', 'Rule checked against official leaflet')),
+            ),
+          ],
+        ),
         field(c, warnings, 'Svarbūs įspėjimai', 'Important warnings', lines: 3),
         field(c, sideEffects, 'Dažnesni šalutiniai poveikiai', 'Common side effects', lines: 3),
         field(c, interactions, 'Sąveikos su kitais vaistais', 'Interactions', lines: 3),
@@ -3074,6 +3300,21 @@ class _MedicineEditor extends State<MedicineEditor> {
               );
               return;
             }
+            if (doseRuleVerified &&
+                (!isLeafletUrl(doseRuleSource.text) ||
+                    (doseMgPerKg.text.trim().isEmpty &&
+                        doseFixedMg.text.trim().isEmpty))) {
+              ScaffoldMessenger.of(c).showSnackBar(SnackBar(
+                content: Text(tx(
+                  c,
+                  'Patvirtintai dozavimo taisyklei reikia oficialios HTTPS '
+                      'nuorodos ir mg/kg arba fiksuotos dozės.',
+                  'An approved dosing rule needs an official HTTPS source and '
+                      'either mg/kg or a fixed dose.',
+                )),
+              ));
+              return;
+            }
             final parsedStock =
                 double.tryParse(stock.text.trim().replaceAll(',', '.')) ?? 1;
             final parsedThreshold = double.tryParse(
@@ -3109,6 +3350,15 @@ class _MedicineEditor extends State<MedicineEditor> {
                 warnings: warnings.text.trim(),
                 sideEffects: sideEffects.text.trim(),
                 interactions: interactions.text.trim(),
+                doseMgPerKg: doseMgPerKg.text.trim(),
+                doseFixedMg: doseFixedMg.text.trim(),
+                doseMaxSingleMg: doseMaxSingleMg.text.trim(),
+                doseMaxDailyMg: doseMaxDailyMg.text.trim(),
+                doseIntervalHours: doseIntervalHours.text.trim(),
+                concentrationMgPerMl: concentrationMgPerMl.text.trim(),
+                unitStrengthMg: unitStrengthMg.text.trim(),
+                doseRuleSource: doseRuleSource.text.trim(),
+                doseRuleVerified: doseRuleVerified,
                 atcCode: _registryMedicine?.atcCode ?? '',
                 registrationNumber:
                     _registryMedicine?.registrationNumber ?? '',
@@ -3139,6 +3389,15 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..warnings = warnings.text.trim()
                 ..sideEffects = sideEffects.text.trim()
                 ..interactions = interactions.text.trim()
+                ..doseMgPerKg = doseMgPerKg.text.trim()
+                ..doseFixedMg = doseFixedMg.text.trim()
+                ..doseMaxSingleMg = doseMaxSingleMg.text.trim()
+                ..doseMaxDailyMg = doseMaxDailyMg.text.trim()
+                ..doseIntervalHours = doseIntervalHours.text.trim()
+                ..concentrationMgPerMl = concentrationMgPerMl.text.trim()
+                ..unitStrengthMg = unitStrengthMg.text.trim()
+                ..doseRuleSource = doseRuleSource.text.trim()
+                ..doseRuleVerified = doseRuleVerified
                 ..atcCode = (_registryMedicine?.atcCode ?? existing.atcCode)
                 ..registrationNumber = (_registryMedicine?.registrationNumber ??
                     existing.registrationNumber)
@@ -6045,6 +6304,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   bool swelling = false;
   bool cannotDrink = false;
   bool neurologicDeficit = false;
+  bool aiConsent = false;
   final Set<String> selectedSymptoms = {};
   Future<String?>? aiAssessment;
 
@@ -6226,11 +6486,27 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       const SizedBox(height: 14),
       ..._categoryQuestions(c),
       const SizedBox(height: 14),
+      if (AiSymptomService.isConfigured)
+        CheckboxListTile(
+          key: const ValueKey('symptom-ai-consent'),
+          contentPadding: EdgeInsets.zero,
+          value: aiConsent,
+          onChanged: (value) => setState(() => aiConsent = value == true),
+          title: Text(tx(
+            c,
+            'Sutinku per „Firebase AI / Google Gemini“ analizuoti amžių, svorį, '
+                'alergijas, ligas, simptomus ir tinkamus vaistinėlės įrašus. Vardas '
+                'nesiunčiamas. AI dozės neskaičiuoja.',
+            'I agree to send age, weight, allergies, conditions, symptoms and '
+                'eligible cabinet entries to Firebase AI / Google Gemini. The name '
+                'is not sent. AI does not calculate doses.',
+          )),
+        ),
       FilledButton(
         onPressed: duration.isEmpty ? null : () {
           setState(() {
             step = 2;
-            aiAssessment = _requestAiAssessment();
+            aiAssessment = aiConsent ? _requestAiAssessment() : null;
           });
         },
         child: Text(tx(c, 'Atlikti saugumo patikrą', 'Run safety check')),
@@ -6238,7 +6514,24 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
     ],
   );
 
-  Future<String?> _requestAiAssessment() => AiSymptomService.assess(
+  Future<String?> _requestAiAssessment() {
+    final member = widget.data.members
+        .where((item) => item.id == widget.memberId)
+        .firstOrNull;
+    int? age;
+    final birth = DateTime.tryParse(member?.birthDate ?? '');
+    if (birth != null) {
+      final now = DateTime.now();
+      age = now.year - birth.year;
+      if (now.month < birth.month ||
+          (now.month == birth.month && now.day < birth.day)) {
+        age--;
+      }
+    }
+    final eligibleMedicines = widget.data.meds.where((medicine) =>
+        medicine.memberIds.isEmpty ||
+        medicine.memberIds.contains(widget.memberId));
+    return AiSymptomService.assess(
     category: widget.category,
     location: location,
     symptoms: selectedSymptoms.toList(),
@@ -6255,18 +6548,37 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
       'cannotDrink': cannotDrink,
       'neurologicDeficit': neurologicDeficit,
     },
-    cabinetMedicines: widget.data.meds.map((medicine) => <String, Object?>{
+    patient: <String, Object?>{
+      'ageGroup': member?.ageGroup ?? '',
+      'ageYears': age,
+      'weightKg': member?.weight ?? '',
+      'allergies': member?.allergies ?? '',
+      'conditions': member?.conditions ?? '',
+      'intolerantMedicines': member?.intolerantMedicines ?? '',
+    },
+    cabinetMedicines: eligibleMedicines.map((medicine) => <String, Object?>{
       'name': medicine.name,
       'substance': medicine.substance,
       'strength': medicine.strength,
+      'form': medicine.dosageForm,
       'category': medicine.category,
       'purpose': medicine.purpose,
       'prescription': medicine.prescription,
-      'stock': medicine.stock,
+      'officialUseText': medicine.dosage,
+      'warnings': medicine.warnings,
+      'interactions': medicine.interactions,
     }).toList(),
   );
+  }
 
   Widget _aiCard(BuildContext c) {
+    if (!aiConsent) {
+      return card(Text(tx(
+        c,
+        'AI analizė nevykdyta – sveikatos duomenys neišsiųsti.',
+        'AI analysis was not run — no health data was sent.',
+      )));
+    }
     if (!AiSymptomService.isConfigured) {
       return card(Row(children: [
         const Icon(Icons.auto_awesome_rounded, color: green),
@@ -6369,7 +6681,8 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   Widget _resultStep(BuildContext c) {
     if (dangerous) return _dangerResult(c);
     final member = widget.data.members.where((x) => x.id == widget.memberId).firstOrNull;
-    final allergyText = member?.allergies.toLowerCase() ?? '';
+    final allergyText = '${member?.allergies ?? ''} '
+        '${member?.intolerantMedicines ?? ''}'.toLowerCase();
     final matches = widget.data.meds.where((medicine) {
       if (medicine.prescription || medicine.stock <= 0) return false;
       if (widget.memberId.isNotEmpty && medicine.memberIds.isNotEmpty && !medicine.memberIds.contains(widget.memberId)) return false;
@@ -6404,14 +6717,27 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
           final source = isShared
               ? tx(c, 'Bendra vaistinėlė', 'Shared medicine cabinet')
               : tx(c, 'Priskirta pasirinktam asmeniui', 'Assigned to selected person');
+          final guidance = member == null
+              ? null
+              : calculateDoseGuidance(medicine, member);
+          final doseLine = guidance == null
+              ? tx(c,
+                  'Dozė nerodoma – nėra patvirtintos struktūrinės lapelio taisyklės.',
+                  'Dose not shown — no approved structured leaflet rule.')
+              : '${tx(c, 'Pagal patvirtintą lapelį', 'From approved leaflet')}: '
+                  '${quantityLabel(guidance.doseMg)} mg'
+                  '${guidance.volumeMl == null ? '' : ' • ${quantityLabel(guidance.volumeMl!)} ml'}'
+                  '${guidance.units == null ? '' : ' • ${quantityLabel(guidance.units!)} vnt.'}';
           return Card(
           child: ListTile(
             leading: medicine.imagePath.isNotEmpty && File(medicine.imagePath).existsSync()
                 ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.file(File(medicine.imagePath), width: 52, height: 52, fit: BoxFit.cover))
                 : const CircleAvatar(backgroundColor: mint, child: Icon(Icons.medication, color: green)),
             title: Text('${medicine.name} ${medicine.strength}', style: const TextStyle(fontWeight: FontWeight.w700)),
-            subtitle: Text('$source • ${medicine.substance}\n${_matchReason(c, widget.category)}\n${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}'),
-            isThreeLine: true,
+            subtitle: Text('$source • ${medicine.substance}\n'
+                '${_matchReason(c, widget.category)}\n$doseLine\n'
+                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}'),
+            isThreeLine: false,
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(c, MaterialPageRoute(builder: (_) => MedicinePage(data: widget.data, med: medicine, onChanged: widget.onChanged))),
           ),

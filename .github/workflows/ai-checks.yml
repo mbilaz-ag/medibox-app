@@ -2,7 +2,9 @@ name: Validate Firebase leaflet integration (no APK)
 
 on:
   push:
-    branches: [feature/firebase-leaflet-drafts]
+    branches:
+      - feature/firebase-leaflet-drafts
+      - feature/medicine-ai-safety
   workflow_dispatch:
 
 permissions:

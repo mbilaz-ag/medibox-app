@@ -53,6 +53,18 @@ class FirebaseLeafletService {
     );
   }
 
+  /// Shared lazy bootstrap for other explicitly requested Firebase AI features.
+  static Future<void> initialize() async {
+    try {
+      await (_initialization ??= _initialize()).timeout(
+        const Duration(seconds: 15),
+      );
+    } catch (_) {
+      _initialization = null;
+      rethrow;
+    }
+  }
+
   static Future<LeafletDraft> generate({
     required LeafletIdentity identity,
     required String sourceText,
@@ -60,9 +72,7 @@ class FirebaseLeafletService {
   }) async {
     validateLeafletInput(identity, sourceText, sourceUrl);
     try {
-      await (_initialization ??= _initialize()).timeout(
-        const Duration(seconds: 15),
-      );
+      await initialize();
     } catch (_) {
       _initialization = null;
       rethrow;
