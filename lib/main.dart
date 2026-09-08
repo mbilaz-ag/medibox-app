@@ -29,6 +29,7 @@ import 'services/ai_medicine_advisor_service.dart';
 import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
+import 'widgets/leaflet_import_page.dart' show LeafletRecordCard;
 import 'services/firebase_leaflet_service.dart';
 
 Future<void> main() async {
@@ -2141,7 +2142,7 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
     // Automatically generated patient context is sent to AI but never exposed
     // in the editable question field.
     if (suggested == null) question.text = value;
-    setState(() { busy = true; error = ''; });
+    setState(() { busy = true; error = ''; answer = null; });
     try {
       final result = await AiMedicineAdvisorService.ask(
         medicine: widget.medicine,
@@ -2157,8 +2158,8 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
           );
           error = tx(
             context,
-            'Šiuo metu rodoma patikrinta informacija iš jūsų vaisto kortelės.',
-            'Showing the verified information from your medicine card for now.',
+            'AI atsakymo šiuo metu gauti nepavyko. Žemiau – tik išsaugoti kortelės duomenys, ne AI įvertinimas.',
+            'The AI could not answer right now. Below is saved card information only, not an AI assessment.',
           );
         });
       }
@@ -3607,8 +3608,8 @@ class _MedicineEditor extends State<MedicineEditor> {
         setState(
           () => _aiProfileMessage = tx(
             context,
-            'Kortelė papildyta pagrindine vaisto informacija.',
-            'The card has been filled with the core medicine information.',
+            'Informacijos internete gauti nepavyko. Papildomi laukai dar neužpildyti.',
+            'Online information could not be retrieved. Additional fields have not been filled.',
           ),
         );
     } finally {
