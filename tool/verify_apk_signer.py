@@ -9,7 +9,11 @@ import sys
 def verify_output(output, expected):
     digests = re.findall(r'Signer #\d+ certificate SHA-256 digest:\s*([0-9a-fA-F]+)', output)
     if not digests or any(d.upper() != expected for d in digests):
-        raise ValueError('APK signer differs from the pinned MediBox certificate')
+        observed = ', '.join(d.upper() for d in digests) or 'none'
+        raise ValueError(
+            'APK signer differs from the pinned MediBox certificate; '
+            f'observed SHA-256: {observed}'
+        )
 
 
 if __name__ == '__main__':
