@@ -1,8825 +1,2642 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter/services.dart';
-import 'package:camera/camera.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:intl/intl.dart';
-import 'package:local_auth/local_auth.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:url_launcher/url_launcher.dart';
-
-import 'models/models.dart';
-import 'services/medicine_matcher.dart';
-import 'services/reminder_logic.dart';
-import 'services/reminder_notifications.dart';
-import 'services/expiry_status.dart';
-import 'services/store.dart';
-import 'services/vvkt_service.dart';
-import 'services/ai_symptom_service.dart';
-import 'services/ai_medicine_profile_service.dart';
-import 'services/dose_guidance.dart';
-import 'widgets/body_map.dart';
-import 'models/leaflet_draft.dart';
-import 'widgets/leaflet_import_page.dart';
-import 'services/firebase_leaflet_service.dart';
-
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await ReminderNotifications.initialize();
-  runApp(const App());
-}
-
-const green = Color(0xff079b7a),
-    navy = Color(0xff102a43),
-    mint = Color(0xffe9f8f4);
-String tx(BuildContext c, String lt, String en) =>
-    Localizations.localeOf(c).languageCode == 'en' ? en : lt;
-String newId() => DateTime.now().microsecondsSinceEpoch.toString();
-String dateKey([DateTime? value]) {
-  final d = value ?? DateTime.now();
-  return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-}
-
-String quantityLabel(num value) => value == value.roundToDouble()
-    ? value.toInt().toString()
-    : value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '');
-
-bool reminderMatchesMember(AppData data, Reminder reminder, String memberId) {
-  if (memberId.isEmpty) return true;
-  if (reminder.memberId == memberId) return true;
-  if (reminder.memberId.isNotEmpty) return false;
-
-  final medicine = data.meds
-      .where((item) => item.id == reminder.medId)
-      .firstOrNull;
-  if (medicine != null && medicine.memberIds.contains(memberId)) return true;
-
-  final member = data.members.where((item) => item.id == memberId).firstOrNull;
-  return medicine != null &&
-      medicine.memberIds.isEmpty &&
-      member?.relation == 'self';
-}
-
-class DateDashFormatter extends TextInputFormatter {
-  final bool monthOnly;
-  DateDashFormatter({this.monthOnly = false});
-  @override
-  TextEditingValue formatEditUpdate(
-    TextEditingValue oldValue,
-    TextEditingValue newValue,
-  ) {
-    final digits = newValue.text.replaceAll(RegExp(r'\D'), '');
-    final max = monthOnly ? 6 : 8;
-    final length = digits.length > max ? max : digits.length;
-    final value = digits.substring(0, length);
-    final out = StringBuffer();
-    for (var i = 0; i < value.length; i++) {
-      if (i == 4 || (!monthOnly && i == 6)) out.write('-');
-      out.write(value[i]);
-    }
-    return TextEditingValue(
-      text: out.toString(),
-      selection: TextSelection.collapsed(offset: out.length),
-    );
-  }
-}
-
-class App extends StatefulWidget {
-  const App({super.key});
-  State<App> createState() => _App();
-}
-
-class _App extends State<App> {
-  AppData? data;
-  bool launchAccepted = false;
-  bool authenticating = false;
-  final navigatorKey = GlobalKey<NavigatorState>();
-
-  Future<void> _finishOpening(AppData current) async {
-    if (!current.aiConsentChoiceMade && mounted) {
-      final granted = await showDialog<bool>(
-        context: navigatorKey.currentContext!,
-        barrierDismissible: false,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('I≈°maniosios MediBox funkcijos'),
-          content: const Text(
-            'Ar sutinkate, kad ‚ÄûFirebase AI / Google Gemini‚Äú apdorot≈≥ vaisto '
-            'pakuotƒós tekstƒÖ ir pasirinktus sveikatos duomenis: am≈æi≈≥, svorƒØ, '
-            'alergijas, ligas, simptomus bei tinkamus vaistinƒólƒós ƒØra≈°us? '
-            'Vardas nesiunƒçiamas. Sutikimas i≈°saugomas ir daugiau nekartojamas. '
-            'Dozƒós rodomos tik pagal patvirtintas oficialias taisykles. '
-            'Po ≈°io pasirinkimo telefonas i≈°kart papra≈°ys kameros prieigos, '
-            'kad galƒótumƒóte fotografuoti ir atpa≈æinti vaist≈≥ pakuotes.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Naudoti be AI'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Sutinku ir tƒôsti'),
-            ),
-          ],
-        ),
-      );
-      current.aiConsentChoiceMade = true;
-      current.aiConsentGranted = granted == true;
-      await Store.save(current);
-    }
-    if (!current.cameraPermissionAsked) {
-      await Permission.camera.request();
-      current.cameraPermissionAsked = true;
-      await Store.save(current);
-    }
-    if (mounted) setState(() => launchAccepted = true);
-  }
-
-  Future<void> _openApp() async {
-    final current = data;
-    if (current == null || authenticating) return;
-    if (!current.privacyLock) {
-      await _finishOpening(current);
-      return;
-    }
-    setState(() => authenticating = true);
-    try {
-      final accepted = await LocalAuthentication().authenticate(
-        localizedReason: 'Atrakinkite MediBox sveikatos duomenis',
-        options: const AuthenticationOptions(
-          biometricOnly: false,
-          stickyAuth: true,
-        ),
-      );
-      if (mounted && accepted) await _finishOpening(current);
-    } catch (_) {
-      // The app remains locked if the device cannot authenticate.
-    } finally {
-      if (mounted) setState(() => authenticating = false);
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    Future.wait([
-      Store.load(),
-      Future<void>.delayed(const Duration(milliseconds: 1400)),
-    ]).then((values) {
-      final v = values.first as AppData;
-      ReminderNotifications.onAction = _handleReminderAction;
-      ReminderNotifications.scheduleAll(v);
-      if (mounted) setState(() => data = v);
-    });
-  }
-
-  Future<void> _handleReminderAction(
-    String action,
-    String reminderId,
-    DateTime occurrence,
-  ) async {
-    final current = data;
-    if (current == null) return;
-    final matches = current.reminders.where((x) => x.id == reminderId);
-    if (matches.isEmpty) return;
-    final reminder = matches.first;
-    if (action == 'taken') {
-      markDoseTaken(current, reminder, occurrence);
-      await ReminderNotifications.cancelOccurrence(reminder, occurrence);
-    } else if (action == 'skip') {
-      markDoseSkipped(reminder, occurrence);
-      await ReminderNotifications.cancelOccurrence(reminder, occurrence);
-    } else if (action == 'snooze') {
-      await ReminderNotifications.snooze(reminder, current, occurrence);
-    }
-    await Store.save(current);
-    if (mounted) setState(() {});
-  }
-
-  void changed() {
-    if (data != null) {
-      Store.save(data!);
-      ReminderNotifications.scheduleAll(data!);
-      setState(() {});
-    }
-  }
-
-  @override
-  Widget build(c) {
-    final d = data;
-    if (d == null || !launchAccepted) {
-      return MaterialApp(
-        navigatorKey: navigatorKey,
-        debugShowCheckedModeBanner: false,
-        locale: d != null && d.language != 'system' ? Locale(d.language) : null,
-        supportedLocales: const [Locale('lt'), Locale('en')],
-        localizationsDelegates: GlobalMaterialLocalizations.delegates,
-        home: LaunchScreen(
-          ready: d != null,
-          onStart: d == null ? null : _openApp,
-        ),
-      );
-    }
-    Locale? locale;
-    if (d.language != 'system') locale = Locale(d.language);
-    return MaterialApp(
-      navigatorKey: navigatorKey,
-      debugShowCheckedModeBanner: false,
-      title: 'MediBox',
-      builder: (context, child) => MediaQuery.withClampedTextScaling(
-        minScaleFactor: 0.9,
-        maxScaleFactor: 1.2,
-        child: child!,
-      ),
-      locale: locale,
-      supportedLocales: const [Locale('lt'), Locale('en')],
-      localizationsDelegates: GlobalMaterialLocalizations.delegates,
-      theme: ThemeData(
-        brightness: Brightness.light,
-        fontFamily: 'sans-serif',
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: green,
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xfff6fbfa),
-        cardTheme: CardThemeData(
-          color: Colors.white,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: const BorderSide(color: Color(0xffe0eeeb)),
-          ),
-        ),
-        filledButtonTheme: FilledButtonThemeData(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xff078b71),
-            foregroundColor: Colors.white,
-            minimumSize: const Size.fromHeight(54),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-          ),
-        ),
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
-        ),
-      ),
-      home: d.onboarded
-          ? Shell(data: d, onChanged: changed)
-          : OnboardingPage(data: d, onChanged: changed),
-    );
-  }
-}
-
-class LaunchScreen extends StatelessWidget {
-  final bool ready;
-  final VoidCallback? onStart;
-  const LaunchScreen({super.key, required this.ready, this.onStart});
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: const Color(0xfff8fcfb),
-    body: Stack(
-      children: [
-        Positioned.fill(
-          child: Image.asset(
-            'assets/images/medibox_home_background.webp',
-            fit: BoxFit.cover,
-          ),
-        ),
-        Positioned.fill(
-          child: ColoredBox(color: Colors.white.withValues(alpha: .24)),
-        ),
-        SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(28, 24, 28, 14),
-            child: Column(
-              children: [
-                const MediBoxLogo(size: 82),
-                const SizedBox(height: 10),
-                const Text(
-                  'MediBox',
-                  style: TextStyle(
-                    fontSize: 43,
-                    height: 1,
-                    fontWeight: FontWeight.w900,
-                    color: navy,
-                  ),
-                ),
-                const SizedBox(height: 9),
-                Text(
-                  tx(
-                    context,
-                    'Tavo i≈°mani ≈°eimos vaistinƒólƒó.',
-                    'Your smart family medicine cabinet.',
-                  ),
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                    color: navy,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Expanded(
-                  child: Transform.translate(
-                    offset: const Offset(0, 16),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: Image.asset(
-                        'assets/images/medibox_family_equal.webp',
-                        fit: BoxFit.contain,
-                        alignment: Alignment.bottomCenter,
-                        filterQuality: FilterQuality.high,
-                      ),
-                    ),
-                  ),
-                ),
-                Transform.translate(
-                  offset: const Offset(0, -12),
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(17, 12, 17, 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: .92),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: const Color(0xffe5efec)),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x18082f29),
-                          blurRadius: 20,
-                          offset: Offset(0, 7),
-                        ),
-                      ],
-                    ),
-                    child: const Column(
-                      children: [
-                        _LaunchBenefit(
-                          Icons.inventory_2_outlined,
-                          'Ma≈æiau r≈´pesƒçi≈≥',
-                          'Less worry',
-                        ),
-                        _LaunchBenefit(
-                          Icons.verified_user_outlined,
-                          'Daugiau saugumo',
-                          'More safety',
-                        ),
-                        _LaunchBenefit(
-                          Icons.people_outline,
-                          'Sveikesnƒó ≈°eima',
-                          'A healthier family',
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 7),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: green,
-                    minimumSize: const Size.fromHeight(54),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                  onPressed: onStart,
-                  child: ready
-                      ? Text(tx(context, 'Pradƒóti', 'Get started'))
-                      : const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            color: Colors.white,
-                          ),
-                        ),
-                ),
-                SizedBox(
-                  height: 36,
-                  child: TextButton(
-                    onPressed: ready ? onStart : null,
-                    child: Text(
-                      tx(
-                        context,
-                        'Turi paskyrƒÖ? Prisijungti',
-                        'Have an account? Sign in',
-                      ),
-                      style: const TextStyle(
-                        color: green,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-class _LaunchBenefit extends StatelessWidget {
-  final IconData icon;
-  final String lt, en;
-  const _LaunchBenefit(this.icon, this.lt, this.en);
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 5),
-    child: Row(
-      children: [
-        Icon(icon, color: green, size: 21),
-        const SizedBox(width: 12),
-        Text(
-          tx(context, lt, en),
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-      ],
-    ),
-  );
-}
-
-class MediBoxLogo extends StatelessWidget {
-  final double size;
-  const MediBoxLogo({super.key, this.size = 64});
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    width: size * 1.14,
-    height: size,
-    child: Stack(
-      children: [
-        Positioned(
-          left: 0,
-          top: size * .28,
-          child: _logoSquare(size * .68, const [
-            Color(0xff079b7a),
-            Color(0xff057c65),
-          ]),
-        ),
-        Positioned(
-          right: 0,
-          top: 0,
-          child: _logoSquare(size * .72, const [
-            Color(0xff59ddb4),
-            Color(0xff14aa86),
-          ]),
-        ),
-        Center(
-          child: Icon(Icons.add_rounded, color: Colors.white, size: size * .62),
-        ),
-      ],
-    ),
-  );
-
-  Widget _logoSquare(double side, List<Color> colors) => Container(
-    width: side,
-    height: side,
-    decoration: BoxDecoration(
-      gradient: LinearGradient(
-        begin: Alignment.topRight,
-        end: Alignment.bottomLeft,
-        colors: colors,
-      ),
-      borderRadius: BorderRadius.circular(side * .25),
-      boxShadow: const [
-        BoxShadow(
-          color: Color(0x28078b71),
-          blurRadius: 14,
-          offset: Offset(0, 6),
-        ),
-      ],
-    ),
-  );
-}
-
-class OnboardingPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const OnboardingPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
-  @override
-  State<OnboardingPage> createState() => _OnboardingPageState();
-}
-
-class _OnboardingPageState extends State<OnboardingPage> {
-  int step = 1;
-  String choice = 'self';
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    body: SafeArea(
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 250),
-        child: step == 0 ? _welcome(context) : _choice(context),
-      ),
-    ),
-  );
-
-  Widget _welcome(BuildContext context) => Padding(
-    key: const ValueKey('welcome'),
-    padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
-    child: Column(
-      children: [
-        const MediBoxLogo(size: 76),
-        const SizedBox(height: 14),
-        const Text(
-          'MediBox',
-          style: TextStyle(
-            fontSize: 38,
-            fontWeight: FontWeight.w800,
-            color: navy,
-          ),
-        ),
-        Text(
-          tx(
-            context,
-            'Tavo i≈°mani ≈°eimos vaistinƒólƒó.',
-            'Your smart family medicine cabinet.',
-          ),
-          style: const TextStyle(fontSize: 17, color: navy),
-        ),
-        const SizedBox(height: 10),
-        Expanded(
-          child: Image.asset(
-            'assets/images/medibox_family_equal.webp',
-            fit: BoxFit.contain,
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Column(
-            children: [
-              _benefit(
-                Icons.inventory_2_outlined,
-                tx(context, 'Ma≈æiau r≈´pesƒçi≈≥', 'Less worry'),
-              ),
-              _benefit(
-                Icons.verified_user_outlined,
-                tx(context, 'Daugiau saugumo', 'More safety'),
-              ),
-              _benefit(
-                Icons.people_outline,
-                tx(context, 'Sveikesnƒó ≈°eima', 'A healthier family'),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        FilledButton(
-          onPressed: () => setState(() => step = 1),
-          child: Text(tx(context, 'Pradƒóti', 'Get started')),
-        ),
-      ],
-    ),
-  );
-
-  Widget _benefit(IconData icon, String label) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 5),
-    child: Row(
-      children: [
-        Icon(icon, color: green),
-        const SizedBox(width: 12),
-        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-      ],
-    ),
-  );
-
-  Widget _choice(BuildContext context) {
-    final options = [
-      ('self', Icons.person_outline, tx(context, 'A≈°', 'Me')),
-      ('child', Icons.child_care, tx(context, 'Mano vaikas', 'My child')),
-      (
-        'family',
-        Icons.family_restroom,
-        tx(context, 'Kitas ≈°eimos narys', 'Another family member'),
-      ),
-      (
-        'shared',
-        Icons.home_outlined,
-        tx(context, 'Bendra vaistinƒólƒó', 'Shared cabinet'),
-      ),
-    ];
-    return ListView(
-      key: const ValueKey('choice'),
-      padding: const EdgeInsets.all(24),
-      children: [
-        Row(
-          children: [
-            IconButton(
-              onPressed: () => setState(() => step = 0),
-              icon: const Icon(Icons.arrow_back),
-            ),
-            const MediBoxLogo(size: 42),
-            const SizedBox(width: 10),
-            const Text(
-              'MediBox',
-              style: TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.w800,
-                color: navy,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 30),
-        Text(
-          tx(context, 'Kas naudosis ‚ÄûMediBox‚Äú?', 'Who will use MediBox?'),
-          style: const TextStyle(
-            fontSize: 25,
-            fontWeight: FontWeight.w800,
-            color: navy,
-          ),
-        ),
-        const SizedBox(height: 16),
-        ...options.map(
-          (o) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () => setState(() => choice = o.$1),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: choice == o.$1
-                      ? const Color(0xffe6f7f2)
-                      : Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: choice == o.$1 ? green : const Color(0xffe0eeeb),
-                    width: choice == o.$1 ? 2 : 1,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    RoleAvatar(type: o.$1),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Text(
-                        o.$3,
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    if (choice == o.$1)
-                      const Icon(Icons.check_circle, color: green),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        FilledButton(
-          onPressed: () {
-            widget.data.onboarded = true;
-            if (choice == 'self' &&
-                !widget.data.members.any((x) => x.relation == 'self')) {
-              widget.data.members.add(
-                Member(
-                  id: newId(),
-                  name: widget.data.profile.name.isEmpty
-                      ? tx(context, 'A≈°', 'Me')
-                      : widget.data.profile.name,
-                  relation: 'self',
-                ),
-              );
-            }
-            widget.onChanged();
-          },
-          child: Text(tx(context, 'Tƒôsti', 'Continue')),
-        ),
-      ],
-    );
-  }
-}
-
-class Shell extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const Shell({super.key, required this.data, required this.onChanged});
-  State<Shell> createState() => _Shell();
-}
-
-class RoleAvatar extends StatelessWidget {
-  final String type;
-  const RoleAvatar({super.key, required this.type});
-
-  @override
-  Widget build(BuildContext context) {
-    if (type == 'shared') {
-      return const CircleAvatar(
-        radius: 27,
-        backgroundColor: mint,
-        child: Icon(Icons.home_rounded, color: green, size: 30),
-      );
-    }
-    final face = switch (type) {
-      'child' => 'üë¶',
-      'family' => 'üëµ',
-      _ => 'üë©',
-    };
-    return Container(
-      width: 54,
-      height: 54,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: mint,
-        border: Border.all(color: const Color(0xffb9e5d9), width: 2),
-      ),
-      child: Center(child: Text(face, style: const TextStyle(fontSize: 31))),
-    );
-  }
-}
-
-class _Shell extends State<Shell> {
-  int index = 0;
-  String selectedMemberId = '';
-  @override
-  Widget build(c) {
-    final d = widget.data;
-    final pages = [
-      HomePage(
-        data: d,
-        onChanged: widget.onChanged,
-        memberId: selectedMemberId,
-        onMemberChanged: (value) => setState(() => selectedMemberId = value),
-      ),
-      CabinetPage(data: d, onChanged: widget.onChanged),
-      SymptomsPage(data: d, onChanged: widget.onChanged),
-      FamilyPage(data: d, onChanged: widget.onChanged),
-      HealthCalendarPage(data: d, onChanged: widget.onChanged),
-    ];
-    return Scaffold(
-      backgroundColor: const Color(0xfff6fbfa),
-      body: ColoredBox(
-        color: const Color(0xfff6fbfa),
-        child: SafeArea(child: pages[index]),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (v) => setState(() => index = v),
-        destinations: [
-          NavigationDestination(
-            icon: const Icon(Icons.home_outlined),
-            label: tx(c, 'Prad≈æia', 'Home'),
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.medication_outlined),
-            label: tx(c, 'Vaistinƒólƒó', 'Medicine'),
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.health_and_safety_outlined),
-            label: tx(c, 'Man bloga', 'Symptoms'),
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.people_outline),
-            label: tx(c, '≈†eima', 'Family'),
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.calendar_month_outlined),
-            label: tx(c, 'Kalendorius', 'Calendar'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-Widget card(Widget child) => Card(
-  elevation: 0,
-  color: Colors.white,
-  child: Padding(padding: const EdgeInsets.all(16), child: child),
-);
-Widget title(String s) => Text(
-  s,
-  style: const TextStyle(
-    fontSize: 28,
-    height: 1.15,
-    fontFamily: 'sans-serif',
-    fontWeight: FontWeight.w700,
-    color: navy,
-    decoration: TextDecoration.none,
-  ),
-);
-
-Future<bool> confirmDelete(BuildContext c, String item) async =>
-    await showDialog<bool>(
-      context: c,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(tx(c, 'Patvirtinkite i≈°trynimƒÖ', 'Confirm deletion')),
-        content: Text(
-          tx(
-            c,
-            'Ar tikrai norite i≈°trinti ‚Äû$item‚Äú? ≈†io veiksmo at≈°aukti nepavyks.',
-            'Delete ‚Äú$item‚Äù? This action cannot be undone.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: Text(tx(c, 'At≈°aukti', 'Cancel')),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: Text(tx(c, 'I≈°trinti', 'Delete')),
-          ),
-        ],
-      ),
-    ) ??
-    false;
-
-class HomePage extends StatelessWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  final String memberId;
-  final ValueChanged<String> onMemberChanged;
-  const HomePage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-    this.memberId = '',
-    required this.onMemberChanged,
-  });
-
-  @override
-  Widget build(BuildContext c) {
-    final now = DateTime.now();
-    final today = dateKey(now);
-    final active =
-        data.reminders
-            .where(
-              (x) =>
-                  reminderAppliesOn(x, now) &&
-                  reminderMatchesMember(data, x, memberId),
-            )
-            .toList()
-          ..sort((a, b) => a.time.compareTo(b.time));
-    final taken = active.where((x) => x.takenDates.contains(today)).length;
-    final remaining = active.length - taken;
-    final lowStockMeds = data.meds.where((medicine) {
-      return (memberId.isEmpty ||
-              medicine.memberIds.isEmpty ||
-              medicine.memberIds.contains(memberId)) &&
-          medicine.stock < medicine.lowStockThreshold;
-    }).toList();
-    final expiringMeds =
-        data.meds
-            .where(
-              (x) =>
-                  (memberId.isEmpty ||
-                      x.memberIds.isEmpty ||
-                      x.memberIds.contains(memberId)) &&
-                  medicineNeedsExpiryAttention(x.expiry, now),
-            )
-            .toList()
-          ..sort(
-            (a, b) => (daysUntilMedicineExpiry(a.expiry, now) ?? 999999)
-                .compareTo(daysUntilMedicineExpiry(b.expiry, now) ?? 999999),
-          );
-    final upcomingAppointments =
-        data.appointments.where((item) {
-          final at = DateTime.tryParse('${item.date}T${item.time}');
-          return !item.completed &&
-              at != null &&
-              !at.isBefore(now) &&
-              (memberId.isEmpty || item.memberId == memberId);
-        }).toList()..sort(
-          (a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'),
-        );
-    final nextAppointment = upcomingAppointments.firstOrNull;
-
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: Image.asset(
-            'assets/images/medibox_home_background.webp',
-            fit: BoxFit.cover,
-          ),
-        ),
-        Positioned.fill(
-          child: ColoredBox(
-            color: const Color(0xfff6fbfa).withValues(alpha: .88),
-          ),
-        ),
-        ListView(
-          padding: const EdgeInsets.fromLTRB(16, 18, 16, 22),
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          data.profile.name.isEmpty
-                              ? tx(c, 'Labas! üëã', 'Hello! üëã')
-                              : tx(
-                                  c,
-                                  'Labas, ${data.profile.name}! üëã',
-                                  'Hello, ${data.profile.name}! üëã',
-                                ),
-                          maxLines: 1,
-                          style: const TextStyle(
-                            fontSize: 26,
-                            fontWeight: FontWeight.w800,
-                            color: navy,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        _todayLabel(c, now),
-                        style: const TextStyle(color: Color(0xff48606f)),
-                      ),
-                    ],
-                  ),
-                ),
-                Badge(
-                  isLabelVisible: remaining > 0,
-                  label: Text('$remaining'),
-                  child: IconButton(
-                    tooltip: tx(c, 'Priminimai', 'Reminders'),
-                    onPressed: () => Navigator.push(
-                      c,
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            ReminderRoutePage(data: data, onChanged: onChanged),
-                      ),
-                    ),
-                    icon: const Icon(Icons.notifications_outlined, size: 28),
-                  ),
-                ),
-                IconButton(
-                  tooltip: tx(c, 'Mano profilis', 'My profile'),
-                  onPressed: () => Navigator.push(
-                    c,
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          ProfilePage(data: data, onChanged: onChanged),
-                    ),
-                  ),
-                  icon: const Icon(Icons.account_circle_outlined, size: 30),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            if (data.members.isNotEmpty) ...[
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    ChoiceChip(
-                      label: Text(tx(c, 'Visa ≈°eima', 'Whole family')),
-                      selected: memberId.isEmpty,
-                      onSelected: (_) => onMemberChanged(''),
-                    ),
-                    const SizedBox(width: 7),
-                    ...data.members.map(
-                      (member) => Padding(
-                        padding: const EdgeInsets.only(right: 7),
-                        child: ChoiceChip(
-                          avatar: Text(
-                            _memberEmoji(member.gender, member.ageGroup),
-                          ),
-                          label: Text(member.name),
-                          selected: memberId == member.id,
-                          onSelected: (_) => onMemberChanged(member.id),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
-            Card(
-              color: Colors.white.withValues(alpha: .94),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(22),
-                side: const BorderSide(color: Color(0xffe5efec)),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        SizedBox(
-                          width: 112,
-                          height: 112,
-                          child: Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              SizedBox.expand(
-                                child: CircularProgressIndicator(
-                                  value: active.isEmpty
-                                      ? 0
-                                      : taken / active.length,
-                                  strokeWidth: 12,
-                                  backgroundColor: const Color(0xffe1e8ec),
-                                  strokeCap: StrokeCap.round,
-                                ),
-                              ),
-                              Text(
-                                '$taken/${active.length}\n${tx(c, 'vaistai\ni≈°gerti', 'medicines\ntaken')}',
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  height: 1.05,
-                                  fontWeight: FontWeight.w800,
-                                  color: navy,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              FilledButton(
-                                style: FilledButton.styleFrom(
-                                  minimumSize: const Size.fromHeight(54),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                  ),
-                                ),
-                                onPressed: () => Navigator.push(
-                                  c,
-                                  MaterialPageRoute(
-                                    builder: (_) => ReminderRoutePage(
-                                      data: data,
-                                      onChanged: onChanged,
-                                    ),
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Text(
-                                      tx(c, 'Rodyti visus', 'Show all'),
-                                      style: const TextStyle(
-                                        fontSize: 17,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    const Icon(Icons.chevron_right_rounded),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Card(
-              color: Colors.white.withValues(alpha: .96),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(22),
-                side: const BorderSide(color: Color(0xffe5efec)),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 6,
-                ),
-                child: Column(
-                  children: [
-                    if (active.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 18),
-                        child: Text(
-                          tx(
-                            c,
-                            '≈†iandien suplanuot≈≥ vaist≈≥ nƒóra.',
-                            'No medicines scheduled today.',
-                          ),
-                        ),
-                      ),
-                    ...active.take(4).map((r) {
-                      final isTaken = r.takenDates.contains(today);
-                      return Column(
-                        children: [
-                          ListTile(
-                            contentPadding: EdgeInsets.zero,
-                            leading: Container(
-                              width: 15,
-                              height: 15,
-                              decoration: BoxDecoration(
-                                color: _doseStatusColor(r, now, isTaken),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            title: Row(
-                              children: [
-                                SizedBox(
-                                  width: 72,
-                                  child: Text(
-                                    r.time,
-                                    style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w900,
-                                      color: navy,
-                                    ),
-                                  ),
-                                ),
-                                Expanded(
-                                  child: Text(
-                                    r.title,
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700,
-                                      color: navy,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            trailing: IconButton(
-                              tooltip: isTaken
-                                  ? tx(
-                                      c,
-                                      'Pa≈æymƒóti kaip nei≈°gertƒÖ',
-                                      'Mark as not taken',
-                                    )
-                                  : tx(
-                                      c,
-                                      'Pa≈æymƒóti kaip i≈°gertƒÖ',
-                                      'Mark as taken',
-                                    ),
-                              onPressed: () {
-                                if (isTaken) {
-                                  undoDoseTaken(data, r, now);
-                                } else {
-                                  markDoseTaken(data, r, now);
-                                }
-                                onChanged();
-                              },
-                              icon: Icon(
-                                isTaken
-                                    ? Icons.check_circle
-                                    : Icons.radio_button_unchecked,
-                                color: isTaken
-                                    ? green
-                                    : const Color(0xff7b8ba1),
-                                size: 34,
-                              ),
-                            ),
-                          ),
-                          if (r != active.take(4).last)
-                            const Divider(height: 1, color: Color(0xffe2e8ec)),
-                        ],
-                      );
-                    }),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (nextAppointment != null) ...[
-              Card(
-                color: const Color(0xffe8f7f3),
-                child: ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.medical_services_outlined, color: green),
-                  ),
-                  title: Text(
-                    tx(c, 'Artimiausias vizitas', 'Next appointment'),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      color: navy,
-                    ),
-                  ),
-                  subtitle: Text(
-                    '${nextAppointment.date} ${nextAppointment.time} ‚Ä¢ ${nextAppointment.title}',
-                  ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(
-                    c,
-                    MaterialPageRoute(
-                      builder: (_) => AppointmentEditor(
-                        data: data,
-                        appointment: nextAppointment,
-                        onChanged: onChanged,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-            if (lowStockMeds.isNotEmpty) ...[
-              _medicineStatusCard(
-                context: c,
-                medicines: lowStockMeds,
-                icon: Icons.warning_amber_rounded,
-                color: const Color(0xffff9f1c),
-                background: const Color(0xfffff3df),
-                title: tx(c, 'Ma≈æas vaist≈≥ likutis', 'Low medicine stock'),
-                onTap: () => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        CabinetPage(data: data, onChanged: onChanged),
-                  ),
-                ),
-                onMedicineTap: (medicine) => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) => MedicinePage(
-                      data: data,
-                      med: medicine,
-                      onChanged: onChanged,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-            if (expiringMeds.isNotEmpty) ...[
-              _medicineStatusCard(
-                context: c,
-                medicines: expiringMeds,
-                icon: Icons.event_busy_outlined,
-                color: const Color(0xffe53935),
-                background: const Color(0xffffe9e8),
-                title: tx(
-                  c,
-                  '${expiringMeds.length} ${expiringMeds.length == 1 ? 'vaistas greitai baigs' : 'vaistai greitai baigs'} galioti',
-                  '${expiringMeds.length} medicines expire soon',
-                ),
-                expiry: true,
-                now: now,
-                onTap: () => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) => ExpiringMedicinesPage(
-                      data: data,
-                      medicines: expiringMeds,
-                      now: now,
-                      onChanged: onChanged,
-                    ),
-                  ),
-                ),
-                onMedicineTap: (medicine) => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) => MedicinePage(
-                      data: data,
-                      med: medicine,
-                      onChanged: onChanged,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.push(
-                      c,
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            ScanPage(data: data, onChanged: onChanged),
-                      ),
-                    ),
-                    icon: const Icon(Icons.camera_alt),
-                    label: Text(tx(c, 'Nuskenuoti vaistƒÖ', 'Scan medicine')),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => Navigator.push(
-                      c,
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            SymptomsPage(data: data, onChanged: onChanged),
-                      ),
-                    ),
-                    icon: const Icon(Icons.health_and_safety),
-                    label: Text(tx(c, 'Man bloga', 'I feel unwell')),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _familyStatusCard(c, data, onChanged),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-Color _doseStatusColor(Reminder reminder, DateTime now, bool isTaken) {
-  if (isTaken) return green;
-  final due = reminderDateTime(reminder, now);
-  if (due != null && !due.isAfter(now)) return const Color(0xffef3e36);
-  return const Color(0xffffb62e);
-}
-
-String _todayLabel(BuildContext context, DateTime date) {
-  if (Localizations.localeOf(context).languageCode == 'en') {
-    return DateFormat('EEEE, MMMM d').format(date);
-  }
-  const weekdays = [
-    'pirmadienis',
-    'antradienis',
-    'treƒçiadienis',
-    'ketvirtadienis',
-    'penktadienis',
-    '≈°e≈°tadienis',
-    'sekmadienis',
-  ];
-  const months = [
-    'sausio',
-    'vasario',
-    'kovo',
-    'baland≈æio',
-    'gegu≈æƒós',
-    'bir≈æelio',
-    'liepos',
-    'rugpj≈´ƒçio',
-    'rugsƒójo',
-    'spalio',
-    'lapkriƒçio',
-    'gruod≈æio',
-  ];
-  return '≈†iandien, ${weekdays[date.weekday - 1]}, ${months[date.month - 1]} ${date.day} d.';
-}
-
-Widget _medicineStatusCard({
-  required BuildContext context,
-  required List<Med> medicines,
-  required IconData icon,
-  required Color color,
-  required Color background,
-  required String title,
-  bool expiry = false,
-  DateTime? now,
-  VoidCallback? onTap,
-  ValueChanged<Med>? onMedicineTap,
-}) => InkWell(
-  onTap: onTap,
-  borderRadius: BorderRadius.circular(16),
-  child: Container(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-    decoration: BoxDecoration(
-      color: background,
-      borderRadius: BorderRadius.circular(14),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(icon, color: color),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-            ),
-            if (onTap != null) Icon(Icons.chevron_right_rounded, color: color),
-          ],
-        ),
-        const SizedBox(height: 8),
-        ...medicines.take(4).map((medicine) {
-          final days = expiry
-              ? daysUntilMedicineExpiry(medicine.expiry, now!)
-              : null;
-          final detail = expiry
-              ? _expiryDetail(context, medicine.expiry, days)
-              : tx(
-                  context,
-                  'liko ${quantityLabel(medicine.stock)} vnt.',
-                  '${quantityLabel(medicine.stock)} remaining',
-                );
-          return InkWell(
-            onTap: onMedicineTap == null ? null : () => onMedicineTap(medicine),
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(36, 6, 4, 6),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '${medicine.name} ${medicine.strength} ‚Äî $detail',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                        color: expiry && (days ?? 0) < 0
-                            ? const Color(0xffb91c1c)
-                            : navy,
-                      ),
-                    ),
-                  ),
-                  if (onMedicineTap != null)
-                    const Icon(Icons.open_in_new_rounded, size: 16),
-                ],
-              ),
-            ),
-          );
-        }),
-      ],
-    ),
-  ),
-);
-
-String _expiryDetail(BuildContext context, String expiry, int? days) {
-  if (days == null) return expiry;
-  if (days < 0) {
-    return tx(context, 'galiojimas pasibaigƒó', 'expired');
-  }
-  if (days == 0) {
-    return tx(context, 'galioja iki ≈°iandien', 'expires today');
-  }
-  return tx(context, 'liko $days d.', '$days days left');
-}
-
-Widget _familyStatusCard(
-  BuildContext context,
-  AppData data,
-  VoidCallback onChanged,
-) => InkWell(
-  borderRadius: BorderRadius.circular(16),
-  onTap: () => Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => FamilyPage(data: data, onChanged: onChanged),
-    ),
-  ),
-  child: Container(
-    height: 82,
-    padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
-    decoration: BoxDecoration(
-      color: const Color(0xffe2f6f1).withValues(alpha: .96),
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Row(
-      children: [
-        const Icon(Icons.groups_rounded, color: green, size: 31),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            tx(
-              context,
-              '≈†eimos nari≈≥: ${data.members.length}',
-              'Family members: ${data.members.length}',
-            ),
-            style: const TextStyle(
-              color: navy,
-              fontWeight: FontWeight.w800,
-              fontSize: 16,
-            ),
-          ),
-        ),
-        SizedBox(
-          width: 112,
-          height: 52,
-          child: Stack(
-            children: [
-              for (var i = 0; i < data.members.take(3).length; i++)
-                Positioned(
-                  left: i * 34,
-                  child: _FamilyAvatar(
-                    member: data.members[i],
-                    fallbackIndex: i,
-                  ),
-                ),
-              if (data.members.isEmpty)
-                for (var i = 0; i < 3; i++)
-                  Positioned(
-                    left: i * 34,
-                    child: _FamilyAvatar(fallbackIndex: i),
-                  ),
-            ],
-          ),
-        ),
-        const Icon(Icons.chevron_right_rounded, color: green),
-      ],
-    ),
-  ),
-);
-
-class _FamilyAvatar extends StatelessWidget {
-  final Member? member;
-  final int fallbackIndex;
-  const _FamilyAvatar({this.member, required this.fallbackIndex});
-
-  @override
-  Widget build(BuildContext context) {
-    final imagePath = member?.imagePath ?? '';
-    final face = member == null
-        ? ['üë®', 'üë©', 'üë¶'][fallbackIndex % 3]
-        : _memberEmoji(member!.gender, member!.ageGroup);
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: const Color(0xffdff2fb),
-        border: Border.all(color: Colors.white, width: 2),
-      ),
-      alignment: Alignment.center,
-      clipBehavior: Clip.antiAlias,
-      child: imagePath.isNotEmpty
-          ? Image.file(
-              File(imagePath),
-              width: 48,
-              height: 48,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) =>
-                  Text(face, style: const TextStyle(fontSize: 27)),
-            )
-          : Text(face, style: const TextStyle(fontSize: 27)),
-    );
-  }
-}
-
-String _memberEmoji(String gender, String ageGroup) =>
-    switch ((gender, ageGroup)) {
-      ('female', 'child') => 'üëß',
-      ('male', 'child') => 'üë¶',
-      (_, 'child') => 'üßí',
-      ('female', _) => 'üë©',
-      ('male', _) => 'üë®',
-      _ => 'üßë',
-    };
-
-class ExpiringMedicinesPage extends StatefulWidget {
-  final AppData data;
-  final List<Med> medicines;
-  final DateTime now;
-  final VoidCallback onChanged;
-  const ExpiringMedicinesPage({
-    super.key,
-    required this.data,
-    required this.medicines,
-    required this.now,
-    required this.onChanged,
-  });
-
-  @override
-  State<ExpiringMedicinesPage> createState() => _ExpiringMedicinesPageState();
-}
-
-class _ExpiringMedicinesPageState extends State<ExpiringMedicinesPage> {
-  @override
-  Widget build(BuildContext context) {
-    final medicines = widget.medicines.where((medicine) {
-      final stillExists = widget.data.meds.any(
-        (item) => item.id == medicine.id,
-      );
-      return stillExists &&
-          medicineNeedsExpiryAttention(medicine.expiry, widget.now);
-    }).toList();
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          tx(context, 'Besibaigiantys vaistai', 'Expiring medicines'),
-        ),
-      ),
-      body: ListView.separated(
-        padding: const EdgeInsets.all(18),
-        itemCount: medicines.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemBuilder: (context, index) {
-          final medicine = medicines[index];
-          final days = daysUntilMedicineExpiry(medicine.expiry, widget.now);
-          return Card(
-            child: ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: Color(0xffffe9e8),
-                child: Icon(
-                  Icons.event_busy_outlined,
-                  color: Color(0xffe53935),
-                ),
-              ),
-              title: Text(
-                '${medicine.name} ${medicine.strength}',
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text(
-                _expiryDetail(context, medicine.expiry, days),
-                style: TextStyle(
-                  color: (days ?? 0) < 0
-                      ? const Color(0xffb91c1c)
-                      : const Color(0xffc62828),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => MedicinePage(
-                      data: widget.data,
-                      med: medicine,
-                      onChanged: widget.onChanged,
-                    ),
-                  ),
-                );
-                if (mounted) setState(() {});
-              },
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-String _who(AppData d, Reminder r, String me) {
-  if (r.memberId.isEmpty) return me;
-  return d.members
-          .where((x) => x.id == r.memberId)
-          .map((x) => x.name)
-          .firstOrNull ??
-      me;
-}
-
-class CabinetPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const CabinetPage({super.key, required this.data, required this.onChanged});
-
-  @override
-  State<CabinetPage> createState() => _CabinetPageState();
-}
-
-class _CabinetPageState extends State<CabinetPage> {
-  String selectedCategory = '';
-  String sortOrder = 'name';
-  final search = TextEditingController();
-
-  @override
-  void dispose() {
-    search.dispose();
-    super.dispose();
-  }
-
-  Future<void> _chooseAddMethod(BuildContext context) async {
-    final method = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(18, 4, 18, 18),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                tx(
-                  sheetContext,
-                  'Kaip norite pridƒóti vaistƒÖ?',
-                  'How would you like to add it?',
-                ),
-                style: const TextStyle(
-                  color: navy,
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 14),
-              FilledButton.icon(
-                onPressed: () => Navigator.pop(sheetContext, 'camera'),
-                icon: const Icon(Icons.camera_alt_outlined),
-                label: Text(
-                  tx(
-                    sheetContext,
-                    'Fotografuoti arba nuskaityti',
-                    'Photograph or scan',
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
-                onPressed: () => Navigator.pop(sheetContext, 'manual'),
-                icon: const Icon(Icons.edit_note_outlined),
-                label: Text(tx(sheetContext, 'ƒÆvesti ranka', 'Enter manually')),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (!mounted || method == null) return;
-    if (method == 'manual') {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>
-              MedicineEditor(data: widget.data, onChanged: widget.onChanged),
-        ),
-      );
-    } else {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ScanPage(
-            data: widget.data,
-            onChanged: widget.onChanged,
-            openCameraImmediately: true,
-          ),
-        ),
-      );
-    }
-    if (mounted) setState(() {});
-  }
-
-  @override
-  Widget build(c) {
-    final categories =
-        widget.data.meds
-            .expand((medicine) => _splitCategories(medicine.category))
-            .toSet()
-            .toList()
-          ..sort();
-    final activeCategory = categories.contains(selectedCategory)
-        ? selectedCategory
-        : '';
-    final query = search.text.trim().toLowerCase();
-    final medicines =
-        (activeCategory.isEmpty
-                ? widget.data.meds
-                : widget.data.meds
-                      .where(
-                        (medicine) =>
-                            _splitCategories(medicine.category)
-                                .contains(activeCategory),
-                      )
-                      .toList())
-            .where(
-              (medicine) =>
-                  query.isEmpty ||
-                  '${medicine.name} ${medicine.substance} ${medicine.purpose} ${medicine.barcode}'
-                      .toLowerCase()
-                      .contains(query),
-            )
-            .toList()
-          ..sort(
-            (a, b) => switch (sortOrder) {
-              'expiry' => a.expiry.compareTo(b.expiry),
-              'stock' => a.stock.compareTo(b.stock),
-              _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-            },
-          );
-    return ColoredBox(
-      color: const Color(0xfff6fbfa),
-      child: ListView(
-        padding: EdgeInsets.fromLTRB(
-          18,
-          18,
-          18,
-          MediaQuery.paddingOf(c).bottom + 36,
-        ),
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: title(tx(c, 'Mano vaistinƒólƒó', 'My medicine cabinet')),
-              ),
-              const SizedBox(width: 12),
-              IconButton.filled(
-                onPressed: () => _chooseAddMethod(c),
-                tooltip: tx(c, 'Pridƒóti vaistƒÖ', 'Add medicine'),
-                style: IconButton.styleFrom(
-                  backgroundColor: green,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(52, 52),
-                ),
-                icon: const Icon(Icons.add_rounded, size: 30),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: search,
-            onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
-              labelText: tx(c, 'Ie≈°koti vaisto', 'Search medicines'),
-              prefixIcon: const Icon(Icons.search),
-              suffixIcon: search.text.isEmpty
-                  ? null
-                  : IconButton(
-                      onPressed: () {
-                        search.clear();
-                        setState(() {});
-                      },
-                      icon: const Icon(Icons.clear),
-                    ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            initialValue: sortOrder,
-            decoration: InputDecoration(
-              labelText: tx(c, 'Rikiavimas', 'Sort by'),
-            ),
-            items: [
-              DropdownMenuItem(
-                value: 'name',
-                child: Text(tx(c, 'Pagal pavadinimƒÖ', 'Name')),
-              ),
-              DropdownMenuItem(
-                value: 'expiry',
-                child: Text(tx(c, 'Pagal galiojimƒÖ', 'Expiry')),
-              ),
-              DropdownMenuItem(
-                value: 'stock',
-                child: Text(tx(c, 'Pagal likutƒØ', 'Stock')),
-              ),
-            ],
-            onChanged: (value) => setState(() => sortOrder = value!),
-          ),
-          const SizedBox(height: 12),
-          if (categories.isNotEmpty) ...[
-            Text(
-              tx(c, 'Filtruoti pagal kategorijƒÖ', 'Filter by category'),
-              style: const TextStyle(
-                fontSize: 16,
-                height: 1.25,
-                fontWeight: FontWeight.w700,
-                color: navy,
-                decoration: TextDecoration.none,
-              ),
-            ),
-            const SizedBox(height: 8),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  ChoiceChip(
-                    label: Text(tx(c, 'Visi', 'All')),
-                    selected: activeCategory.isEmpty,
-                    onSelected: (_) => setState(() => selectedCategory = ''),
-                  ),
-                  const SizedBox(width: 8),
-                  ...categories.map(
-                    (category) => Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ChoiceChip(
-                        label: Text(category),
-                        selected: activeCategory == category,
-                        onSelected: (_) =>
-                            setState(() => selectedCategory = category),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              tx(c, 'Rasta: ${medicines.length}', 'Found: ${medicines.length}'),
-              style: const TextStyle(
-                fontSize: 14,
-                height: 1.25,
-                color: Color(0xff526572),
-                decoration: TextDecoration.none,
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-          if (medicines.isEmpty)
-            card(
-              Text(
-                tx(
-                  c,
-                  '≈†ioje kategorijoje vaist≈≥ nƒóra.',
-                  'There are no medicines in this category.',
-                ),
-              ),
-            ),
-          ...medicines.map((m) {
-            final days = daysUntilMedicineExpiry(m.expiry, DateTime.now());
-            final expiryColor = days != null && days < 0
-                ? const Color(0xffb91c1c)
-                : days != null && days <= 7
-                ? const Color(0xffd97706)
-                : green;
-            return Card(
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: () async {
-                  await Navigator.push(
-                    c,
-                    MaterialPageRoute(
-                      builder: (_) => MedicinePage(
-                        data: widget.data,
-                        med: m,
-                        onChanged: widget.onChanged,
-                      ),
-                    ),
-                  );
-                  if (mounted) setState(() {});
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _medicineImage(m, size: 72),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '${m.name} ${m.strength}'.trim(),
-                              style: const TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w800,
-                                color: navy,
-                              ),
-                            ),
-                            if (m.substance.isNotEmpty) ...[
-                              const SizedBox(height: 3),
-                              Text(m.substance),
-                            ],
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 7,
-                              runSpacing: 6,
-                              children: [
-                                _medicinePill(
-                                  Icons.inventory_2_outlined,
-                                  tx(
-                                    c,
-                                    '${quantityLabel(m.stock)} vnt.',
-                                    '${quantityLabel(m.stock)} left',
-                                  ),
-                                  green,
-                                ),
-                                if (m.expiry.isNotEmpty)
-                                  _medicinePill(
-                                    Icons.event_outlined,
-                                    _expiryDetail(c, m.expiry, days),
-                                    expiryColor,
-                                  ),
-                                if (m.prescription)
-                                  _medicinePill(
-                                    Icons.receipt_long_outlined,
-                                    tx(c, 'Receptinis', 'Prescription'),
-                                    navy,
-                                  ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.chevron_right_rounded),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }),
-        ],
-      ),
-    );
-  }
-}
-
-Widget _medicineImage(Med medicine, {double size = 56}) {
-  final file = medicine.imagePath.isEmpty ? null : File(medicine.imagePath);
-  if (file != null && file.existsSync()) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
-      child: Image.file(
-        file,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _medicinePlaceholder(size),
-      ),
-    );
-  }
-  return _medicinePlaceholder(size);
-}
-
-Widget _medicinePlaceholder(double size) => Container(
-  width: size,
-  height: size,
-  decoration: BoxDecoration(
-    color: mint,
-    borderRadius: BorderRadius.circular(14),
-  ),
-  child: const Icon(Icons.medication_rounded, color: green, size: 31),
-);
-
-Widget _medicinePill(IconData icon, String label, Color color) => Container(
-  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-  decoration: BoxDecoration(
-    color: color.withValues(alpha: .10),
-    borderRadius: BorderRadius.circular(999),
-  ),
-  child: Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(icon, size: 15, color: color),
-      const SizedBox(width: 5),
-      Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    ],
-  ),
-);
-
-class MedicinePage extends StatelessWidget {
-  final AppData data;
-  final Med med;
-  final VoidCallback onChanged;
-  const MedicinePage({
-    super.key,
-    required this.data,
-    required this.med,
-    required this.onChanged,
-  });
-  @override
-  Widget build(c) {
-    final weeklyUse = data.reminders
-        .where((item) => item.enabled && item.medId == med.id)
-        .fold<double>(
-          0,
-          (total, item) => total + item.quantityPerDose * item.weekdays.length,
-        );
-    final dailyUse = weeklyUse / 7;
-    final daysRemaining = dailyUse > 0 ? (med.stock / dailyUse).floor() : null;
-    final estimatedEnd = daysRemaining == null
-        ? null
-        : DateTime.now().add(Duration(days: daysRemaining));
-    return StatefulBuilder(
-      builder: (c, setPageState) => DefaultTabController(
-        length: 5,
-        child: Scaffold(
-          backgroundColor: const Color(0xfff6fbfa),
-          appBar: AppBar(
-            title: Text(med.name),
-            actions: [
-              IconButton(
-                tooltip: tx(c, 'Redaguoti', 'Edit'),
-                onPressed: () async {
-                  await Navigator.push(
-                    c,
-                    MaterialPageRoute(
-                      builder: (_) => MedicineEditor(
-                        data: data,
-                        medicine: med,
-                        onChanged: onChanged,
-                      ),
-                    ),
-                  );
-                  setPageState(() {});
-                },
-                icon: const Icon(Icons.edit_outlined),
-              ),
-              IconButton(
-                onPressed: () async {
-                  if (!await confirmDelete(c, med.name) || !c.mounted) return;
-                  data.meds.removeWhere((x) => x.id == med.id);
-                  data.reminders.removeWhere((x) => x.medId == med.id);
-                  onChanged();
-                  Navigator.pop(c);
-                },
-                icon: const Icon(Icons.delete_outline),
-              ),
-            ],
-            bottom: TabBar(
-              isScrollable: true,
-              tabs: [
-                Tab(text: tx(c, 'Ap≈ævalga', 'Overview')),
-                Tab(text: tx(c, 'Vartojimas', 'Use')),
-                Tab(text: tx(c, 'ƒÆspƒójimai', 'Warnings')),
-                Tab(text: tx(c, 'SƒÖveikos', 'Interactions')),
-                Tab(text: tx(c, 'Daugiau', 'More')),
-              ],
-            ),
-          ),
-          body: TabBarView(
-            children: [
-              ListView(
-                padding: const EdgeInsets.all(18),
-                children: [
-                  SizedBox(
-                    height: 210,
-                    width: double.infinity,
-                    child:
-                        med.imagePath.isNotEmpty &&
-                            File(med.imagePath).existsSync()
-                        ? ClipRRect(
-                            borderRadius: BorderRadius.circular(22),
-                            child: Image.file(
-                              File(med.imagePath),
-                              fit: BoxFit.cover,
-                            ),
-                          )
-                        : Container(
-                            decoration: BoxDecoration(
-                              color: mint,
-                              borderRadius: BorderRadius.circular(22),
-                            ),
-                            child: const Icon(
-                              Icons.medication_rounded,
-                              color: green,
-                              size: 78,
-                            ),
-                          ),
-                  ),
-                  const SizedBox(height: 10),
-                  FilledButton.icon(
-                    onPressed: () async {
-                      await Navigator.push(
-                        c,
-                        MaterialPageRoute(
-                          builder: (_) => MedicineEditor(
-                            data: data,
-                            medicine: med,
-                            onChanged: onChanged,
-                          ),
-                        ),
-                      );
-                      setPageState(() {});
-                    },
-                    icon: const Icon(Icons.edit_outlined),
-                    label: Text(
-                      tx(c, 'Redaguoti vaisto kortelƒô', 'Edit medicine card'),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  card(
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${med.name} ${med.strength}',
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          '${tx(c, 'Veiklioji med≈æiaga', 'Active ingredient')}: ${med.substance}',
-                        ),
-                        Chip(
-                          label: Text(
-                            med.prescription
-                                ? tx(c, 'Receptinis', 'Prescription')
-                                : tx(c, 'Nereceptinis', 'Non-prescription'),
-                          ),
-                        ),
-                        if (med.registryVerified)
-                          const Chip(
-                            avatar: Icon(
-                              Icons.verified_rounded,
-                              size: 18,
-                              color: green,
-                            ),
-                            label: Text('Patikrinta VVKT'),
-                          ),
-                        const Divider(),
-                        Text(med.purpose),
-                        if (med.manufacturer.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Gamintojas', 'Manufacturer')}: ${med.manufacturer}',
-                          ),
-                        if (med.dosageForm.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Vaisto forma', 'Dosage form')}: ${med.dosageForm}',
-                          ),
-                        if (med.category.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Kategorija', 'Category')}: ${med.category}',
-                          ),
-                      ],
-                    ),
-                  ),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      FilledButton.tonalIcon(
-                        onPressed: () async {
-                          final today = data.reminders
-                              .where(
-                                (item) =>
-                                    item.medId == med.id &&
-                                    reminderAppliesOn(item, DateTime.now()) &&
-                                    !item.takenDates.contains(dateKey()),
-                              )
-                              .firstOrNull;
-                          if (today == null) {
-                            ScaffoldMessenger.of(c).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  tx(
-                                    c,
-                                    '≈†iandien nepa≈æymƒót≈≥ dozi≈≥ nƒóra.',
-                                    'No untaken doses today.',
-                                  ),
-                                ),
-                              ),
-                            );
-                            return;
-                          }
-                          markDoseTaken(data, today, DateTime.now());
-                          onChanged();
-                          setPageState(() {});
-                        },
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: Text(tx(c, 'I≈°gƒóriau', 'Taken')),
-                      ),
-                      FilledButton.tonalIcon(
-                        onPressed: () => Navigator.push(
-                          c,
-                          MaterialPageRoute(
-                            builder: (_) => ReminderEditor(
-                              data: data,
-                              initialMedId: med.id,
-                              onChanged: onChanged,
-                            ),
-                          ),
-                        ),
-                        icon: const Icon(Icons.add_alarm),
-                        label: Text(tx(c, 'Priminimas', 'Reminder')),
-                      ),
-                      FilledButton.tonalIcon(
-                        onPressed: () {
-                          if (!data.shopping.any(
-                            (item) => item.medId == med.id && !item.purchased,
-                          )) {
-                            data.shopping.add(
-                              ShoppingItem(
-                                id: newId(),
-                                medId: med.id,
-                                name: '${med.name} ${med.strength}'.trim(),
-                                prescription: med.prescription,
-                              ),
-                            );
-                            onChanged();
-                          }
-                          ScaffoldMessenger.of(c).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                tx(
-                                  c,
-                                  'ƒÆtraukta ƒØ pirkini≈≥ sƒÖra≈°ƒÖ.',
-                                  'Added to shopping list.',
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.add_shopping_cart),
-                        label: Text(tx(c, 'Pirkti', 'Buy')),
-                      ),
-                    ],
-                  ),
-                  card(
-                    Column(
-                      children: [
-                        Text(
-                          '${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}',
-                        ),
-                        Text(
-                          '${tx(c, 'Perspƒójimo riba', 'Warning threshold')}: ${quantityLabel(med.lowStockThreshold)}',
-                        ),
-                        if (daysRemaining != null)
-                          Text(
-                            tx(
-                              c,
-                              'Pagal priminimus u≈æteks ma≈ædaug $daysRemaining d. (iki ${DateFormat('yyyy-MM-dd').format(estimatedEnd!)})',
-                              'Based on reminders, about $daysRemaining days remain (until ${DateFormat('yyyy-MM-dd').format(estimatedEnd)})',
-                            ),
-                          ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            IconButton(
-                              onPressed: med.stock > 0
-                                  ? () {
-                                      med.stock--;
-                                      onChanged();
-                                    }
-                                  : null,
-                              icon: const Icon(Icons.remove_circle_outline),
-                            ),
-                            IconButton(
-                              onPressed: () {
-                                med.stock++;
-                                onChanged();
-                              },
-                              icon: const Icon(Icons.add_circle_outline),
-                            ),
-                          ],
-                        ),
-                        Text(
-                          '${tx(c, 'Galioja iki', 'Expires')}: ${med.expiry}',
-                        ),
-                        if (med.prescriptionValidUntil.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Receptas galioja iki', 'Prescription valid until')}: ${med.prescriptionValidUntil}',
-                          ),
-                        if (med.treatmentUntil.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Vaisto turi u≈ætekti iki', 'Medicine should last until')}: ${med.treatmentUntil}',
-                          ),
-                        if (med.batchNumber.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Partijos numeris', 'Batch number')}: ${med.batchNumber}',
-                          ),
-                        if (med.barcode.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Br≈´k≈°ninis kodas', 'Barcode')}: ${med.barcode}',
-                          ),
-                        if (med.storageLocation.isNotEmpty)
-                          Text(
-                            '${tx(c, 'Laikymo vieta', 'Storage location')}: ${med.storageLocation}',
-                          ),
-                        const SizedBox(height: 10),
-                        OutlinedButton.icon(
-                          onPressed: () async {
-                            await Navigator.push(
-                              c,
-                              MaterialPageRoute(
-                                builder: (_) => MedicineInventoryPage(
-                                  medicine: med,
-                                  onChanged: onChanged,
-                                ),
-                              ),
-                            );
-                            setPageState(() {});
-                          },
-                          icon: const Icon(Icons.inventory_2_outlined),
-                          label: Text(
-                            tx(
-                              c,
-                              'Pakuotƒós ir laikymo vietos',
-                              'Packages and storage',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  card(
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(
-                          Icons.health_and_safety_outlined,
-                          color: green,
-                          size: 30,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          tx(
-                            c,
-                            'Vartojimas pasirinktam asmeniui',
-                            'Use for a selected person',
-                          ),
-                          style: const TextStyle(
-                            color: navy,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          tx(
-                            c,
-                            'Per≈æi≈´rƒókite kortelƒóje ir lapelyje ƒØra≈°ytƒÖ vartojimƒÖ, asmens svorƒØ bei svarbius perspƒójimus.',
-                            'Review the recorded and leaflet directions, the person\'s weight, and important warnings.',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        FilledButton.icon(
-                          onPressed: () => Navigator.push(
-                            c,
-                            MaterialPageRoute(
-                              builder: (_) => PersonalizedMedicineGuidancePage(
-                                data: data,
-                                medicine: med,
-                              ),
-                            ),
-                          ),
-                          icon: const Icon(Icons.person_search_outlined),
-                          label: Text(
-                            tx(c, 'Rodyti patarimus', 'Show guidance'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (med.leafletRecord != null &&
-                      med.leafletRecord!.identity.matches(
-                        LeafletIdentity(med.name, med.strength, med.dosageForm),
-                      ))
-                    LeafletRecordCard(record: med.leafletRecord!),
-                  if (med.leaflet.isNotEmpty || med.notes.isNotEmpty)
-                    card(
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (med.leaflet.isNotEmpty)
-                            Text(
-                              '${tx(c, 'Informacinis lapelis', 'Leaflet')}: ${med.leaflet}',
-                            ),
-                          if (med.notes.isNotEmpty) ...[
-                            if (med.leaflet.isNotEmpty) const Divider(),
-                            Text('${tx(c, 'Pastabos', 'Notes')}: ${med.notes}'),
-                          ],
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-              _medicineSectionsTab(c, [
-                (tx(c, 'Kaip vartoti?', 'How to use?'), med.dosage),
-                (
-                  tx(c, 'Priminimai', 'Reminders'),
-                  data.reminders
-                      .where((r) => r.medId == med.id)
-                      .map((r) => '${r.time} ‚Äî ${r.dose} ${r.doseUnit}'.trim())
-                      .join('\n'),
-                ),
-              ]),
-              _medicineSectionsTab(c, [
-                (tx(c, 'Svarbu ≈æinoti', 'Important'), med.warnings),
-                (
-                  tx(c, 'Da≈ænesni ≈°alutiniai poveikiai', 'Common side effects'),
-                  med.sideEffects,
-                ),
-              ]),
-              _medicineSectionsTab(c, [
-                (
-                  tx(
-                    c,
-                    'SƒÖveikos su kitais vaistais',
-                    'Interactions with medicines',
-                  ),
-                  med.interactions,
-                ),
-              ]),
-              _medicineSectionsTab(c, [
-                (tx(c, 'Pakuotƒós dydis', 'Package size'), med.packageSize),
-                (tx(c, 'Gamintojas', 'Manufacturer'), med.manufacturer),
-                (tx(c, 'ATC kodas', 'ATC code'), med.atcCode),
-                (
-                  tx(c, 'Registracijos numeris', 'Registration number'),
-                  med.registrationNumber,
-                ),
-                (tx(c, 'Tiekimo b≈´sena', 'Supply status'), med.supplyStatus),
-                (tx(c, 'Informacinis lapelis', 'Package leaflet'), med.leaflet),
-                (tx(c, 'Pastabos', 'Notes'), med.notes),
-              ]),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class PersonalizedMedicineGuidancePage extends StatefulWidget {
-  final AppData data;
-  final Med medicine;
-  const PersonalizedMedicineGuidancePage({
-    super.key,
-    required this.data,
-    required this.medicine,
-  });
-
-  @override
-  State<PersonalizedMedicineGuidancePage> createState() =>
-      _PersonalizedMedicineGuidancePageState();
-}
-
-class _PersonalizedMedicineGuidancePageState
-    extends State<PersonalizedMedicineGuidancePage> {
-  late String selectedMemberId;
-
-  @override
-  void initState() {
-    super.initState();
-    final assigned = widget.data.members
-        .where((member) => widget.medicine.memberIds.contains(member.id))
-        .toList();
-    selectedMemberId = assigned.isNotEmpty
-        ? assigned.first.id
-        : (widget.data.members.isNotEmpty ? widget.data.members.first.id : '');
-  }
-
-  int? _age(String value) {
-    final birth = DateTime.tryParse(value);
-    if (birth == null) return null;
-    final now = DateTime.now();
-    var years = now.year - birth.year;
-    if (now.month < birth.month ||
-        (now.month == birth.month && now.day < birth.day)) {
-      years--;
-    }
-    return years >= 0 ? years : null;
-  }
-
-  bool _mentionsMedicine(String value) {
-    final text = value.toLowerCase();
-    if (text.trim().isEmpty) return false;
-    final candidates = <String>{
-      widget.medicine.name.toLowerCase().trim(),
-      widget.medicine.substance.toLowerCase().trim(),
-    }.where((item) => item.length >= 4);
-    return candidates.any(text.contains);
-  }
-
-  Future<void> _openLeaflet(BuildContext context) async {
-    final uri = Uri.tryParse(widget.medicine.leaflet.trim());
-    if (uri == null || !uri.hasScheme || !await launchUrl(uri)) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tx(
-              context,
-              'Nepavyko atidaryti informacinio lapelio nuorodos.',
-              'The package leaflet link could not be opened.',
-            ),
-          ),
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final members = widget.data.members;
-    final member = members
-        .where((item) => item.id == selectedMemberId)
-        .firstOrNull;
-    final medicine = widget.medicine;
-    final age = member == null ? null : _age(member.birthDate);
-    final allergyAlert =
-        member != null &&
-        (_mentionsMedicine(member.allergies) ||
-            _mentionsMedicine(member.intolerantMedicines));
-    final doseGuidance = member == null
-        ? null
-        : calculateDoseGuidance(medicine, member);
-    return Scaffold(
-      backgroundColor: const Color(0xfff6fbfa),
-      appBar: AppBar(
-        title: Text(tx(context, 'Vartojimo patarimai', 'Use guidance')),
-      ),
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(
-          18,
-          18,
-          18,
-          MediaQuery.paddingOf(context).bottom + 30,
-        ),
-        children: [
-          card(
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${medicine.name} ${medicine.strength}'.trim(),
-                  style: const TextStyle(
-                    color: navy,
-                    fontSize: 23,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                if (medicine.substance.isNotEmpty)
-                  Text(
-                    '${tx(context, 'Veiklioji med≈æiaga', 'Active ingredient')}: ${medicine.substance}',
-                  ),
-                if (medicine.dosageForm.isNotEmpty)
-                  Text(
-                    '${tx(context, 'Forma', 'Form')}: ${medicine.dosageForm}',
-                  ),
-              ],
-            ),
-          ),
-          if (members.isEmpty)
-            card(
-              Text(
-                tx(
-                  context,
-                  'Pirmiausia sukurkite ≈°eimos narƒØ ir jo kortelƒóje ƒØra≈°ykite am≈æi≈≥, svorƒØ bei alergijas.',
-                  'First create a family member and record age, weight, and allergies in their profile.',
-                ),
-              ),
-            )
-          else ...[
-            Text(
-              tx(
-                context,
-                'Kam skirtas patarimas?',
-                'Who is this guidance for?',
-              ),
-              style: const TextStyle(
-                color: navy,
-                fontSize: 19,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: members
-                  .map(
-                    (item) => ChoiceChip(
-                      selected: selectedMemberId == item.id,
-                      onSelected: (_) =>
-                          setState(() => selectedMemberId = item.id),
-                      avatar: Text(_memberEmoji(item.gender, item.ageGroup)),
-                      label: Text(item.name),
-                    ),
-                  )
-                  .toList(),
-            ),
-            const SizedBox(height: 12),
-            card(
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    member!.name,
-                    style: const TextStyle(
-                      color: navy,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  Text(
-                    [
-                      member.ageGroup == 'child'
-                          ? tx(context, 'Vaikas', 'Child')
-                          : tx(context, 'Suaugƒôs', 'Adult'),
-                      if (age != null) tx(context, '$age m.', 'Age $age'),
-                      if (member.weight.trim().isNotEmpty)
-                        '${member.weight.trim()} kg',
-                    ].join(' ‚Ä¢ '),
-                  ),
-                  if (member.weight.trim().isEmpty)
-                    Text(
-                      tx(
-                        context,
-                        'Svoris neƒØvestas asmens kortelƒóje.',
-                        'Weight is missing from the profile.',
-                      ),
-                      style: const TextStyle(
-                        color: Colors.deepOrange,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            if (allergyAlert)
-              Card(
-                color: const Color(0xffffe8e8),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.red,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          tx(
-                            context,
-                            'Dƒómesio: asmens alergij≈≥ arba netoleruojam≈≥ vaist≈≥ ƒØra≈°e aptiktas ≈°io vaisto pavadinimas ar veiklioji med≈æiaga. Nevartokite nepasitarƒô su gydytoju ar vaistininku.',
-                            'Warning: this medicine or its active ingredient appears in the person\'s allergy or intolerance record. Do not use it without consulting a doctor or pharmacist.',
-                          ),
-                          style: const TextStyle(
-                            color: Colors.red,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-          ],
-          card(
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  tx(context, 'Kaip vartoti', 'How to use'),
-                  style: const TextStyle(
-                    color: navy,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  medicine.dosage.trim().isEmpty
-                      ? tx(
-                          context,
-                          'Vartojimo informacija kortelƒóje neƒØvesta. Vadovaukitƒós receptu ir oficialiu informaciniu lapeliu.',
-                          'No use directions are recorded. Follow the prescription and official package leaflet.',
-                        )
-                      : medicine.dosage.trim(),
-                ),
-                const SizedBox(height: 10),
-                if (doseGuidance != null && !allergyAlert) ...[
-                  const Divider(),
-                  Text(
-                    tx(
-                      context,
-                      'Pagal patvirtintƒÖ lapelio taisyklƒô',
-                      'From the approved leaflet rule',
-                    ),
-                    style: const TextStyle(
-                      color: green,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  Text(
-                    '${quantityLabel(doseGuidance.doseMg)} mg'
-                    '${doseGuidance.volumeMl == null ? '' : ' ‚Ä¢ ${quantityLabel(doseGuidance.volumeMl!)} ml'}'
-                    '${doseGuidance.units == null ? '' : ' ‚Ä¢ ${quantityLabel(doseGuidance.units!)} vnt.'}',
-                    style: const TextStyle(
-                      color: navy,
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  if (doseGuidance.intervalHours != null)
-                    Text(
-                      tx(
-                        context,
-                        'Ne da≈æniau kaip kas ${quantityLabel(doseGuidance.intervalHours!)} val.',
-                        'Not more often than every ${quantityLabel(doseGuidance.intervalHours!)} hours.',
-                      ),
-                    ),
-                  if (doseGuidance.maxDailyMg != null)
-                    Text(
-                      tx(
-                        context,
-                        'Did≈æiausia paros dozƒó: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.',
-                        'Maximum daily dose: ${quantityLabel(doseGuidance.maxDailyMg!)} mg.',
-                      ),
-                    ),
-                  Text(
-                    tx(
-                      context,
-                      '≈†altinis: ${doseGuidance.source}',
-                      'Source: ${doseGuidance.source}',
-                    ),
-                  ),
-                ] else
-                  Text(
-                    tx(
-                      context,
-                      'Dozƒó neskaiƒçiuojama, kol nƒóra su oficialiu lapeliu palygintos strukt≈´rizuotos taisyklƒós, tikslaus svorio arba yra alergijos ƒØspƒójimas.',
-                      'A dose is not calculated without a structured rule checked against the official leaflet, an exact weight, or when an allergy warning exists.',
-                    ),
-                    style: const TextStyle(color: Color(0xff5b6870)),
-                  ),
-              ],
-            ),
-          ),
-          if (medicine.warnings.isNotEmpty || medicine.interactions.isNotEmpty)
-            card(
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    tx(
-                      context,
-                      'Svarbu prie≈° vartojant',
-                      'Important before use',
-                    ),
-                    style: const TextStyle(
-                      color: navy,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  if (medicine.warnings.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(medicine.warnings),
-                  ],
-                  if (medicine.interactions.isNotEmpty) ...[
-                    const Divider(),
-                    Text(
-                      '${tx(context, 'SƒÖveikos', 'Interactions')}: ${medicine.interactions}',
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          if (medicine.leaflet.trim().isNotEmpty)
-            OutlinedButton.icon(
-              onPressed: () => _openLeaflet(context),
-              icon: const Icon(Icons.description_outlined),
-              label: Text(
-                tx(
-                  context,
-                  'Atidaryti oficial≈≥ lapelƒØ',
-                  'Open official leaflet',
-                ),
-              ),
-            ),
-          const SizedBox(height: 10),
-          Text(
-            tx(
-              context,
-              '≈†i informacija yra pagalbinƒó ir nepakeiƒçia gydytojo, vaistininko, recepto ar oficialaus informacinio lapelio nurodym≈≥.',
-              'This information is supportive and does not replace advice from a doctor or pharmacist, the prescription, or the official package leaflet.',
-            ),
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Color(0xff5b6870), fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class MedicineInventoryPage extends StatefulWidget {
-  final Med medicine;
-  final VoidCallback onChanged;
-  const MedicineInventoryPage({
-    super.key,
-    required this.medicine,
-    required this.onChanged,
-  });
-  @override
-  State<MedicineInventoryPage> createState() => _MedicineInventoryPageState();
-}
-
-class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
-  Future<void> _addBatch() async {
-    final quantity = TextEditingController();
-    final expiry = TextEditingController();
-    final batch = TextEditingController();
-    final location = TextEditingController();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(tx(context, 'Pridƒóti pakuotƒô', 'Add package')),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              field(context, quantity, 'Kiekis', 'Quantity', number: true),
-              dateField(
-                context,
-                expiry,
-                'Galioja iki YYYY-MM-DD',
-                'Expiry YYYY-MM-DD',
-              ),
-              field(context, batch, 'Partijos numeris', 'Batch number'),
-              field(context, location, 'Laikymo vieta', 'Storage location'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(tx(context, 'At≈°aukti', 'Cancel')),
-          ),
-          FilledButton(
-            onPressed: () {
-              final parsed = double.tryParse(
-                quantity.text.replaceAll(',', '.'),
-              );
-              if (parsed == null || parsed <= 0) return;
-              widget.medicine.batches.add(
-                MedicineStockBatch(
-                  id: newId(),
-                  quantity: parsed,
-                  expiry: expiry.text.trim(),
-                  batchNumber: batch.text.trim(),
-                  storageLocation: location.text.trim(),
-                ),
-              );
-              widget.medicine.stock = widget.medicine.batches.fold(
-                0,
-                (total, item) => total + item.quantity,
-              );
-              widget.onChanged();
-              Navigator.pop(dialogContext);
-              setState(() {});
-            },
-            child: Text(tx(context, 'I≈°saugoti', 'Save')),
-          ),
-        ],
-      ),
-    );
-    quantity.dispose();
-    expiry.dispose();
-    batch.dispose();
-    location.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(tx(context, 'Vaisto pakuotƒós', 'Medicine packages')),
-    ),
-    body: ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        card(
-          Text(
-            '${widget.medicine.name} ${widget.medicine.strength}\n'
-            '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)}',
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
-        ),
-        if (widget.medicine.batches.isEmpty)
-          card(
-            Text(
-              tx(
-                context,
-                'Atskiros pakuotƒós dar nesuvestos. Dabartinis bendras likutis i≈°saugotas.',
-                'No individual packages yet. The current total stock is preserved.',
-              ),
-            ),
-          ),
-        ...widget.medicine.batches.map(
-          (item) => Card(
-            child: ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: mint,
-                child: Icon(Icons.inventory_2_outlined, color: green),
-              ),
-              title: Text(
-                '${quantityLabel(item.quantity)} ${tx(context, 'vnt.', 'units')}',
-              ),
-              subtitle: Text(
-                [
-                  if (item.expiry.isNotEmpty)
-                    '${tx(context, 'Galioja iki', 'Expires')}: ${item.expiry}',
-                  if (item.batchNumber.isNotEmpty)
-                    '${tx(context, 'Partija', 'Batch')}: ${item.batchNumber}',
-                  if (item.storageLocation.isNotEmpty)
-                    '${tx(context, 'Vieta', 'Location')}: ${item.storageLocation}',
-                ].join('\n'),
-              ),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () {
-                  widget.medicine.batches.remove(item);
-                  widget.medicine.stock = widget.medicine.batches.fold(
-                    0,
-                    (total, batch) => total + batch.quantity,
-                  );
-                  widget.onChanged();
-                  setState(() {});
-                },
-              ),
-            ),
-          ),
-        ),
-        FilledButton.icon(
-          onPressed: _addBatch,
-          icon: const Icon(Icons.add),
-          label: Text(tx(context, 'Pridƒóti pakuotƒô', 'Add package')),
-        ),
-      ],
-    ),
-  );
-}
-
-Widget _medicineSectionsTab(BuildContext c, List<(String, String)> sections) =>
-    ListView(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        18,
-        18,
-        MediaQuery.paddingOf(c).bottom + 28,
-      ),
-      children: sections
-          .map(
-            (section) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: card(
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      section.$1,
-                      style: const TextStyle(
-                        color: navy,
-                        fontSize: 21,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      section.$2.trim().isEmpty
-                          ? tx(
-                              c,
-                              'Informacija dar neƒØvesta.',
-                              'Information has not been entered yet.',
-                            )
-                          : section.$2.trim(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          )
-          .toList(),
-    );
-
-class MedicineEditor extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  final String sourceText;
-  final String initialImagePath;
-  final String initialMemberId;
-  final Med? medicine;
-  final VvktMedicine? registryMedicine;
-  const MedicineEditor({
-    super.key,
-    required this.data,
-    required this.onChanged,
-    this.sourceText = '',
-    this.initialImagePath = '',
-    this.initialMemberId = '',
-    this.medicine,
-    this.registryMedicine,
-  });
-  State<MedicineEditor> createState() => _MedicineEditor();
-}
-
-class _MedicineEditor extends State<MedicineEditor> {
-  late final name = TextEditingController(
-        text:
-            widget.medicine?.name ??
-            widget.registryMedicine?.name ??
-            _guessName(widget.sourceText),
-      ),
-      sub = TextEditingController(
-        text:
-            widget.medicine?.substance ??
-            widget.registryMedicine?.substance ??
-            '',
-      ),
-      strength = TextEditingController(
-        text:
-            widget.medicine?.strength ??
-            widget.registryMedicine?.strength ??
-            _guessStrength(widget.sourceText),
-      ),
-      manufacturer = TextEditingController(
-        text:
-            widget.medicine?.manufacturer ??
-            widget.registryMedicine?.registrant ??
-            '',
-      ),
-      dosageForm = TextEditingController(
-        text:
-            widget.medicine?.dosageForm ??
-            widget.registryMedicine?.dosageForm ??
-            '',
-      ),
-      packageSize = TextEditingController(
-        text:
-            widget.medicine?.packageSize ??
-            widget.registryMedicine?.packageDescription ??
-            _guessPackageSize(widget.sourceText),
-      ),
-      purpose = TextEditingController(text: widget.medicine?.purpose ?? ''),
-      dosage = TextEditingController(text: widget.medicine?.dosage ?? ''),
-      warnings = TextEditingController(text: widget.medicine?.warnings ?? ''),
-      sideEffects = TextEditingController(
-        text: widget.medicine?.sideEffects ?? '',
-      ),
-      interactions = TextEditingController(
-        text: widget.medicine?.interactions ?? '',
-      ),
-      expiry = TextEditingController(
-        text:
-            widget.medicine?.expiry ??
-            MedicineMatcher.expiry(widget.sourceText) ??
-            '',
-      ),
-      prescriptionValidUntil = TextEditingController(
-        text: widget.medicine?.prescriptionValidUntil ?? '',
-      ),
-      treatmentUntil = TextEditingController(text: widget.medicine?.treatmentUntil ?? ''),
-      stock = TextEditingController(text: quantityLabel(widget.medicine?.stock ?? 1)),
-      lowStockThreshold = TextEditingController(text: quantityLabel(widget.medicine?.lowStockThreshold ?? 10)),
-      batchNumber = TextEditingController(text: widget.medicine?.batchNumber ?? ''),
-      barcode = TextEditingController(text: widget.medicine?.barcode ?? ''),
-      storageLocation = TextEditingController(text: widget.medicine?.storageLocation ?? ''),
-      leaflet = TextEditingController(text: widget.medicine?.leaflet ?? ''),
-      doseMgPerKg = TextEditingController(text: widget.medicine?.doseMgPerKg ?? ''),
-      doseFixedMg = TextEditingController(text: widget.medicine?.doseFixedMg ?? ''),
-      doseMaxSingleMg = TextEditingController(text: widget.medicine?.doseMaxSingleMg ?? ''),
-      doseMaxDailyMg = TextEditingController(text: widget.medicine?.doseMaxDailyMg ?? ''),
-      doseIntervalHours = TextEditingController(text: widget.medicine?.doseIntervalHours ?? ''),
-      concentrationMgPerMl = TextEditingController(text: widget.medicine?.concentrationMgPerMl ?? ''),
-      unitStrengthMg = TextEditingController(text: widget.medicine?.unitStrengthMg ?? ''),
-      doseRuleSource = TextEditingController(text: widget.medicine?.doseRuleSource ?? ''),
-      notes = TextEditingController(text: widget.medicine?.notes ?? '');
-  late bool prescription =
-      widget.medicine?.prescription ??
-      (widget.registryMedicine?.prescriptionStatus.toLowerCase() ==
-          'receptinis');
-  late bool doseRuleVerified = widget.medicine?.doseRuleVerified ?? false;
-  late final Set<String> selectedCategories = {
-    ..._splitCategories(widget.medicine?.category ?? ''),
-    if (widget.medicine == null)
-      ..._suggestMedicineCategories(
-        widget.registryMedicine?.atcCode ?? '',
-        '${widget.registryMedicine?.name ?? ''} ${widget.registryMedicine?.substance ?? ''} ${widget.sourceText}',
-      ),
-  };
-  late final Set<String> selectedMemberIds = {
-    ...?widget.medicine?.memberIds,
-    if (widget.initialMemberId.isNotEmpty) widget.initialMemberId,
-  };
-  final newCategory = TextEditingController();
-  Timer? _vvktDebounce;
-  bool _applyingVvkt = false;
-  bool _vvktSearchBusy = false;
-  bool _aiProfileBusy = false;
-  String _aiProfileMessage = '';
-  String _lastAiRegistration = '';
-  String _vvktSearchError = '';
-  List<VvktMedicine> _vvktSearchResults = [];
-  late VvktMedicine? _registryMedicine = widget.registryMedicine;
-  late String imagePath = widget.medicine?.imagePath ?? widget.initialImagePath;
-  late String expiryMode = expiry.text.length == 10 ? 'day' : 'month';
-  late LeafletRecord? _leafletRecord = widget.medicine?.leafletRecord;
-
-  Future<void> _importLeaflet() async {
-    final identity = LeafletIdentity(name.text, strength.text, dosageForm.text);
-    if (!identity.isComplete) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tx(
-              context,
-              'Pirmiausia ƒØra≈°yk tiksl≈≥ pavadinimƒÖ, stiprumƒÖ ir vaisto formƒÖ.',
-              'First enter the exact medicine name, strength and form.',
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-    _vvktDebounce?.cancel();
-    final record = await Navigator.push<LeafletRecord>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => LeafletImportPage(
-          identity: identity,
-          initialConsent: widget.data.aiConsentGranted,
-          initialUrl: leaflet.text.trim().isNotEmpty
-              ? leaflet.text
-              : _leafletRecord?.sourceUrl ?? '',
-        ),
-      ),
-    );
-    if (!mounted || record == null) return;
-    // An outstanding registry request may have changed the editor meanwhile.
-    if (!record.identity.matches(
-      LeafletIdentity(name.text, strength.text, dosageForm.text),
-    )) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tx(
-              context,
-              'Vaisto duomenys pasikeitƒó. Lapelio i≈°traukos nepridƒótos.',
-              'Medicine details changed. Leaflet extracts were not added.',
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-    var filled = 0;
-    void fillMissing(TextEditingController controller, String key) {
-      final value = record.sections[key]?.trim() ?? '';
-      if (controller.text.trim().isEmpty && value.isNotEmpty) {
-        controller.text = value;
-        filled++;
-      }
-    }
-
-    setState(() {
-      _leafletRecord = record;
-      fillMissing(purpose, 'purpose');
-      fillMissing(dosage, 'usage');
-      fillMissing(warnings, 'warnings');
-      fillMissing(sideEffects, 'sideEffects');
-      fillMissing(interactions, 'interactions');
-      fillMissing(storageLocation, 'storage');
-      if (leaflet.text.trim().isEmpty) leaflet.text = record.sourceUrl;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          tx(
-            context,
-            'AI juodra≈°tis patvirtintas: u≈æpildyta $filled tr≈´kstam≈≥ lauk≈≥. '
-                'Esami ƒØra≈°ai nepakeisti. Kad i≈°likt≈≥, i≈°saugok kortelƒô.',
-            'AI draft approved: $filled missing fields filled. Existing entries were '
-                'not changed. Save the card to keep them.',
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    name.addListener(_scheduleVvktSearch);
-    if (widget.medicine == null &&
-        widget.registryMedicine == null &&
-        name.text.trim().length >= 3) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _scheduleVvktSearch();
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _vvktDebounce?.cancel();
-    name.removeListener(_scheduleVvktSearch);
-    for (final x in [
-      name,
-      sub,
-      strength,
-      manufacturer,
-      dosageForm,
-      packageSize,
-      newCategory,
-      purpose,
-      dosage,
-      warnings,
-      sideEffects,
-      interactions,
-      expiry,
-      prescriptionValidUntil,
-      treatmentUntil,
-      stock,
-      lowStockThreshold,
-      batchNumber,
-      barcode,
-      storageLocation,
-      leaflet,
-      notes,
-      doseMgPerKg,
-      doseFixedMg,
-      doseMaxSingleMg,
-      doseMaxDailyMg,
-      doseIntervalHours,
-      concentrationMgPerMl,
-      unitStrengthMg,
-      doseRuleSource,
-    ]) {
-      x.dispose();
-    }
-    super.dispose();
-  }
-
-  void _scheduleVvktSearch() {
-    if (_applyingVvkt) return;
-    _vvktDebounce?.cancel();
-    final query = name.text.trim();
-    if (query.length < 3) {
-      if (mounted) setState(() => _vvktSearchResults = []);
-      return;
-    }
-    _vvktDebounce = Timer(
-      const Duration(milliseconds: 650),
-      () => _searchVvktByName(query),
-    );
-  }
-
-  Future<void> _searchVvktByName(String query) async {
-    if (!mounted || name.text.trim() != query) return;
-    setState(() {
-      _vvktSearchBusy = true;
-      _vvktSearchError = '';
-    });
-    try {
-      var results = await VvktService.search(query);
-      if (results.isEmpty) {
-        final variants = {
-          query,
-          _registryTitleCase(query),
-          query.toUpperCase(),
-        };
-        for (final variant in variants) {
-          results = await VvktService.searchByPrefix(variant);
-          if (results.isNotEmpty) break;
-        }
-      }
-      if (!mounted || name.text.trim() != query) return;
-      final best = VvktService.bestMatch(results, strength.text);
-      setState(() => _vvktSearchResults = results);
-      if (best != null) _applyVvktMedicine(best);
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _vvktSearchResults = [];
-          _vvktSearchError = tx(
-            context,
-            'Nepavyko prisijungti prie VVKT.',
-            'Could not connect to VVKT.',
-          );
-        });
-      }
-    } finally {
-      if (mounted) setState(() => _vvktSearchBusy = false);
-    }
-  }
-
-  void _applyVvktMedicine(VvktMedicine medicine) {
-    _applyingVvkt = true;
-    name.text = medicine.name;
-    sub.text = medicine.substance;
-    strength.text = medicine.strength;
-    manufacturer.text = medicine.registrant;
-    dosageForm.text = medicine.dosageForm;
-    packageSize.text = medicine.packageDescription;
-    prescription = medicine.prescriptionStatus.toLowerCase() == 'receptinis';
-    if (dosage.text.trim().isEmpty && medicine.administrationRoute.isNotEmpty) {
-      dosage.text =
-          '${tx(context, 'Vartojimo b≈´das', 'Administration route')}: '
-          '${medicine.administrationRoute}';
-    }
-    selectedCategories.remove('Kita');
-    selectedCategories.addAll(
-      _suggestMedicineCategories(
-        medicine.atcCode,
-        '${medicine.name} ${medicine.substance}',
-      ),
-    );
-    _registryMedicine = medicine;
-    _applyingVvkt = false;
-    if (mounted) setState(() {});
-    if (widget.data.aiConsentGranted) _autoFillProfile(medicine);
-  }
-
-  Future<void> _autoFillProfile(VvktMedicine medicine) async {
-    if (_aiProfileBusy ||
-        _lastAiRegistration == medicine.registrationNumber ||
-        !FirebaseLeafletService.supported)
-      return;
-    _lastAiRegistration = medicine.registrationNumber;
-    setState(() {
-      _aiProfileBusy = true;
-      _aiProfileMessage = tx(
-        context,
-        'AI pildo vaisto kortelƒô‚Ä¶',
-        'AI is filling the medicine card‚Ä¶',
-      );
-    });
-    try {
-      final profile = await AiMedicineProfileService.generate(
-        medicine: medicine,
-        recognizedPackageText: widget.sourceText,
-      );
-      if (!mounted ||
-          _registryMedicine?.registrationNumber != medicine.registrationNumber)
-        return;
-      void fill(TextEditingController target, String value) {
-        if (target.text.trim().isEmpty && value.trim().isNotEmpty) {
-          target.text = value.trim();
-        }
-      }
-
-      setState(() {
-        fill(purpose, profile.purpose);
-        fill(dosage, profile.dosage);
-        fill(warnings, profile.warnings);
-        fill(sideEffects, profile.sideEffects);
-        fill(interactions, profile.interactions);
-        fill(storageLocation, profile.storage);
-        selectedCategories.addAll(profile.categories);
-        _aiProfileMessage = tx(
-          context,
-          'Kortelƒós informacija u≈æpildyta automati≈°kai. Patikrinkite ir i≈°saugokite.',
-          'Card information was filled automatically. Review and save.',
-        );
-      });
-    } catch (_) {
-      if (mounted)
-        setState(
-          () => _aiProfileMessage = tx(
-            context,
-            'Automatinis papildymas nepavyko. Pagrindiniai VVKT duomenys i≈°saugoti.',
-            'Automatic enrichment failed. Core VVKT data is preserved.',
-          ),
-        );
-    } finally {
-      if (mounted) setState(() => _aiProfileBusy = false);
-    }
-  }
-
-  Widget _vvktNameResults(BuildContext c) {
-    if (_vvktSearchBusy) {
-      return const Padding(
-        padding: EdgeInsets.only(bottom: 12),
-        child: LinearProgressIndicator(),
-      );
-    }
-    if (_vvktSearchError.isNotEmpty) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 12),
-        child: Text(
-          _vvktSearchError,
-          style: const TextStyle(color: Color(0xffb45309)),
-        ),
-      );
-    }
-    if (_vvktSearchResults.isEmpty) return const SizedBox.shrink();
-    return Card(
-      color: const Color(0xffe5f7f0),
-      child: ExpansionTile(
-        initiallyExpanded: _registryMedicine == null,
-        leading: const Icon(Icons.verified_outlined, color: green),
-        title: Text(
-          tx(
-            c,
-            'VVKT rasta: ${_vvktSearchResults.length}',
-            'VVKT results: ${_vvktSearchResults.length}',
-          ),
-          style: const TextStyle(fontWeight: FontWeight.w800),
-        ),
-        subtitle: _registryMedicine == null
-            ? null
-            : Text('${_registryMedicine!.name} ${_registryMedicine!.strength}'),
-        children: _vvktSearchResults
-            .take(10)
-            .map(
-              (medicine) => ListTile(
-                title: Text('${medicine.name} ${medicine.strength}'),
-                subtitle: Text(
-                  '${medicine.dosageForm} ‚Ä¢ ${medicine.packageDescription}',
-                ),
-                trailing:
-                    medicine.registrationNumber ==
-                        _registryMedicine?.registrationNumber
-                    ? const Icon(Icons.check_circle, color: green)
-                    : null,
-                onTap: () => _applyVvktMedicine(medicine),
-              ),
-            )
-            .toList(),
-      ),
-    );
-  }
-
-  Future<void> _pickPhoto(ImageSource source) async {
-    final picked = await ImagePicker().pickImage(
-      source: source,
-      imageQuality: 82,
-      maxWidth: 1600,
-    );
-    if (picked == null) return;
-    final directory = await getApplicationDocumentsDirectory();
-    final extension = picked.path.contains('.')
-        ? picked.path.split('.').last
-        : 'jpg';
-    final id = widget.medicine?.id ?? newId();
-    final saved = await File(picked.path)
-        .copy('${directory.path}/medicine_$id.$extension');
-    if (mounted) setState(() => imagePath = saved.path);
-  }
-
-  Widget _categoryPicker(BuildContext c) {
-    final categories = <String>{
-      ...defaultMedicineCategories,
-      ...widget.data.meds.expand((m) => _splitCategories(m.category)),
-      ...selectedCategories,
-    }.toList()..sort();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          tx(c, 'Kategorijos', 'Categories'),
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children: categories
-              .map(
-                (category) => FilterChip(
-                  label: Text(category),
-                  selected: selectedCategories.contains(category),
-                  onSelected: (selected) => setState(() {
-                    if (selected) {
-                      if (category == 'Kita') {
-                        selectedCategories.clear();
-                      } else {
-                        selectedCategories.remove('Kita');
-                      }
-                      selectedCategories.add(category);
-                    } else {
-                      selectedCategories.remove(category);
-                    }
-                  }),
-                ),
-              )
-              .toList(),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: field(c, newCategory, 'Nauja kategorija', 'New category'),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              tooltip: tx(c, 'Pridƒóti kategorijƒÖ', 'Add category'),
-              onPressed: () {
-                final value = newCategory.text.trim();
-                if (value.isEmpty) return;
-                setState(() {
-                  selectedCategories.remove('Kita');
-                  selectedCategories.add(value);
-                  newCategory.clear();
-                });
-              },
-              icon: const Icon(Icons.add),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _memberPicker(BuildContext c) {
-    if (widget.data.members.isEmpty) return const SizedBox.shrink();
-    final medicineTerms = '${name.text} ${sub.text}'.toLowerCase();
-    final warningsForMembers = widget.data.members.where((member) {
-      if (!selectedMemberIds.contains(member.id)) return false;
-      final risks = '${member.allergies} ${member.intolerantMedicines}'
-          .toLowerCase()
-          .split(RegExp(r'[,;\n]'))
-          .map((value) => value.trim())
-          .where((value) => value.length >= 3);
-      return risks.any(medicineTerms.contains);
-    }).toList();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          tx(c, 'Kam skirtas vaistas?', 'Who is this medicine for?'),
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: widget.data.members
-              .map(
-                (member) => FilterChip(
-                  avatar: Text(_memberEmoji(member.gender, member.ageGroup)),
-                  label: Text(member.name),
-                  selected: selectedMemberIds.contains(member.id),
-                  onSelected: (selected) => setState(() {
-                    if (selected) {
-                      selectedMemberIds.add(member.id);
-                    } else {
-                      selectedMemberIds.remove(member.id);
-                    }
-                  }),
-                ),
-              )
-              .toList(),
-        ),
-        if (warningsForMembers.isNotEmpty)
-          Card(
-            color: const Color(0xffffe9e8),
-            child: ListTile(
-              leading: const Icon(
-                Icons.warning_amber_rounded,
-                color: Color(0xffc62828),
-              ),
-              title: Text(
-                tx(
-                  c,
-                  'Patikrinkite alergijas ir netoleravimƒÖ',
-                  'Check allergies and intolerances',
-                ),
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text(
-                warningsForMembers.map((member) => member.name).join(', '),
-              ),
-            ),
-          ),
-        const SizedBox(height: 8),
-      ],
-    );
-  }
-
-  @override
-  Widget build(c) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        widget.medicine == null
-            ? tx(c, 'Pridƒóti vaistƒÖ', 'Add medicine')
-            : tx(c, 'Redaguoti vaistƒÖ', 'Edit medicine'),
-      ),
-    ),
-    backgroundColor: const Color(0xfff6fbfa),
-    body: ListView(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        18,
-        18,
-        MediaQuery.paddingOf(c).bottom + 36,
-      ),
-      children: [
-        if (imagePath.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: Image.file(
-                File(imagePath),
-                height: 190,
-                width: double.infinity,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) =>
-                    const SizedBox.shrink(),
-              ),
-            ),
-          ),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _pickPhoto(ImageSource.camera),
-                icon: const Icon(Icons.photo_camera_outlined),
-                label: Text(tx(c, 'Fotografuoti', 'Take photo')),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _pickPhoto(ImageSource.gallery),
-                icon: const Icon(Icons.photo_library_outlined),
-                label: Text(tx(c, 'Galerija', 'Gallery')),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        field(c, name, 'Pavadinimas', 'Name'),
-        _vvktNameResults(c),
-        field(c, sub, 'Veiklioji med≈æiaga', 'Active ingredient'),
-        field(c, strength, 'Stiprumas', 'Strength'),
-        field(c, manufacturer, 'Gamintojas', 'Manufacturer'),
-        field(
-          c,
-          dosageForm,
-          'Vaisto forma (tabletƒós, sirupas...)',
-          'Dosage form',
-        ),
-        field(c, packageSize, 'Pakuotƒós dydis', 'Package size'),
-        if (_aiProfileBusy) const LinearProgressIndicator(),
-        if (_aiProfileMessage.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              _aiProfileMessage,
-              style: const TextStyle(color: green),
-            ),
-          ),
-        if (FirebaseLeafletService.supported)
-          OutlinedButton.icon(
-            onPressed: _importLeaflet,
-            icon: const Icon(Icons.auto_awesome_outlined),
-            label: Text(
-              tx(c, 'Papildyti i≈° lapelio su AI', 'Import leaflet with AI'),
-            ),
-          ),
-        if (_leafletRecord != null) ...[
-          LeafletRecordCard(record: _leafletRecord!),
-          TextButton(
-            onPressed: () => setState(() => _leafletRecord = null),
-            child: Text(
-              tx(c, 'Pa≈°alinti lapelio i≈°traukas', 'Remove leaflet extracts'),
-            ),
-          ),
-        ],
-        _categoryPicker(c),
-        _memberPicker(c),
-        field(
-          c,
-          purpose,
-          'Paskirtis / kam vartojamas',
-          'Purpose / use',
-          lines: 2,
-        ),
-        field(c, dosage, 'Kaip vartoti', 'How to use', lines: 3),
-        ExpansionTile(
-          tilePadding: EdgeInsets.zero,
-          title: Text(
-            tx(c, 'Patvirtinta dozavimo taisyklƒó', 'Approved dosing rule'),
-          ),
-          subtitle: Text(
-            tx(
-              c,
-              'Naudojama tik skaiƒçiavimui pagal oficial≈≥ lapelƒØ',
-              'Used only for calculation from an official leaflet',
-            ),
-          ),
-          children: [
-            field(
-              c,
-              doseMgPerKg,
-              'Vienkartinƒó dozƒó mg/kg',
-              'Single dose mg/kg',
-              number: true,
-            ),
-            field(
-              c,
-              doseFixedMg,
-              'Fiksuota vienkartinƒó dozƒó mg',
-              'Fixed single dose mg',
-              number: true,
-            ),
-            field(
-              c,
-              doseMaxSingleMg,
-              'Did≈æiausia vienkartinƒó dozƒó mg',
-              'Maximum single dose mg',
-              number: true,
-            ),
-            field(
-              c,
-              doseMaxDailyMg,
-              'Did≈æiausia paros dozƒó mg',
-              'Maximum daily dose mg',
-              number: true,
-            ),
-            field(
-              c,
-              doseIntervalHours,
-              'Ma≈æiausias intervalas valandomis',
-              'Minimum interval in hours',
-              number: true,
-            ),
-            field(
-              c,
-              concentrationMgPerMl,
-              'Skysƒçio koncentracija mg/ml',
-              'Liquid concentration mg/ml',
-              number: true,
-            ),
-            field(
-              c,
-              unitStrengthMg,
-              'Vienos tabletƒós / vieneto stiprumas mg',
-              'Tablet / unit strength mg',
-              number: true,
-            ),
-            field(
-              c,
-              doseRuleSource,
-              'Oficialaus lapelio HTTPS nuoroda',
-              'Official leaflet HTTPS URL',
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: doseRuleVerified,
-              onChanged: (value) => setState(() => doseRuleVerified = value),
-              title: Text(
-                tx(
-                  c,
-                  'Taisyklƒó palyginta su oficialiu lapeliu',
-                  'Rule checked against official leaflet',
-                ),
-              ),
-            ),
-          ],
-        ),
-        field(c, warnings, 'Svarb≈´s ƒØspƒójimai', 'Important warnings', lines: 3),
-        field(
-          c,
-          sideEffects,
-          'Da≈ænesni ≈°alutiniai poveikiai',
-          'Common side effects',
-          lines: 3,
-        ),
-        field(
-          c,
-          interactions,
-          'SƒÖveikos su kitais vaistais',
-          'Interactions',
-          lines: 3,
-        ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: Text(tx(c, 'Receptinis vaistas', 'Prescription medicine')),
-          value: prescription,
-          onChanged: (value) => setState(() => prescription = value),
-        ),
-        Text(
-          tx(c, 'Galiojimo datos tikslumas', 'Expiry date precision'),
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        SegmentedButton<String>(
-          segments: [
-            ButtonSegment(
-              value: 'month',
-              label: Text(tx(c, 'Metai ir mƒónuo', 'Year and month')),
-            ),
-            ButtonSegment(
-              value: 'day',
-              label: Text(tx(c, 'Tiksli diena', 'Exact day')),
-            ),
-          ],
-          selected: {expiryMode},
-          onSelectionChanged: (v) {
-            setState(() {
-              expiryMode = v.first;
-              if (expiryMode == 'month' && expiry.text.length > 7) {
-                expiry.text = expiry.text.substring(0, 7);
-              }
-            });
-          },
-        ),
-        const SizedBox(height: 12),
-        dateField(
-          c,
-          expiry,
-          expiryMode == 'month'
-              ? 'Galioja iki YYYY-MM'
-              : 'Galioja iki YYYY-MM-DD',
-          expiryMode == 'month' ? 'Expires YYYY-MM' : 'Expires YYYY-MM-DD',
-          monthOnly: expiryMode == 'month',
-        ),
-        if (prescription)
-          dateField(
-            c,
-            prescriptionValidUntil,
-            'Receptas galioja iki YYYY-MM-DD',
-            'Prescription valid until YYYY-MM-DD',
-          ),
-        dateField(
-          c,
-          treatmentUntil,
-          'Vaisto turi u≈ætekti iki YYYY-MM-DD',
-          'Medicine should last until YYYY-MM-DD',
-        ),
-        field(c, stock, 'Kiekis', 'Quantity', number: true),
-        field(
-          c,
-          lowStockThreshold,
-          'Perspƒóti, kai lieka ma≈æiau nei',
-          'Warn when stock is below',
-          number: true,
-        ),
-        field(c, batchNumber, 'Partijos numeris', 'Batch number'),
-        field(c, barcode, 'Br≈´k≈°ninis kodas', 'Barcode', number: true),
-        field(c, storageLocation, 'Laikymo vieta', 'Storage location'),
-        field(c, leaflet, 'Informacinio lapelio nuoroda', 'Leaflet link'),
-        field(c, notes, 'Pastabos', 'Notes', lines: 3),
-        if (widget.sourceText.isNotEmpty)
-          ExpansionTile(
-            title: Text(tx(c, 'Atpa≈æintas tekstas', 'Recognized text')),
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: SelectableText(widget.sourceText),
-              ),
-            ],
-          ),
-        const SizedBox(height: 8),
-        FilledButton(
-          onPressed: () {
-            if (name.text.trim().isEmpty ||
-                !_validDate(expiry.text, monthOnly: expiryMode == 'month') ||
-                (prescriptionValidUntil.text.isNotEmpty &&
-                    DateTime.tryParse(prescriptionValidUntil.text) == null) ||
-                (treatmentUntil.text.isNotEmpty &&
-                    DateTime.tryParse(treatmentUntil.text) == null)) {
-              ScaffoldMessenger.of(c).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    tx(
-                      c,
-                      'Patikrink pavadinimƒÖ ir dat≈≥ formatƒÖ.',
-                      'Check the name and date formats.',
-                    ),
-                  ),
-                ),
-              );
-              return;
-            }
-            if (doseRuleVerified &&
-                (!isLeafletUrl(doseRuleSource.text) ||
-                    (doseMgPerKg.text.trim().isEmpty &&
-                        doseFixedMg.text.trim().isEmpty))) {
-              ScaffoldMessenger.of(c).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    tx(
-                      c,
-                      'Patvirtintai dozavimo taisyklei reikia oficialios HTTPS '
-                          'nuorodos ir mg/kg arba fiksuotos dozƒós.',
-                      'An approved dosing rule needs an official HTTPS source and '
-                          'either mg/kg or a fixed dose.',
-                    ),
-                  ),
-                ),
-              );
-              return;
-            }
-            final parsedStock =
-                double.tryParse(stock.text.trim().replaceAll(',', '.')) ?? 1;
-            final parsedThreshold =
-                double.tryParse(
-                  lowStockThreshold.text.trim().replaceAll(',', '.'),
-                ) ??
-                10;
-            final existing = widget.medicine;
-            final leafletRecord =
-                _leafletRecord?.identity.matches(
-                      LeafletIdentity(
-                        name.text,
-                        strength.text,
-                        dosageForm.text,
-                      ),
-                    ) ==
-                    true
-                ? _leafletRecord
-                : null;
-            if (existing == null) {
-              widget.data.meds.add(
-                Med(
-                  id: newId(),
-                  name: name.text.trim(),
-                  substance: sub.text.trim(),
-                  strength: strength.text.trim(),
-                  purpose: purpose.text.trim(),
-                  category: selectedCategories.isEmpty
-                      ? 'Kita'
-                      : selectedCategories.join('; '),
-                  expiry: expiry.text.trim(),
-                  prescriptionValidUntil: prescriptionValidUntil.text.trim(),
-                  treatmentUntil: treatmentUntil.text.trim(),
-                  stock: parsedStock,
-                  lowStockThreshold: parsedThreshold,
-                  prescription: prescription,
-                  leaflet: leaflet.text.trim(),
-                  imagePath: imagePath,
-                  manufacturer: manufacturer.text.trim(),
-                  dosageForm: dosageForm.text.trim(),
-                  packageSize: packageSize.text.trim(),
-                  dosage: dosage.text.trim(),
-                  warnings: warnings.text.trim(),
-                  sideEffects: sideEffects.text.trim(),
-                  interactions: interactions.text.trim(),
-                  doseMgPerKg: doseMgPerKg.text.trim(),
-                  doseFixedMg: doseFixedMg.text.trim(),
-                  doseMaxSingleMg: doseMaxSingleMg.text.trim(),
-                  doseMaxDailyMg: doseMaxDailyMg.text.trim(),
-                  doseIntervalHours: doseIntervalHours.text.trim(),
-                  concentrationMgPerMl: concentrationMgPerMl.text.trim(),
-                  unitStrengthMg: unitStrengthMg.text.trim(),
-                  doseRuleSource: doseRuleSource.text.trim(),
-                  doseRuleVerified: doseRuleVerified,
-                  atcCode: _registryMedicine?.atcCode ?? '',
-                  registrationNumber:
-                      _registryMedicine?.registrationNumber ?? '',
-                  supplyStatus: _registryMedicine?.supplyStatus ?? '',
-                  registryVerified: _registryMedicine != null,
-                  leafletRecord: leafletRecord,
-                  memberIds: selectedMemberIds.toList(),
-                  batchNumber: batchNumber.text.trim(),
-                  barcode: barcode.text.trim(),
-                  storageLocation: storageLocation.text.trim(),
-                  notes: notes.text.trim(),
-                ),
-              );
-            } else {
-              existing.memberIds = selectedMemberIds.toList();
-              existing
-                ..leafletRecord = leafletRecord
-                ..name = name.text.trim()
-                ..substance = sub.text.trim()
-                ..strength = strength.text.trim()
-                ..manufacturer = manufacturer.text.trim()
-                ..dosageForm = dosageForm.text.trim()
-                ..packageSize = packageSize.text.trim()
-                ..category = (selectedCategories.isEmpty
-                    ? 'Kita'
-                    : selectedCategories.join('; '))
-                ..purpose = purpose.text.trim()
-                ..dosage = dosage.text.trim()
-                ..warnings = warnings.text.trim()
-                ..sideEffects = sideEffects.text.trim()
-                ..interactions = interactions.text.trim()
-                ..doseMgPerKg = doseMgPerKg.text.trim()
-                ..doseFixedMg = doseFixedMg.text.trim()
-                ..doseMaxSingleMg = doseMaxSingleMg.text.trim()
-                ..doseMaxDailyMg = doseMaxDailyMg.text.trim()
-                ..doseIntervalHours = doseIntervalHours.text.trim()
-                ..concentrationMgPerMl = concentrationMgPerMl.text.trim()
-                ..unitStrengthMg = unitStrengthMg.text.trim()
-                ..doseRuleSource = doseRuleSource.text.trim()
-                ..doseRuleVerified = doseRuleVerified
-                ..atcCode = (_registryMedicine?.atcCode ?? existing.atcCode)
-                ..registrationNumber =
-                    (_registryMedicine?.registrationNumber ??
-                    existing.registrationNumber)
-                ..supplyStatus =
-                    (_registryMedicine?.supplyStatus ?? existing.supplyStatus)
-                ..registryVerified =
-                    (existing.registryVerified || _registryMedicine != null)
-                ..expiry = expiry.text.trim()
-                ..prescriptionValidUntil = prescriptionValidUntil.text.trim()
-                ..treatmentUntil = treatmentUntil.text.trim()
-                ..stock = parsedStock
-                ..lowStockThreshold = parsedThreshold
-                ..prescription = prescription
-                ..batchNumber = batchNumber.text.trim()
-                ..barcode = barcode.text.trim()
-                ..storageLocation = storageLocation.text.trim()
-                ..leaflet = leaflet.text.trim()
-                ..notes = notes.text.trim()
-                ..imagePath = imagePath;
-            }
-            widget.onChanged();
-            Navigator.pop(c);
-          },
-          child: Text(tx(c, 'I≈°saugoti', 'Save')),
-        ),
-      ],
-    ),
-  );
-}
-
-String _guessName(String source) {
-  if (source.trim().isEmpty) return '';
-  final lines = source
-      .split('\n')
-      .map((x) => x.trim())
-      .where((x) => x.length >= 3 && x.length <= 90 && !x.contains('http'))
-      .toList();
-  final dose = RegExp(
-    r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|¬µg|g|ml)\b',
-    caseSensitive: false,
-  );
-  final selected =
-      lines.where((x) => dose.hasMatch(x)).firstOrNull ??
-      lines.firstOrNull ??
-      '';
-  return selected.replaceAll(RegExp(r'\s+'), ' ').trim();
-}
-
-String _guessRegistryName(String source) {
-  final guessed = _guessName(source);
-  if (guessed.isEmpty) return '';
-  final strength = RegExp(
-    r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|¬µg|Œºg|g|ml)\b',
-    caseSensitive: false,
-  ).firstMatch(guessed);
-  final withoutStrength = strength == null
-      ? guessed
-      : guessed.substring(0, strength.start);
-  return withoutStrength
-      .replaceAll(RegExp(r'[^\p{L}\d -]', unicode: true), ' ')
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
-}
-
-String _registryTitleCase(String value) => value
-    .split(' ')
-    .map(
-      (word) => word.isEmpty
-          ? word
-          : '${word.substring(0, 1).toUpperCase()}${word.substring(1).toLowerCase()}',
-    )
-    .join(' ');
-
-String _guessStrength(String source) =>
-    RegExp(
-      r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|¬µg|g|ml)\b',
-      caseSensitive: false,
-    ).firstMatch(source)?.group(0) ??
-    '';
-
-String _guessPackageSize(String source) =>
-    RegExp(
-      r'\bN\s?\d+\b',
-      caseSensitive: false,
-    ).firstMatch(source)?.group(0)?.replaceAll(' ', '') ??
-    '';
-
-const defaultMedicineCategories = <String>{
-  'Skausmas ir kar≈°ƒçiavimas',
-  'Alergija',
-  'Vir≈°kinimas',
-  'Kvƒópavimo sistema',
-  '≈†irdis ir kraujotaka',
-  'Kraujas',
-  'Nerv≈≥ sistema',
-  'Infekcijos',
-  'Hormonai ir skydliaukƒó',
-  'Oda',
-  'Akys ir ausys',
-  'Vitaminai ir papildai',
-  'Kita',
-};
-
-Set<String> _splitCategories(String value) => value
-    .split(RegExp(r'[;,]'))
-    .map((x) => x.trim())
-    .where((x) => x.isNotEmpty)
-    .toSet();
-
-Set<String> _suggestMedicineCategories(String atcCode, String source) {
-  final result = <String>{};
-  final atc = atcCode.trim().toUpperCase();
-  if (atc.isNotEmpty) {
-    final byAtc = {
-      'A': 'Vir≈°kinimas',
-      'B': 'Kraujas',
-      'C': '≈†irdis ir kraujotaka',
-      'D': 'Oda',
-      'H': 'Hormonai ir skydliaukƒó',
-      'J': 'Infekcijos',
-      'M': 'Skausmas ir kar≈°ƒçiavimas',
-      'N': 'Nerv≈≥ sistema',
-      'R': 'Kvƒópavimo sistema',
-      'S': 'Akys ir ausys',
-    };
-    final category = byAtc[atc.substring(0, 1)];
-    if (category != null) result.add(category);
-  }
-  final text = source.toLowerCase();
-  if (RegExp(r'ibuprofen|paracetamol|skausm|kar≈°ƒçiav').hasMatch(text)) {
-    result.add('Skausmas ir kar≈°ƒçiavimas');
-  }
-  if (RegExp(r'loratadin|cetirizin|alerg').hasMatch(text)) {
-    result.add('Alergija');
-  }
-  if (RegExp(r'levotiroks|euthyrox|skydliauk').hasMatch(text)) {
-    result.add('Hormonai ir skydliaukƒó');
-  }
-  if (RegExp(r'vitamin|magn|papild').hasMatch(text)) {
-    result.add('Vitaminai ir papildai');
-  }
-  if (result.isEmpty) result.add('Kita');
-  return result;
-}
-
-class FamilyPage extends StatelessWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const FamilyPage({super.key, required this.data, required this.onChanged});
-  @override
-  Widget build(c) => ColoredBox(
-    color: const Color(0xfff6fbfa),
-    child: ListView(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
-      children: [
-        title(tx(c, 'Mano ≈°eima', 'My family')),
-        const SizedBox(height: 16),
-        if (data.members.isEmpty)
-          card(
-            Text(
-              tx(
-                c,
-                '≈†eimos nari≈≥ dar nƒóra. Pridƒók ≈æmog≈≥ ir pasirink, kas jis tau.',
-                'No family members yet. Add a person and choose their relationship.',
-              ),
-            ),
-          ),
-        if (data.members.any((m) => m.ageGroup != 'child')) ...[
-          _familyGroupTitle(c, 'Suaugusieji', 'Adults'),
-          ...data.members
-              .where((m) => m.ageGroup != 'child')
-              .map((m) => _familyMemberCard(c, data, m, onChanged)),
-        ],
-        if (data.members.any((m) => m.ageGroup == 'child')) ...[
-          const SizedBox(height: 8),
-          _familyGroupTitle(c, 'Vaikai', 'Children'),
-          ...data.members
-              .where((m) => m.ageGroup == 'child')
-              .map((m) => _familyMemberCard(c, data, m, onChanged)),
-        ],
-        const SizedBox(height: 8),
-        FilledButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => MemberEditor(data: data, onChanged: onChanged),
-            ),
-          ),
-          icon: const Icon(Icons.person_add),
-          label: Text(tx(c, 'Pridƒóti ≈°eimos narƒØ', 'Add family member')),
-        ),
-      ],
-    ),
-  );
-}
-
-Widget _familyGroupTitle(BuildContext c, String lt, String en) => Padding(
-  padding: const EdgeInsets.fromLTRB(4, 4, 4, 6),
-  child: Text(
-    tx(c, lt, en),
-    style: const TextStyle(
-      color: navy,
-      fontSize: 17,
-      height: 1.25,
-      fontFamily: 'sans-serif',
-      fontWeight: FontWeight.w700,
-      decoration: TextDecoration.none,
-    ),
-  ),
-);
-
-Widget _familyMemberCard(
-  BuildContext c,
-  AppData data,
-  Member member,
-  VoidCallback onChanged,
-) => Card(
-  child: ListTile(
-    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-    leading: _FamilyAvatar(
-      member: member,
-      fallbackIndex: data.members.indexOf(member),
-    ),
-    title: Text(
-      member.name,
-      style: const TextStyle(fontWeight: FontWeight.w700),
-    ),
-    subtitle: Text(relationName(c, member.relation)),
-    trailing: const Icon(Icons.chevron_right),
-    onTap: () => Navigator.push(
-      c,
-      MaterialPageRoute(
-        builder: (_) =>
-            MemberEditor(data: data, member: member, onChanged: onChanged),
-      ),
-    ),
-  ),
-);
-
-const relations = [
-  'self',
-  'child',
-  'partner',
-  'mother',
-  'father',
-  'sister',
-  'brother',
-  'grandparent',
-  'other',
-];
-String relationName(BuildContext c, String r) {
-  final lt = {
-    'self': 'A≈° pats / A≈° pati',
-    'child': 'Vaikas',
-    'partner': 'Partneris / partnerƒó',
-    'mother': 'Mama',
-    'father': 'Tƒótis',
-    'sister': 'Sesuo',
-    'brother': 'Brolis',
-    'grandparent': 'Senelis / moƒçiutƒó',
-    'other': 'Kitas asmuo',
-  };
-  final en = {
-    'self': 'Myself',
-    'child': 'Child',
-    'partner': 'Partner',
-    'mother': 'Mother',
-    'father': 'Father',
-    'sister': 'Sister',
-    'brother': 'Brother',
-    'grandparent': 'Grandparent',
-    'other': 'Other',
-  };
-  return Localizations.localeOf(c).languageCode == 'en'
-      ? (en[r] ?? r)
-      : (lt[r] ?? r);
-}
-
-class MemberEditor extends StatefulWidget {
-  final AppData data;
-  final Member? member;
-  final VoidCallback onChanged;
-  const MemberEditor({
-    super.key,
-    required this.data,
-    this.member,
-    required this.onChanged,
-  });
-  State<MemberEditor> createState() => _MemberEditor();
-}
-
-class _MemberEditor extends State<MemberEditor> {
-  late final name = TextEditingController(text: widget.member?.name ?? ''),
-      birth = TextEditingController(text: widget.member?.birthDate ?? ''),
-      bloodType = TextEditingController(text: widget.member?.bloodType ?? ''),
-      height = TextEditingController(text: widget.member?.height ?? ''),
-      weight = TextEditingController(text: widget.member?.weight ?? ''),
-      allergies = TextEditingController(text: widget.member?.allergies ?? ''),
-      conditions = TextEditingController(text: widget.member?.conditions ?? ''),
-      intolerantMedicines = TextEditingController(
-        text: widget.member?.intolerantMedicines ?? '',
-      ),
-      healthcareFacility = TextEditingController(
-        text: widget.member?.healthcareFacility ?? '',
-      ),
-      familyDoctor = TextEditingController(
-        text: widget.member?.familyDoctor ?? '',
-      ),
-      facilityPhone = TextEditingController(
-        text: widget.member?.facilityPhone ?? '',
-      ),
-      facilityAddress = TextEditingController(
-        text: widget.member?.facilityAddress ?? '',
-      ),
-      notes = TextEditingController(text: widget.member?.notes ?? '');
-  late String relation = widget.member?.relation ?? 'self';
-  late String gender = widget.member?.gender ?? 'unspecified';
-  late String ageGroup =
-      widget.member?.ageGroup ??
-      (widget.member?.relation == 'child' ? 'child' : 'adult');
-  late String imagePath = widget.member?.imagePath ?? '';
-  @override
-  void dispose() {
-    for (final x in [
-      name,
-      birth,
-      bloodType,
-      height,
-      weight,
-      allergies,
-      conditions,
-      intolerantMedicines,
-      healthcareFacility,
-      familyDoctor,
-      facilityPhone,
-      facilityAddress,
-      notes,
-    ]) {
-      x.dispose();
-    }
-    super.dispose();
-  }
-
-  Future<void> _pickMemberPhoto(ImageSource source) async {
-    final picked = await ImagePicker().pickImage(
-      source: source,
-      imageQuality: 82,
-      maxWidth: 1200,
-    );
-    if (picked == null) return;
-    final directory = await getApplicationDocumentsDirectory();
-    final extension = picked.path.contains('.')
-        ? picked.path.split('.').last
-        : 'jpg';
-    final id = widget.member?.id ?? newId();
-    final saved = await File(picked.path)
-        .copy('${directory.path}/member_$id.$extension');
-    if (mounted) setState(() => imagePath = saved.path);
-  }
-
-  @override
-  Widget build(c) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        widget.member == null
-            ? tx(c, 'Naujas ≈°eimos narys', 'New family member')
-            : tx(c, 'Redaguoti narƒØ', 'Edit member'),
-      ),
-      actions: [
-        if (widget.member != null)
-          IconButton(
-            onPressed: () async {
-              if (!await confirmDelete(c, widget.member!.name) || !c.mounted) {
-                return;
-              }
-              widget.data.members.removeWhere((x) => x.id == widget.member!.id);
-              widget.data.reminders.removeWhere(
-                (x) => x.memberId == widget.member!.id,
-              );
-              for (final medicine in widget.data.meds) {
-                medicine.memberIds.remove(widget.member!.id);
-              }
-              widget.onChanged();
-              Navigator.pop(c);
-            },
-            icon: const Icon(Icons.delete_outline),
-          ),
-      ],
-    ),
-    backgroundColor: const Color(0xfff6fbfa),
-    body: ListView(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        18,
-        18,
-        MediaQuery.paddingOf(c).bottom + 32,
-      ),
-      children: [
-        Center(
-          child: CircleAvatar(
-            radius: 54,
-            backgroundColor: mint,
-            backgroundImage: imagePath.isNotEmpty
-                ? FileImage(File(imagePath))
-                : null,
-            child: imagePath.isEmpty
-                ? Text(
-                    _memberEmoji(gender, ageGroup),
-                    style: const TextStyle(fontSize: 58),
-                  )
-                : null,
-          ),
-        ),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _pickMemberPhoto(ImageSource.camera),
-                icon: const Icon(Icons.photo_camera_outlined),
-                label: Text(tx(c, 'Fotografuoti', 'Take photo')),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => _pickMemberPhoto(ImageSource.gallery),
-                icon: const Icon(Icons.photo_library_outlined),
-                label: Text(tx(c, 'Galerija', 'Gallery')),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        field(c, name, 'Vardas', 'Name'),
-        Text(
-          tx(c, 'Am≈æiaus grupƒó', 'Age group'),
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        SegmentedButton<String>(
-          segments: [
-            ButtonSegment(
-              value: 'adult',
-              icon: const Icon(Icons.person_outline),
-              label: Text(tx(c, 'Suaugƒôs', 'Adult')),
-            ),
-            ButtonSegment(
-              value: 'child',
-              icon: const Icon(Icons.child_care_outlined),
-              label: Text(tx(c, 'Vaikas', 'Child')),
-            ),
-          ],
-          selected: {ageGroup},
-          onSelectionChanged: (values) =>
-              setState(() => ageGroup = values.first),
-        ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          initialValue: gender,
-          decoration: InputDecoration(labelText: tx(c, 'Lytis', 'Gender')),
-          items: [
-            DropdownMenuItem(
-              value: 'female',
-              child: Text(tx(c, 'Moteris / mergaitƒó', 'Female')),
-            ),
-            DropdownMenuItem(
-              value: 'male',
-              child: Text(tx(c, 'Vyras / berniukas', 'Male')),
-            ),
-            DropdownMenuItem(
-              value: 'unspecified',
-              child: Text(tx(c, 'Nenurodyta', 'Not specified')),
-            ),
-          ],
-          onChanged: (value) => setState(() => gender = value!),
-        ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          initialValue: relation,
-          decoration: InputDecoration(
-            labelText: tx(c, 'Kas jis / ji?', 'Relationship'),
-          ),
-          items: relations
-              .map(
-                (r) =>
-                    DropdownMenuItem(value: r, child: Text(relationName(c, r))),
-              )
-              .toList(),
-          onChanged: (v) => setState(() {
-            relation = v!;
-            if (relation == 'child') ageGroup = 'child';
-          }),
-        ),
-        const SizedBox(height: 12),
-        dateField(
-          c,
-          birth,
-          'Gimimo data YYYY-MM-DD',
-          'Date of birth YYYY-MM-DD',
-        ),
-        field(c, bloodType, 'Kraujo grupƒó', 'Blood type'),
-        Row(
-          children: [
-            Expanded(
-              child: field(c, height, '≈™gis (cm)', 'Height (cm)', number: true),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: field(
-                c,
-                weight,
-                'Svoris (kg)',
-                'Weight (kg)',
-                number: true,
-              ),
-            ),
-          ],
-        ),
-        field(c, allergies, 'Alergijos', 'Allergies', lines: 2),
-        field(
-          c,
-          conditions,
-          'Sveikatos b≈´klƒós',
-          'Medical conditions',
-          lines: 2,
-        ),
-        field(
-          c,
-          intolerantMedicines,
-          'Netoleruojami vaistai',
-          'Intolerant medicines',
-          lines: 2,
-        ),
-        const SizedBox(height: 4),
-        Text(
-          tx(c, 'Gydymo ƒØstaiga', 'Healthcare facility'),
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-        ),
-        const SizedBox(height: 10),
-        field(
-          c,
-          healthcareFacility,
-          'Gydymo ƒØstaigos pavadinimas',
-          'Facility name',
-        ),
-        field(c, familyDoctor, '≈†eimos gydytojas', 'Family doctor'),
-        field(c, facilityPhone, 'Gydymo ƒØstaigos telefonas', 'Facility phone'),
-        field(
-          c,
-          facilityAddress,
-          'Gydymo ƒØstaigos adresas',
-          'Facility address',
-        ),
-        field(c, notes, 'Pastabos', 'Notes', lines: 3),
-        if (widget.member != null) ...[
-          const SizedBox(height: 4),
-          Text(
-            tx(
-              c,
-              'Priskirti vaistai ir priminimai',
-              'Assigned medicines and reminders',
-            ),
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 8),
-          ...widget.data.meds
-              .where((m) => m.memberIds.contains(widget.member!.id))
-              .map(
-                (m) => ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.medication_outlined, color: green),
-                  title: Text('${m.name} ${m.strength}'.trim()),
-                ),
-              ),
-          ...widget.data.reminders
-              .where((r) => r.memberId == widget.member!.id)
-              .map(
-                (r) => ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.alarm_outlined, color: green),
-                  title: Text(r.title),
-                  subtitle: Text(r.time),
-                ),
-              ),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    await Navigator.push(
-                      c,
-                      MaterialPageRoute(
-                        builder: (_) => MedicineEditor(
-                          data: widget.data,
-                          initialMemberId: widget.member!.id,
-                          onChanged: widget.onChanged,
-                        ),
-                      ),
-                    );
-                    if (mounted) setState(() {});
-                  },
-                  icon: const Icon(Icons.medication_outlined),
-                  label: Text(tx(c, 'Pridƒóti vaistƒÖ', 'Add medicine')),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    await Navigator.push(
-                      c,
-                      MaterialPageRoute(
-                        builder: (_) => ReminderEditor(
-                          data: widget.data,
-                          initialMemberId: widget.member!.id,
-                          onChanged: widget.onChanged,
-                        ),
-                      ),
-                    );
-                    if (mounted) setState(() {});
-                  },
-                  icon: const Icon(Icons.add_alarm_outlined),
-                  label: Text(tx(c, 'Priminimas', 'Reminder')),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-        ],
-        FilledButton(
-          onPressed: () {
-            if (name.text.trim().isEmpty) return;
-            final m =
-                widget.member ??
-                Member(id: newId(), name: '', relation: relation);
-            m.name = name.text.trim();
-            m.relation = relation;
-            m.gender = gender;
-            m.ageGroup = ageGroup;
-            m.birthDate = birth.text.trim();
-            m.imagePath = imagePath;
-            m.bloodType = bloodType.text.trim();
-            m.height = height.text.trim();
-            m.weight = weight.text.trim();
-            m.allergies = allergies.text.trim();
-            m.conditions = conditions.text.trim();
-            m.intolerantMedicines = intolerantMedicines.text.trim();
-            m.healthcareFacility = healthcareFacility.text.trim();
-            m.familyDoctor = familyDoctor.text.trim();
-            m.facilityPhone = facilityPhone.text.trim();
-            m.facilityAddress = facilityAddress.text.trim();
-            m.notes = notes.text.trim();
-            if (relation == 'self') {
-              final duplicate = widget.data.members.any(
-                (x) => x.relation == 'self' && x.id != m.id,
-              );
-              if (duplicate) {
-                ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      tx(
-                        c,
-                        'Asmuo ‚ÄûA≈° pats / A≈° pati‚Äú jau yra pridƒótas.',
-                        'A ‚ÄúMyself‚Äù member already exists.',
-                      ),
-                    ),
-                  ),
-                );
-                return;
-              }
-              widget.data.profile.name = m.name;
-              widget.data.profile.birthDate = m.birthDate;
-              widget.data.profile.allergies = m.allergies;
-              widget.data.profile.conditions = m.conditions;
-              widget.data.profile.notes = m.notes;
-            }
-            if (widget.member == null) widget.data.members.add(m);
-            widget.onChanged();
-            Navigator.pop(c);
-          },
-          child: Text(tx(c, 'I≈°saugoti', 'Save')),
-        ),
-      ],
-    ),
-  );
-}
-
-class HealthCalendarPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const HealthCalendarPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
-  @override
-  State<HealthCalendarPage> createState() => _HealthCalendarPageState();
-}
-
-class _HealthCalendarPageState extends State<HealthCalendarPage> {
-  DateTime selectedDay = DateTime.now();
-  String memberId = '';
-
-  @override
-  Widget build(BuildContext context) {
-    final key = dateKey(selectedDay);
-    final doses =
-        widget.data.reminders
-            .where(
-              (item) =>
-                  reminderAppliesOn(item, selectedDay) &&
-                  (memberId.isEmpty || item.memberId == memberId),
-            )
-            .toList()
-          ..sort((a, b) => a.time.compareTo(b.time));
-    final appointments =
-        widget.data.appointments
-            .where(
-              (item) =>
-                  item.date == key &&
-                  (memberId.isEmpty || item.memberId == memberId),
-            )
-            .toList()
-          ..sort((a, b) => a.time.compareTo(b.time));
-    final medicineDeadlines = <(Med, String, String)>[];
-    for (final medicine in widget.data.meds) {
-      if (memberId.isNotEmpty &&
-          medicine.memberIds.isNotEmpty &&
-          !medicine.memberIds.contains(memberId))
-        continue;
-      if (medicine.prescriptionValidUntil == key) {
-        medicineDeadlines.add((
-          medicine,
-          'receptas',
-          tx(context, 'Baigiasi recepto galiojimas', 'Prescription expires'),
-        ));
-      }
-      if (medicine.treatmentUntil == key) {
-        medicineDeadlines.add((
-          medicine,
-          'gydymas',
-          tx(
-            context,
-            'Vaisto turi u≈ætekti iki ≈°ios dienos',
-            'Medicine should last until this day',
-          ),
-        ));
-      }
-    }
-    final days = List.generate(7, (index) {
-      final now = DateTime.now();
-      return DateTime(now.year, now.month, now.day + index - 2);
-    });
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: title(
-                tx(context, '≈†eimos kalendorius', 'Family calendar'),
-              ),
-            ),
-            IconButton(
-              tooltip: tx(context, 'Pasirinkti datƒÖ', 'Choose date'),
-              onPressed: () async {
-                final value = await showDatePicker(
-                  context: context,
-                  initialDate: selectedDay,
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2100),
-                );
-                if (value != null) setState(() => selectedDay = value);
-              },
-              icon: const Icon(Icons.date_range_outlined),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        if (widget.data.members.isNotEmpty)
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                ChoiceChip(
-                  label: Text(tx(context, 'Visa ≈°eima', 'Whole family')),
-                  selected: memberId.isEmpty,
-                  onSelected: (_) => setState(() => memberId = ''),
-                ),
-                const SizedBox(width: 7),
-                ...widget.data.members.map(
-                  (member) => Padding(
-                    padding: const EdgeInsets.only(right: 7),
-                    child: ChoiceChip(
-                      avatar: Text(
-                        _memberEmoji(member.gender, member.ageGroup),
-                      ),
-                      label: Text(member.name),
-                      selected: memberId == member.id,
-                      onSelected: (_) => setState(() => memberId = member.id),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: 78,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: days.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 7),
-            itemBuilder: (context, index) {
-              final day = days[index];
-              final selected = dateKey(day) == key;
-              return ChoiceChip(
-                selected: selected,
-                onSelected: (_) => setState(() => selectedDay = day),
-                label: SizedBox(
-                  width: 47,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        DateFormat(
-                          'E',
-                          Localizations.localeOf(context).languageCode,
-                        ).format(day),
-                      ),
-                      Text(
-                        '${day.day}',
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        Text(
-          DateFormat('yyyy-MM-dd').format(selectedDay),
-          style: const TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w800,
-            color: navy,
-          ),
-        ),
-        const SizedBox(height: 8),
-        if (doses.isEmpty && appointments.isEmpty && medicineDeadlines.isEmpty)
-          card(
-            Text(
-              tx(
-                context,
-                '≈†iai dienai ƒØvyki≈≥ nƒóra.',
-                'No events for this day.',
-              ),
-            ),
-          ),
-        ...medicineDeadlines.map(
-          (entry) => Card(
-            color: const Color(0xfffff3df),
-            child: ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: Colors.white,
-                child: Icon(
-                  Icons.event_busy_outlined,
-                  color: Color(0xffff9f1c),
-                ),
-              ),
-              title: Text(
-                '${entry.$1.name} ${entry.$1.strength}',
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text(
-                '${entry.$3}\n${tx(context, 'Paspauskite suplanuoti vizitƒÖ pas gydytojƒÖ.', 'Tap to schedule a doctor appointment.')}',
-              ),
-              isThreeLine: true,
-              trailing: const Icon(Icons.add_circle_outline),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => AppointmentEditor(
-                    data: widget.data,
-                    initialDate: key,
-                    initialMemberId: memberId.isNotEmpty
-                        ? memberId
-                        : entry.$1.memberIds.firstOrNull ?? '',
-                    initialTitle: tx(
-                      context,
-                      'Vizitas dƒól recepto',
-                      'Prescription appointment',
-                    ),
-                    initialReason:
-                        '${entry.$1.name} ${entry.$1.strength}: ${entry.$3}',
-                    onChanged: widget.onChanged,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-        ...appointments.map(
-          (item) => Card(
-            child: ListTile(
-              leading: const CircleAvatar(
-                backgroundColor: mint,
-                child: Icon(Icons.medical_services_outlined, color: green),
-              ),
-              title: Text(
-                '${item.time} ‚Ä¢ ${item.title}',
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: Text(
-                [
-                  _memberName(widget.data, item.memberId),
-                  item.doctor,
-                  item.facility,
-                ].where((x) => x.isNotEmpty).join(' ‚Ä¢ '),
-              ),
-              trailing: Icon(
-                item.completed ? Icons.check_circle : Icons.chevron_right,
-                color: item.completed ? green : null,
-              ),
-              onTap: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => AppointmentEditor(
-                      data: widget.data,
-                      appointment: item,
-                      onChanged: widget.onChanged,
-                    ),
-                  ),
-                );
-                setState(() {});
-              },
-            ),
-          ),
-        ),
-        ...doses.map(
-          (item) => Card(
-            child: ListTile(
-              leading: Icon(
-                item.takenDates.contains(key)
-                    ? Icons.check_circle
-                    : Icons.medication_outlined,
-                color: item.takenDates.contains(key)
-                    ? green
-                    : const Color(0xffff9f1c),
-              ),
-              title: Text(
-                '${item.time} ‚Ä¢ ${item.title}',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(_who(widget.data, item, tx(context, 'A≈°', 'Me'))),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ReminderEditor(
-                    data: widget.data,
-                    reminder: item,
-                    onChanged: widget.onChanged,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        FilledButton.icon(
-          onPressed: () async {
-            await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => AppointmentEditor(
-                  data: widget.data,
-                  initialDate: key,
-                  initialMemberId: memberId,
-                  onChanged: widget.onChanged,
-                ),
-              ),
-            );
-            setState(() {});
-          },
-          icon: const Icon(Icons.add),
-          label: Text(tx(context, 'Planuoti vizitƒÖ', 'Schedule appointment')),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          onPressed: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ReminderRoutePage(
-                data: widget.data,
-                onChanged: widget.onChanged,
-              ),
-            ),
-          ),
-          icon: const Icon(Icons.notifications_outlined),
-          label: Text(
-            tx(
-              context,
-              'Tvarkyti vaist≈≥ priminimus',
-              'Manage medicine reminders',
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-String _memberName(AppData data, String id) =>
-    data.members
-        .where((member) => member.id == id)
-        .map((member) => member.name)
-        .firstOrNull ??
-    '';
-
-class AppointmentEditor extends StatefulWidget {
-  final AppData data;
-  final HealthAppointment? appointment;
-  final String initialDate, initialMemberId, initialTitle, initialReason;
-  final VoidCallback onChanged;
-  const AppointmentEditor({
-    super.key,
-    required this.data,
-    this.appointment,
-    this.initialDate = '',
-    this.initialMemberId = '',
-    this.initialTitle = '',
-    this.initialReason = '',
-    required this.onChanged,
-  });
-  @override
-  State<AppointmentEditor> createState() => _AppointmentEditorState();
-}
-
-class _AppointmentEditorState extends State<AppointmentEditor> {
-  late final titleC = TextEditingController(
-        text: widget.appointment?.title ?? widget.initialTitle,
-      ),
-      doctor = TextEditingController(text: widget.appointment?.doctor ?? ''),
-      facility = TextEditingController(
-        text: widget.appointment?.facility ?? '',
-      ),
-      address = TextEditingController(text: widget.appointment?.address ?? ''),
-      date = TextEditingController(
-        text: widget.appointment?.date ?? widget.initialDate,
-      ),
-      reason = TextEditingController(
-        text: widget.appointment?.reason ?? widget.initialReason,
-      ),
-      notes = TextEditingController(text: widget.appointment?.notes ?? '');
-  late String time = widget.appointment?.time ?? '09:00';
-  late String memberId = widget.appointment?.memberId ?? widget.initialMemberId;
-  late int remindBefore = widget.appointment?.remindBeforeMinutes ?? 1440;
-  late bool completed = widget.appointment?.completed ?? false;
-
-  @override
-  void dispose() {
-    for (final item in [
-      titleC,
-      doctor,
-      facility,
-      address,
-      date,
-      reason,
-      notes,
-    ]) {
-      item.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        widget.appointment == null
-            ? tx(context, 'Naujas vizitas', 'New appointment')
-            : tx(context, 'Redaguoti vizitƒÖ', 'Edit appointment'),
-      ),
-      actions: [
-        if (widget.appointment != null)
-          IconButton(
-            onPressed: () async {
-              if (!await confirmDelete(context, widget.appointment!.title) ||
-                  !context.mounted)
-                return;
-              widget.data.appointments.remove(widget.appointment);
-              widget.onChanged();
-              Navigator.pop(context);
-            },
-            icon: const Icon(Icons.delete_outline),
-          ),
-      ],
-    ),
-    body: ListView(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        18,
-        18,
-        MediaQuery.paddingOf(context).bottom + 30,
-      ),
-      children: [
-        field(
-          context,
-          titleC,
-          'Vizitas / specialistas',
-          'Appointment / specialist',
-        ),
-        if (widget.data.members.isNotEmpty)
-          DropdownButtonFormField<String>(
-            initialValue: widget.data.members.any((x) => x.id == memberId)
-                ? memberId
-                : null,
-            decoration: InputDecoration(
-              labelText: tx(context, '≈†eimos narys', 'Family member'),
-            ),
-            items: widget.data.members
-                .map(
-                  (member) => DropdownMenuItem(
-                    value: member.id,
-                    child: Text(
-                      '${_memberEmoji(member.gender, member.ageGroup)} ${member.name}',
-                    ),
-                  ),
-                )
-                .toList(),
-            onChanged: (value) => setState(() => memberId = value ?? ''),
-          ),
-        const SizedBox(height: 12),
-        field(context, doctor, 'Gydytojas', 'Doctor'),
-        field(context, facility, 'Gydymo ƒØstaiga', 'Healthcare facility'),
-        field(context, address, 'Adresas / kabinetas', 'Address / room'),
-        dateField(
-          context,
-          date,
-          'Vizito data YYYY-MM-DD',
-          'Appointment date YYYY-MM-DD',
-        ),
-        ListTile(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: const BorderSide(color: Color(0xff808b89)),
-          ),
-          leading: const Icon(Icons.schedule),
-          title: Text('${tx(context, 'Laikas', 'Time')}: $time'),
-          onTap: () async {
-            final parts = time.split(':');
-            final value = await showTimePicker(
-              context: context,
-              initialTime: TimeOfDay(
-                hour: int.parse(parts[0]),
-                minute: int.parse(parts[1]),
-              ),
-            );
-            if (value != null)
-              setState(
-                () => time =
-                    '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}',
-              );
-          },
-        ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<int>(
-          initialValue: remindBefore,
-          decoration: InputDecoration(
-            labelText: tx(context, 'Priminti prie≈°', 'Remind before'),
-          ),
-          items: [
-            DropdownMenuItem(
-              value: 60,
-              child: Text(tx(context, '1 valandƒÖ', '1 hour')),
-            ),
-            DropdownMenuItem(
-              value: 180,
-              child: Text(tx(context, '3 valandas', '3 hours')),
-            ),
-            DropdownMenuItem(
-              value: 1440,
-              child: Text(tx(context, '1 dienƒÖ', '1 day')),
-            ),
-            DropdownMenuItem(
-              value: 2880,
-              child: Text(tx(context, '2 dienas', '2 days')),
-            ),
-            DropdownMenuItem(
-              value: 10080,
-              child: Text(tx(context, '1 savaitƒô', '1 week')),
-            ),
-          ],
-          onChanged: (value) => setState(() => remindBefore = value ?? 1440),
-        ),
-        const SizedBox(height: 12),
-        field(context, reason, 'Vizito prie≈æastis', 'Reason', lines: 2),
-        field(
-          context,
-          notes,
-          'KƒÖ pasiimti / pastabos',
-          'What to bring / notes',
-          lines: 3,
-        ),
-        if (widget.appointment != null)
-          SwitchListTile(
-            value: completed,
-            title: Text(tx(context, 'Vizitas ƒØvyko', 'Appointment completed')),
-            onChanged: (value) => setState(() => completed = value),
-          ),
-        FilledButton(
-          onPressed: () {
-            if (titleC.text.trim().isEmpty ||
-                DateTime.tryParse(date.text) == null) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    tx(
-                      context,
-                      'ƒÆveskite vizitƒÖ ir teisingƒÖ datƒÖ.',
-                      'Enter an appointment and valid date.',
-                    ),
-                  ),
-                ),
-              );
-              return;
-            }
-            final item =
-                widget.appointment ??
-                HealthAppointment(
-                  id: newId(),
-                  title: titleC.text.trim(),
-                  date: date.text,
-                  time: time,
-                );
-            item
-              ..memberId = memberId
-              ..title = titleC.text.trim()
-              ..doctor = doctor.text.trim()
-              ..facility = facility.text.trim()
-              ..address = address.text.trim()
-              ..date = date.text.trim()
-              ..time = time
-              ..reason = reason.text.trim()
-              ..notes = notes.text.trim()
-              ..remindBeforeMinutes = remindBefore
-              ..completed = completed;
-            if (widget.appointment == null) widget.data.appointments.add(item);
-            ReminderNotifications.requestPermissions();
-            widget.onChanged();
-            Navigator.pop(context);
-          },
-          child: Text(tx(context, 'I≈°saugoti vizitƒÖ', 'Save appointment')),
-        ),
-      ],
-    ),
-  );
-}
-
-class RemindersPage extends StatelessWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  final bool showTitle;
-  const RemindersPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-    this.showTitle = true,
-  });
-  @override
-  Widget build(c) {
-    final rs = [...data.reminders]..sort((a, b) => a.time.compareTo(b.time));
-    return ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        if (showTitle) ...[
-          title(tx(c, 'Priminimai', 'Reminders')),
-          const SizedBox(height: 10),
-        ],
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  await ReminderNotifications.requestPermissions();
-                  await ReminderNotifications.scheduleAll(data);
-                  await ReminderNotifications.showTest();
-                },
-                icon: const Icon(Icons.notifications_active_outlined),
-                label: Text(
-                  tx(c, 'Patikrinti prane≈°imus', 'Test notifications'),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              tooltip: tx(c, 'Vartojimo istorija', 'Dose history'),
-              onPressed: () => Navigator.push(
-                c,
-                MaterialPageRoute(
-                  builder: (_) =>
-                      DoseHistoryPage(data: data, onChanged: onChanged),
-                ),
-              ),
-              icon: const Icon(Icons.history),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        if (rs.isEmpty)
-          card(
-            Text(
-              tx(
-                c,
-                'Priminim≈≥ nƒóra. Sukurk pirmƒÖjƒØ ir pasirink vaistƒÖ, ≈æmog≈≥, laikƒÖ bei dienas.',
-                'No reminders yet. Add one and choose medicine, person, time, and days.',
-              ),
-            ),
-          ),
-        ...rs.map(
-          (r) => Card(
-            child: ListTile(
-              leading: Switch(
-                value: r.enabled,
-                onChanged: (v) {
-                  r.enabled = v;
-                  onChanged();
-                },
-              ),
-              title: Text('${r.time} ‚Ä¢ ${r.title}'),
-              subtitle: Text(
-                '${_who(data, r, tx(c, 'A≈°', 'Me'))}${r.dose.isEmpty ? '' : ' ‚Ä¢ ${r.dose}'}\n${daysLabel(c, r.weekdays)}',
-              ),
-              isThreeLine: true,
-              trailing: const Icon(Icons.edit_outlined),
-              onTap: () => Navigator.push(
-                c,
-                MaterialPageRoute(
-                  builder: (_) => ReminderEditor(
-                    data: data,
-                    reminder: r,
-                    onChanged: onChanged,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-        FilledButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => ReminderEditor(data: data, onChanged: onChanged),
-            ),
-          ),
-          icon: const Icon(Icons.add_alarm),
-          label: Text(tx(c, 'Pridƒóti priminimƒÖ', 'Add reminder')),
-        ),
-      ],
-    );
-  }
-}
-
-class ReminderRoutePage extends StatelessWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const ReminderRoutePage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: const Color(0xfff6fbfa),
-    appBar: AppBar(
-      title: Text(tx(context, 'Priminimai', 'Reminders')),
-      backgroundColor: const Color(0xfff6fbfa),
-    ),
-    body: SafeArea(
-      top: false,
-      child: RemindersPage(data: data, onChanged: onChanged, showTitle: false),
-    ),
-  );
-}
-
-String daysLabel(BuildContext c, List<int> d) {
-  if (d.length == 7) return tx(c, 'Kasdien', 'Every day');
-  const lt = ['Pr', 'An', 'Tr', 'Kt', 'Pn', '≈†t', 'Sk'],
-      en = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  final a = Localizations.localeOf(c).languageCode == 'en' ? en : lt;
-  return d.map((x) => a[x - 1]).join(', ');
-}
-
-class ReminderEditor extends StatefulWidget {
-  final AppData data;
-  final Reminder? reminder;
-  final String initialMemberId;
-  final String initialMedId;
-  final VoidCallback onChanged;
-  const ReminderEditor({
-    super.key,
-    required this.data,
-    this.reminder,
-    this.initialMemberId = '',
-    this.initialMedId = '',
-    required this.onChanged,
-  });
-  State<ReminderEditor> createState() => _ReminderEditor();
-}
-
-class _ReminderEditor extends State<ReminderEditor> {
-  late final titleC = TextEditingController(text: widget.reminder?.title ?? ''),
-      dose = TextEditingController(text: widget.reminder?.dose ?? ''),
-      quantity = TextEditingController(
-        text: '${widget.reminder?.quantityPerDose ?? 1}',
-      ),
-      startDate = TextEditingController(
-        text: widget.reminder?.startDate ?? dateKey(),
-      ),
-      endDate = TextEditingController(text: widget.reminder?.endDate ?? ''),
-      instructions = TextEditingController(
-        text: widget.reminder?.instructions ?? '',
-      );
-  late String medId = widget.reminder?.medId ?? widget.initialMedId,
-      memberId = widget.reminder?.memberId ?? widget.initialMemberId,
-      time = widget.reminder?.time ?? '08:00';
-  late String doseUnit = widget.reminder?.doseUnit ?? 'vnt.';
-  late List<int> days = [
-    ...(widget.reminder?.weekdays ?? [1, 2, 3, 4, 5, 6, 7]),
-  ];
-  late bool enabled = widget.reminder?.enabled ?? true;
-  @override
-  void dispose() {
-    titleC.dispose();
-    dose.dispose();
-    quantity.dispose();
-    startDate.dispose();
-    endDate.dispose();
-    instructions.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(c) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        widget.reminder == null
-            ? tx(c, 'Naujas priminimas', 'New reminder')
-            : tx(c, 'Redaguoti priminimƒÖ', 'Edit reminder'),
-      ),
-      actions: [
-        if (widget.reminder != null)
-          IconButton(
-            onPressed: () {
-              widget.data.reminders.removeWhere(
-                (x) => x.id == widget.reminder!.id,
-              );
-              widget.onChanged();
-              Navigator.pop(c);
-            },
-            icon: const Icon(Icons.delete_outline),
-          ),
-      ],
-    ),
-    body: ListView(
-      padding: EdgeInsets.fromLTRB(
-        18,
-        18,
-        18,
-        MediaQuery.paddingOf(c).bottom + 36,
-      ),
-      children: [
-        field(c, titleC, 'Pavadinimas', 'Title'),
-        DropdownButtonFormField<String>(
-          initialValue: medId,
-          decoration: InputDecoration(
-            labelText: tx(c, 'Vaistas (neb≈´tina)', 'Medicine (optional)'),
-          ),
-          items: [
-            DropdownMenuItem(
-              value: '',
-              child: Text(tx(c, 'Nepasirinkta', 'None')),
-            ),
-            ...widget.data.meds.map(
-              (m) => DropdownMenuItem(
-                value: m.id,
-                child: Text('${m.name} ${m.strength}'),
-              ),
-            ),
-          ],
-          onChanged: (v) {
-            setState(() => medId = v!);
-            if (medId.isNotEmpty) {
-              final medicine = widget.data.meds.firstWhere(
-                (x) => x.id == medId,
-              );
-              if (titleC.text.isEmpty) titleC.text = medicine.name;
-              if (endDate.text.isEmpty && medicine.treatmentUntil.isNotEmpty) {
-                endDate.text = medicine.treatmentUntil;
-              }
-            }
-          },
-        ),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          initialValue: memberId,
-          decoration: InputDecoration(labelText: tx(c, 'Kam', 'For whom')),
-          items: [
-            DropdownMenuItem(value: '', child: Text(tx(c, 'Man', 'Me'))),
-            ...widget.data.members.map(
-              (m) => DropdownMenuItem(value: m.id, child: Text(m.name)),
-            ),
-          ],
-          onChanged: (v) => setState(() => memberId = v!),
-        ),
-        const SizedBox(height: 12),
-        ListTile(
-          tileColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: const BorderSide(color: Colors.grey),
-          ),
-          leading: const Icon(Icons.schedule),
-          title: Text(tx(c, 'Laikas', 'Time')),
-          trailing: Text(
-            time,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          onTap: () async {
-            final p = time.split(':');
-            final t = await showTimePicker(
-              context: c,
-              initialTime: TimeOfDay(
-                hour: int.parse(p[0]),
-                minute: int.parse(p[1]),
-              ),
-            );
-            if (t != null)
-              setState(
-                () => time =
-                    '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}',
-              );
-          },
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: dateField(
-                c,
-                startDate,
-                'Prad≈æios data YYYY-MM-DD',
-                'Start date YYYY-MM-DD',
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: dateField(
-                c,
-                endDate,
-                'Pabaigos data (neb≈´tina)',
-                'End date (optional)',
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          tx(c, 'Savaitƒós dienos', 'Weekdays'),
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        Wrap(
-          spacing: 6,
-          children: List.generate(
-            7,
-            (i) => FilterChip(
-              label: Text(daysLabel(c, [i + 1])),
-              selected: days.contains(i + 1),
-              onSelected: (v) => setState(() {
-                if (v) {
-                  days.add(i + 1);
-                  days.sort();
-                } else {
-                  days.remove(i + 1);
-                }
-              }),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        field(c, dose, 'Dozƒós apra≈°ymas', 'Dose description'),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: quantity,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                decoration: InputDecoration(
-                  labelText: tx(c, 'Kiekis vienai dozei', 'Amount per dose'),
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: doseUnit,
-                decoration: InputDecoration(
-                  labelText: tx(c, 'Vienetas', 'Unit'),
-                ),
-                items: const ['vnt.', 'tabletƒó', 'kapsulƒó', 'ml', 'dozƒó']
-                    .map((x) => DropdownMenuItem(value: x, child: Text(x)))
-                    .toList(),
-                onChanged: (value) => setState(() => doseUnit = value!),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        field(
-          c,
-          instructions,
-          'Instrukcija (pvz., po valgio)',
-          'Instructions (e.g. after food)',
-          lines: 2,
-        ),
-        SwitchListTile(
-          value: enabled,
-          onChanged: (v) => setState(() => enabled = v),
-          title: Text(tx(c, 'Priminimas ƒØjungtas', 'Reminder enabled')),
-        ),
-        FilledButton(
-          onPressed: () async {
-            final amount = double.tryParse(
-              quantity.text.trim().replaceAll(',', '.'),
-            );
-            final start = DateTime.tryParse(startDate.text);
-            final end = DateTime.tryParse(endDate.text);
-            if (titleC.text.trim().isEmpty ||
-                days.isEmpty ||
-                amount == null ||
-                amount <= 0 ||
-                (startDate.text.isNotEmpty && start == null) ||
-                (endDate.text.isNotEmpty && end == null) ||
-                (start != null && end != null && end.isBefore(start))) {
-              ScaffoldMessenger.of(c).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    tx(
-                      c,
-                      'Patikrink pavadinimƒÖ, datas, kiekƒØ ir pasirink bent vienƒÖ dienƒÖ.',
-                      'Check the title, dates, amount and select at least one day.',
-                    ),
-                  ),
-                ),
-              );
-              return;
-            }
-            final r =
-                widget.reminder ?? Reminder(id: newId(), title: '', time: time);
-            r.title = titleC.text.trim();
-            r.medId = medId;
-            r.memberId = memberId;
-            r.time = time;
-            r.dose = dose.text.trim();
-            r.doseUnit = doseUnit;
-            r.quantityPerDose = amount;
-            r.instructions = instructions.text.trim();
-            r.startDate = startDate.text.trim();
-            r.endDate = endDate.text.trim();
-            r.weekdays = [...days];
-            r.enabled = enabled;
-            if (widget.reminder == null) widget.data.reminders.add(r);
-            await ReminderNotifications.requestPermissions();
-            widget.onChanged();
-            await ReminderNotifications.scheduleAll(widget.data);
-            if (!c.mounted) return;
-            Navigator.pop(c);
-          },
-          child: Text(tx(c, 'I≈°saugoti', 'Save')),
-        ),
-      ],
-    ),
-  );
-}
-
-Widget _profileToolTile(
-  BuildContext c,
-  IconData icon,
-  String lt,
-  String en,
-  VoidCallback onTap,
-) => Card(
-  child: ListTile(
-    leading: CircleAvatar(
-      backgroundColor: mint,
-      child: Icon(icon, color: green),
-    ),
-    title: Text(
-      tx(c, lt, en),
-      style: const TextStyle(fontWeight: FontWeight.w700),
-    ),
-    trailing: const Icon(Icons.chevron_right_rounded),
-    onTap: onTap,
-  ),
-);
-
-class DoseHistoryPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const DoseHistoryPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
-  @override
-  State<DoseHistoryPage> createState() => _DoseHistoryPageState();
-}
-
-class _DoseHistoryPageState extends State<DoseHistoryPage> {
-  String memberId = '';
-  String medicineId = '';
-  int periodDays = 30;
-
-  @override
-  Widget build(BuildContext c) {
-    final now = DateTime.now();
-    final entries = <(DateTime, Reminder, DoseStatus)>[];
-    for (var offset = 0; offset < periodDays; offset++) {
-      final day = DateTime(now.year, now.month, now.day - offset);
-      for (final reminder in widget.data.reminders) {
-        if (memberId.isNotEmpty && reminder.memberId != memberId) continue;
-        if (medicineId.isNotEmpty && reminder.medId != medicineId) continue;
-        if (!reminderAppliesOn(reminder, day)) continue;
-        final key = dateKey(day);
-        final status = reminder.takenDates.contains(key)
-            ? DoseStatus.taken
-            : reminder.skippedDates.contains(key)
-            ? DoseStatus.skipped
-            : day.isBefore(DateTime(now.year, now.month, now.day))
-            ? DoseStatus.missed
-            : reminderStatus(reminder, now);
-        entries.add((day, reminder, status));
-      }
-    }
-    final taken = entries.where((entry) => entry.$3 == DoseStatus.taken).length;
-    final completed = entries
-        .where(
-          (entry) =>
-              entry.$3 == DoseStatus.taken ||
-              entry.$3 == DoseStatus.skipped ||
-              entry.$3 == DoseStatus.missed,
-        )
-        .length;
-    final percent = completed == 0 ? 0 : (taken * 100 / completed).round();
-    return Scaffold(
-      appBar: AppBar(title: Text(tx(c, 'Vartojimo istorija', 'Dose history'))),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          DropdownButtonFormField<int>(
-            initialValue: periodDays,
-            decoration: InputDecoration(
-              labelText: tx(c, 'Laikotarpis', 'Period'),
-            ),
-            items: [7, 30, 90]
-                .map(
-                  (days) => DropdownMenuItem(
-                    value: days,
-                    child: Text(tx(c, '$days dien≈≥', '$days days')),
-                  ),
-                )
-                .toList(),
-            onChanged: (value) => setState(() => periodDays = value ?? 30),
-          ),
-          const SizedBox(height: 8),
-          if (widget.data.members.isNotEmpty)
-            DropdownButtonFormField<String>(
-              initialValue: memberId,
-              decoration: InputDecoration(
-                labelText: tx(c, '≈†eimos narys', 'Family member'),
-              ),
-              items: [
-                DropdownMenuItem(
-                  value: '',
-                  child: Text(tx(c, 'Visa ≈°eima', 'Whole family')),
-                ),
-                ...widget.data.members.map(
-                  (member) => DropdownMenuItem(
-                    value: member.id,
-                    child: Text(member.name),
-                  ),
-                ),
-              ],
-              onChanged: (value) => setState(() => memberId = value ?? ''),
-            ),
-          const SizedBox(height: 8),
-          if (widget.data.meds.isNotEmpty)
-            DropdownButtonFormField<String>(
-              initialValue: medicineId,
-              decoration: InputDecoration(
-                labelText: tx(c, 'Vaistas', 'Medicine'),
-              ),
-              items: [
-                DropdownMenuItem(
-                  value: '',
-                  child: Text(tx(c, 'Visi vaistai', 'All medicines')),
-                ),
-                ...widget.data.meds.map(
-                  (medicine) => DropdownMenuItem(
-                    value: medicine.id,
-                    child: Text('${medicine.name} ${medicine.strength}'),
-                  ),
-                ),
-              ],
-              onChanged: (value) => setState(() => medicineId = value ?? ''),
-            ),
-          const SizedBox(height: 12),
-          card(
-            Row(
-              children: [
-                const Icon(Icons.insights, color: green, size: 34),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    tx(
-                      c,
-                      'Per $periodDays dien≈≥ i≈°gerta $taken i≈° $completed dozi≈≥ ($percent %).',
-                      '$taken of $completed doses taken in $periodDays days ($percent%).',
-                    ),
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          ...entries.map((entry) {
-            final (day, reminder, status) = entry;
-            final statusText = switch (status) {
-              DoseStatus.taken => tx(c, 'I≈°gerta', 'Taken'),
-              DoseStatus.skipped => tx(c, 'Praleista', 'Skipped'),
-              DoseStatus.missed => tx(c, 'Nei≈°gerta', 'Missed'),
-              DoseStatus.late => tx(c, 'Vƒóluoja', 'Late'),
-              _ => tx(c, 'Suplanuota', 'Scheduled'),
-            };
-            final color = status == DoseStatus.taken
-                ? green
-                : status == DoseStatus.upcoming
-                ? const Color(0xff7b8ba1)
-                : const Color(0xffc62828);
-            return Card(
-              child: ListTile(
-                leading: Icon(
-                  status == DoseStatus.taken
-                      ? Icons.check_circle
-                      : Icons.schedule,
-                  color: color,
-                ),
-                title: Text(
-                  '${DateFormat('yyyy-MM-dd').format(day)} ‚Ä¢ ${reminder.time} ‚Ä¢ ${reminder.title}',
-                ),
-                subtitle: Text(statusText),
-                trailing: status == DoseStatus.taken
-                    ? IconButton(
-                        tooltip: tx(c, 'At≈°aukti pa≈æymƒójimƒÖ', 'Undo'),
-                        icon: const Icon(Icons.undo),
-                        onPressed: () {
-                          undoDoseTaken(widget.data, reminder, day);
-                          widget.onChanged();
-                          setState(() {});
-                        },
-                      )
-                    : null,
-              ),
-            );
-          }),
-        ],
-      ),
-    );
-  }
-}
-
-class ShoppingPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const ShoppingPage({super.key, required this.data, required this.onChanged});
-  @override
-  State<ShoppingPage> createState() => _ShoppingPageState();
-}
-
-class _ShoppingPageState extends State<ShoppingPage> {
-  Future<void> _addCustomItem() async {
-    final name = TextEditingController();
-    final quantity = TextEditingController(text: '1');
-    var prescription = false;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(tx(context, 'Pridƒóti ƒØ sƒÖra≈°ƒÖ', 'Add to list')),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              field(context, name, 'Vaistas ar prekƒó', 'Medicine or item'),
-              field(context, quantity, 'Kiekis', 'Quantity', number: true),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                value: prescription,
-                title: Text(
-                  tx(context, 'Reikalingas receptas', 'Prescription required'),
-                ),
-                onChanged: (value) =>
-                    setDialogState(() => prescription = value),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: Text(tx(context, 'At≈°aukti', 'Cancel')),
-            ),
-            FilledButton(
-              onPressed: () {
-                final value = double.tryParse(
-                  quantity.text.replaceAll(',', '.'),
-                );
-                if (name.text.trim().isEmpty || value == null || value <= 0)
-                  return;
-                widget.data.shopping.add(
-                  ShoppingItem(
-                    id: newId(),
-                    name: name.text.trim(),
-                    quantity: value,
-                    prescription: prescription,
-                  ),
-                );
-                widget.onChanged();
-                Navigator.pop(dialogContext);
-                setState(() {});
-              },
-              child: Text(tx(context, 'Pridƒóti', 'Add')),
-            ),
-          ],
-        ),
-      ),
-    );
-    name.dispose();
-    quantity.dispose();
-  }
-
-  void _addLowStock() {
-    for (final medicine in widget.data.meds.where(
-      (medicine) => medicine.stock <= 10,
-    )) {
-      if (widget.data.shopping.any(
-        (item) => item.medId == medicine.id && !item.purchased,
-      ))
-        continue;
-      widget.data.shopping.add(
-        ShoppingItem(
-          id: newId(),
-          medId: medicine.id,
-          name: '${medicine.name} ${medicine.strength}'.trim(),
-          prescription: medicine.prescription,
-        ),
-      );
-    }
-    widget.onChanged();
-    setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext c) => Scaffold(
-    appBar: AppBar(title: Text(tx(c, 'Pirkini≈≥ sƒÖra≈°as', 'Shopping list'))),
-    body: ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        OutlinedButton.icon(
-          onPressed: _addLowStock,
-          icon: const Icon(Icons.playlist_add),
-          label: Text(
-            tx(c, 'ƒÆtraukti ma≈æo likuƒçio vaistus', 'Add low-stock medicines'),
-          ),
-        ),
-        const SizedBox(height: 8),
-        FilledButton.icon(
-          onPressed: _addCustomItem,
-          icon: const Icon(Icons.add_shopping_cart),
-          label: Text(tx(c, 'Pridƒóti rankiniu b≈´du', 'Add manually')),
-        ),
-        if (widget.data.shopping.isEmpty)
-          card(
-            Text(tx(c, 'Pirkini≈≥ sƒÖra≈°as tu≈°ƒçias.', 'Shopping list is empty.')),
-          ),
-        ...widget.data.shopping.map(
-          (item) => Card(
-            child: CheckboxListTile(
-              value: item.purchased,
-              title: Text(item.name),
-              subtitle: Text(
-                [
-                  '${tx(c, 'Kiekis', 'Quantity')}: ${quantityLabel(item.quantity)}',
-                  if (item.prescription)
-                    tx(c, 'Reikalingas receptas', 'Prescription required'),
-                ].join(' ‚Ä¢ '),
-              ),
-              secondary: IconButton(
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () {
-                  widget.data.shopping.remove(item);
-                  widget.onChanged();
-                  setState(() {});
-                },
-              ),
-              onChanged: (checked) {
-                final wasPurchased = item.purchased;
-                item.purchased = checked ?? false;
-                final medicine = widget.data.meds
-                    .where((med) => med.id == item.medId)
-                    .firstOrNull;
-                if (medicine != null && !wasPurchased && item.purchased) {
-                  medicine.stock += item.quantity;
-                }
-                widget.onChanged();
-                setState(() {});
-              },
-            ),
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-String _doctorSummary(AppData data) {
-  final p = data.profile;
-  final buffer = StringBuffer('MEDIBOX ‚Äì SVEIKATOS SANTRAUKA\n\n')
-    ..writeln('Vardas: ${p.name}')
-    ..writeln('Gimimo data: ${p.birthDate}')
-    ..writeln('Kraujo grupƒó: ${p.bloodType}')
-    ..writeln('Alergijos: ${p.allergies}')
-    ..writeln('Sveikatos b≈´klƒós: ${p.conditions}')
-    ..writeln(
-      'Skubios pagalbos kontaktas: ${p.emergencyName} ${p.emergencyPhone}',
-    )
-    ..writeln('\nVARTOJAMI VAISTAI');
-  for (final medicine in data.meds) {
-    buffer.writeln(
-      '‚Ä¢ ${medicine.name} ${medicine.strength} ‚Äì ${medicine.dosage}',
-    );
-  }
-  final upcomingAppointments =
-      data.appointments.where((item) {
-          final at = DateTime.tryParse('${item.date}T${item.time}');
-          return !item.completed && at != null && at.isAfter(DateTime.now());
-        }).toList()
-        ..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
-  if (upcomingAppointments.isNotEmpty) {
-    buffer.writeln('\nARTƒñJANTYS VIZITAI');
-    for (final item in upcomingAppointments) {
-      buffer.writeln(
-        '‚Ä¢ ${item.date} ${item.time} ‚Äì ${item.title}'
-        '${item.doctor.isEmpty ? '' : ', ${item.doctor}'}',
-      );
-    }
-  }
-  buffer.writeln(
-    '\nSukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}',
-  );
-  return buffer.toString();
-}
-
-class DoctorSummaryPage extends StatelessWidget {
-  final AppData data;
-  const DoctorSummaryPage({super.key, required this.data});
-  @override
-  Widget build(BuildContext c) {
-    final summary = _doctorSummary(data);
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(tx(c, 'Santrauka gydytojui', 'Doctor summary')),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          card(SelectableText(summary)),
-          FilledButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: summary));
-              if (c.mounted)
-                ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      tx(c, 'Santrauka nukopijuota.', 'Summary copied.'),
-                    ),
-                  ),
-                );
-            },
-            icon: const Icon(Icons.copy),
-            label: Text(tx(c, 'Kopijuoti santraukƒÖ', 'Copy summary')),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class EmergencyInfoPage extends StatelessWidget {
-  final AppData data;
-  const EmergencyInfoPage({super.key, required this.data});
-  @override
-  Widget build(BuildContext c) {
-    final p = data.profile;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(tx(c, 'Kritinƒó informacija', 'Emergency information')),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          card(
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.name,
-                  style: const TextStyle(
-                    fontSize: 25,
-                    fontWeight: FontWeight.w800,
-                    color: navy,
-                  ),
-                ),
-                const Divider(),
-                Text('${tx(c, 'Kraujo grupƒó', 'Blood type')}: ${p.bloodType}'),
-                Text('${tx(c, 'Alergijos', 'Allergies')}: ${p.allergies}'),
-                Text('${tx(c, 'B≈´klƒós', 'Conditions')}: ${p.conditions}'),
-                Text(
-                  '${tx(c, 'Vaistai', 'Medicines')}: ${data.meds.map((m) => '${m.name} ${m.strength}').join(', ')}',
-                ),
-                const Divider(),
-                Text('${tx(c, 'Kontaktas', 'Contact')}: ${p.emergencyName}'),
-                SelectableText(
-                  p.emergencyPhone,
-                  style: const TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-Map<String, dynamic> _backupMap(AppData data) => {
-  'format': 'medibox-backup-v1',
-  'createdAt': DateTime.now().toIso8601String(),
-  'meds': data.meds.map((item) => item.toJson()).toList(),
-  'members': data.members.map((item) => item.toJson()).toList(),
-  'reminders': data.reminders.map((item) => item.toJson()).toList(),
-  'shopping': data.shopping.map((item) => item.toJson()).toList(),
-  'appointments': data.appointments.map((item) => item.toJson()).toList(),
-  'profile': data.profile.toJson(),
-  'language': data.language,
-  'privacyLock': data.privacyLock,
-};
-
-class DataTransferPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const DataTransferPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
-  @override
-  State<DataTransferPage> createState() => _DataTransferPageState();
-}
-
-class _DataTransferPageState extends State<DataTransferPage> {
-  final importController = TextEditingController();
-  @override
-  void dispose() {
-    importController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext c) => Scaffold(
-    appBar: AppBar(
-      title: Text(tx(c, 'Atsarginƒó kopija', 'Backup and restore')),
-    ),
-    body: ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        card(
-          Text(
-            tx(
-              c,
-              'Kopijoje yra vaistai, ≈°eimos nariai, priminimai, istorija, profilis ir pirkini≈≥ sƒÖra≈°as. Saugokite jƒÖ privaƒçiai.',
-              'The backup contains medicines, family, reminders, history, profile and shopping data. Keep it private.',
-            ),
-          ),
-        ),
-        FilledButton.icon(
-          onPressed: () async {
-            await Clipboard.setData(
-              ClipboardData(text: jsonEncode(_backupMap(widget.data))),
-            );
-            if (c.mounted)
-              ScaffoldMessenger.of(c).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    tx(c, 'Atsarginƒó kopija nukopijuota.', 'Backup copied.'),
-                  ),
-                ),
-              );
-          },
-          icon: const Icon(Icons.copy_all),
-          label: Text(tx(c, 'Kopijuoti atsarginƒô kopijƒÖ', 'Copy backup')),
-        ),
-        const SizedBox(height: 18),
-        TextField(
-          controller: importController,
-          minLines: 4,
-          maxLines: 8,
-          decoration: InputDecoration(
-            labelText: tx(c, 'ƒÆklijuokite atsarginƒô kopijƒÖ', 'Paste backup'),
-          ),
-        ),
-        const SizedBox(height: 10),
-        OutlinedButton.icon(
-          onPressed: () async {
-            try {
-              final decoded = Map<String, dynamic>.from(
-                jsonDecode(importController.text),
-              );
-              if (decoded['format'] != 'medibox-backup-v1')
-                throw const FormatException();
-              widget.data.meds = (decoded['meds'] as List)
-                  .map((x) => Med.fromJson(Map<String, dynamic>.from(x)))
-                  .toList();
-              widget.data.members = (decoded['members'] as List)
-                  .map((x) => Member.fromJson(Map<String, dynamic>.from(x)))
-                  .toList();
-              widget.data.reminders = (decoded['reminders'] as List)
-                  .map((x) => Reminder.fromJson(Map<String, dynamic>.from(x)))
-                  .toList();
-              widget.data.shopping = (decoded['shopping'] as List? ?? [])
-                  .map(
-                    (x) => ShoppingItem.fromJson(Map<String, dynamic>.from(x)),
-                  )
-                  .toList();
-              widget.data.appointments =
-                  (decoded['appointments'] as List? ?? [])
-                      .map(
-                        (x) => HealthAppointment.fromJson(
-                          Map<String, dynamic>.from(x),
-                        ),
-                      )
-                      .toList();
-              widget.data.profile = UserProfile.fromJson(
-                Map<String, dynamic>.from(decoded['profile']),
-              );
-              widget.data.language = '${decoded['language'] ?? 'system'}';
-              widget.data.privacyLock = decoded['privacyLock'] == true;
-              widget.onChanged();
-              if (c.mounted)
-                ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(tx(c, 'Duomenys atkurti.', 'Data restored.')),
-                  ),
-                );
-            } catch (_) {
-              if (c.mounted)
-                ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      tx(c, 'Netinkama atsarginƒó kopija.', 'Invalid backup.'),
-                    ),
-                  ),
-                );
-            }
-          },
-          icon: const Icon(Icons.restore),
-          label: Text(tx(c, 'Atkurti duomenis', 'Restore data')),
-        ),
-      ],
-    ),
-  );
-}
-
-class ProfilePage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const ProfilePage({super.key, required this.data, required this.onChanged});
-  State<ProfilePage> createState() => _ProfilePage();
-}
-
-class _ProfilePage extends State<ProfilePage> {
-  late final p = widget.data.profile;
-  late final ctrls = [
-    p.name,
-    p.birthDate,
-    p.phone,
-    p.email,
-    p.bloodType,
-    p.allergies,
-    p.conditions,
-    p.medications,
-    p.emergencyName,
-    p.emergencyPhone,
-    p.notes,
-  ].map((value) => TextEditingController(text: value)).toList();
-  @override
-  void dispose() {
-    for (final x in ctrls) x.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(c) {
-    final labels = [
-      ['Vardas', 'Name'],
-      ['Gimimo data', 'Date of birth'],
-      ['Telefonas', 'Phone'],
-      ['El. pa≈°tas', 'Email'],
-      ['Kraujo grupƒó', 'Blood type'],
-      ['Alergijos', 'Allergies'],
-      ['Lƒótinƒós b≈´klƒós', 'Medical conditions'],
-      ['Nuolat vartojami vaistai', 'Regular medications'],
-      ['Skubios pagalbos kontaktas', 'Emergency contact'],
-      ['Kontakto telefonas', 'Emergency phone'],
-      ['Pastabos', 'Notes'],
-    ];
-    return Scaffold(
-      appBar: AppBar(title: Text(tx(c, 'Mano profilis', 'My profile'))),
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(
-          18,
-          18,
-          18,
-          MediaQuery.paddingOf(c).bottom + 36,
-        ),
-        children: [
-          ...List.generate(ctrls.length, (i) {
-            if (i == 1) {
-              return dateField(
-                c,
-                ctrls[i],
-                'Gimimo data YYYY-MM-DD',
-                'Date of birth YYYY-MM-DD',
-              );
-            }
-            return field(
-              c,
-              ctrls[i],
-              labels[i][0],
-              labels[i][1],
-              lines: i >= 5 ? 2 : 1,
-            );
-          }),
-          FilledButton(
-            onPressed: () {
-              p.name = ctrls[0].text.trim();
-              p.birthDate = ctrls[1].text.trim();
-              p.phone = ctrls[2].text.trim();
-              p.email = ctrls[3].text.trim();
-              p.bloodType = ctrls[4].text.trim();
-              p.allergies = ctrls[5].text.trim();
-              p.conditions = ctrls[6].text.trim();
-              p.medications = ctrls[7].text.trim();
-              p.emergencyName = ctrls[8].text.trim();
-              p.emergencyPhone = ctrls[9].text.trim();
-              p.notes = ctrls[10].text.trim();
-              widget.onChanged();
-              ScaffoldMessenger.of(c).showSnackBar(
-                SnackBar(
-                  content: Text(tx(c, 'Profilis i≈°saugotas', 'Profile saved')),
-                ),
-              );
-            },
-            child: Text(tx(c, 'I≈°saugoti profilƒØ', 'Save profile')),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            tx(c, 'Sveikata ir duomenys', 'Health and data'),
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          _profileToolTile(
-            c,
-            Icons.history,
-            'Vartojimo istorija',
-            'Dose history',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DoseHistoryPage(
-                  data: widget.data,
-                  onChanged: widget.onChanged,
-                ),
-              ),
-            ),
-          ),
-          _profileToolTile(
-            c,
-            Icons.shopping_cart_outlined,
-            'Pirkini≈≥ sƒÖra≈°as',
-            'Shopping list',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => ShoppingPage(
-                  data: widget.data,
-                  onChanged: widget.onChanged,
-                ),
-              ),
-            ),
-          ),
-          _profileToolTile(
-            c,
-            Icons.medical_information_outlined,
-            'Santrauka gydytojui',
-            'Doctor summary',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DoctorSummaryPage(data: widget.data),
-              ),
-            ),
-          ),
-          _profileToolTile(
-            c,
-            Icons.emergency_outlined,
-            'Kritinƒó informacija',
-            'Emergency information',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => EmergencyInfoPage(data: widget.data),
-              ),
-            ),
-          ),
-          _profileToolTile(
-            c,
-            Icons.backup_outlined,
-            'Atsarginƒó kopija',
-            'Backup and restore',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DataTransferPage(
-                  data: widget.data,
-                  onChanged: widget.onChanged,
-                ),
-              ),
-            ),
-          ),
-          Card(
-            child: SwitchListTile(
-              secondary: const CircleAvatar(
-                backgroundColor: mint,
-                child: Icon(Icons.auto_awesome_rounded, color: green),
-              ),
-              value: widget.data.aiConsentGranted,
-              title: Text(
-                tx(c, 'Firebase AI / Gemini', 'Firebase AI / Gemini'),
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(tx(c,
-                'Vienas bendras leidimas vaist≈≥ kortelƒóms ir ‚ÄûMan bloga‚Äú analizei',
-                'One permission for medicine cards and symptom analysis')),
-              onChanged: (value) {
-                setState(() {
-                  widget.data.aiConsentGranted = value;
-                  widget.data.aiConsentChoiceMade = true;
-                });
-                widget.onChanged();
-              },
-            ),
-          ),
-          Card(
-            child: SwitchListTile(
-              secondary: const CircleAvatar(
-                backgroundColor: mint,
-                child: Icon(Icons.fingerprint, color: green),
-              ),
-              value: widget.data.privacyLock,
-              title: Text(
-                tx(c, 'Programƒólƒós u≈æraktas', 'App lock'),
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(
-                tx(
-                  c,
-                  'Naudoti telefono PIN, pir≈°to atspaudƒÖ arba veido atpa≈æinimƒÖ',
-                  'Use device PIN, fingerprint or face authentication',
-                ),
-              ),
-              onChanged: (value) {
-                setState(() => widget.data.privacyLock = value);
-                widget.onChanged();
-              },
-            ),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            tx(c, 'Kalba', 'Language'),
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          RadioGroup<String>(
-            groupValue: widget.data.language,
-            onChanged: (v) {
-              setState(() => widget.data.language = v!);
-              widget.onChanged();
-            },
-            child: Column(
-              children: [
-                RadioListTile(
-                  value: 'system',
-                  title: Text(tx(c, 'Pagal telefonƒÖ', 'Use phone language')),
-                ),
-                const RadioListTile(value: 'lt', title: Text('Lietuvi≈≥')),
-                const RadioListTile(value: 'en', title: Text('English')),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          card(
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  tx(c, 'Apie programƒÖ', 'About'),
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text('MediBox v0.17.5'),
-                Text(
-                  tx(
-                    c,
-                    '≈†eimos vaistinƒólƒós ir vaist≈≥ priminim≈≥ programa.',
-                    'Family medicine cabinet and medication reminder app.',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text('${tx(c, 'K≈´rƒójas', 'Creator')}: Andrius Grudinskas'),
-                Text('${tx(c, 'Projektas', 'Project')}: MediBox'),
-                Text(
-                  tx(
-                    c,
-                    'Programa nepakeiƒçia gydytojo konsultacijos ar pakuotƒós lapelio.',
-                    'The app does not replace medical advice or the package leaflet.',
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-Widget field(
-  BuildContext c,
-  TextEditingController controller,
-  String lt,
-  String en, {
-  int lines = 1,
-  bool number = false,
-}) => Padding(
-  padding: const EdgeInsets.only(bottom: 12),
-  child: TextField(
-    controller: controller,
-    maxLines: lines,
-    keyboardType: number ? TextInputType.number : null,
-    decoration: InputDecoration(labelText: tx(c, lt, en)),
-  ),
-);
-
-Widget dateField(
-  BuildContext c,
-  TextEditingController controller,
-  String lt,
-  String en, {
-  bool monthOnly = false,
-}) => Padding(
-  padding: const EdgeInsets.only(bottom: 12),
-  child: TextField(
-    controller: controller,
-    keyboardType: TextInputType.number,
-    inputFormatters: [DateDashFormatter(monthOnly: monthOnly)],
-    maxLength: monthOnly ? 7 : 10,
-    decoration: InputDecoration(
-      labelText: tx(c, lt, en),
-      hintText: monthOnly ? 'YYYY-MM' : 'YYYY-MM-DD',
-      counterText: '',
-      prefixIcon: const Icon(Icons.calendar_month_outlined),
-    ),
-  ),
-);
-
-bool _validDate(String value, {bool monthOnly = false}) {
-  final pattern = monthOnly
-      ? RegExp(r'^\d{4}-(0[1-9]|1[0-2])$')
-      : RegExp(r'^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$');
-  if (!pattern.hasMatch(value)) return false;
-  if (monthOnly) return true;
-  final parts = value.split('-').map(int.parse).toList();
-  final parsed = DateTime(parts[0], parts[1], parts[2]);
-  return parsed.year == parts[0] &&
-      parsed.month == parts[1] &&
-      parsed.day == parts[2];
-}
-
-class ScanCaptureResult {
-  final String text;
-  final String imagePath;
-  const ScanCaptureResult(this.text, this.imagePath);
-}
-
-class ScanPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  final bool openCameraImmediately;
-  const ScanPage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-    this.openCameraImmediately = false,
-  });
-  State<ScanPage> createState() => _ScanPage();
-}
-
-class _ScanPage extends State<ScanPage> {
-  String text = '';
-  String imagePath = '';
-  bool busy = false;
-  bool vvktBusy = false;
-  bool vvktChecked = false;
-  String vvktError = '';
-  VvktMedicine? vvktMatch;
-  List<VvktMedicine> vvktMatches = [];
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.openCameraImmediately) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) openCamera();
-      });
-    }
-  }
-
-  Future<void> _lookupVvkt(String recognizedText) async {
-    final query = _guessRegistryName(recognizedText);
-    if (query.isEmpty) return;
-    setState(() {
-      vvktBusy = true;
-      vvktChecked = false;
-      vvktError = '';
-      vvktMatch = null;
-      vvktMatches = [];
-    });
-    try {
-      var matches = <VvktMedicine>[];
-      final candidates = {
-        query,
-        _registryTitleCase(query),
-        if (query.contains(' ')) query.split(' ').first,
-        if (query.contains(' ')) _registryTitleCase(query.split(' ').first),
-      };
-      for (final candidate in candidates) {
-        matches = await VvktService.search(candidate);
-        if (matches.isNotEmpty) break;
-      }
-      final match = VvktService.bestMatch(
-        matches,
-        _guessStrength(recognizedText),
-      );
-      if (mounted)
-        setState(() {
-          vvktMatches = matches;
-          vvktMatch = match;
-        });
-    } catch (error) {
-      if (mounted)
-        setState(() {
-          vvktMatch = null;
-          vvktError = '$error';
-        });
-    } finally {
-      if (mounted) {
-        setState(() {
-          vvktBusy = false;
-          vvktChecked = true;
-        });
-      }
-    }
-  }
-
-  Future<void> _chooseVvktVariant() async {
-    final selected = await showModalBottomSheet<VvktMedicine>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => SafeArea(
-        child: FractionallySizedBox(
-          heightFactor: .78,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(18),
-                child: Text(
-                  tx(
-                    sheetContext,
-                    'Pasirinkite tiksl≈≥ vaisto variantƒÖ',
-                    'Choose the exact medicine variant',
-                  ),
-                  style: const TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              Expanded(
-                child: ListView.separated(
-                  itemCount: vvktMatches.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (_, index) {
-                    final item = vvktMatches[index];
-                    return ListTile(
-                      leading: Icon(
-                        identical(item, vvktMatch)
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_off,
-                        color: green,
-                      ),
-                      title: Text('${item.name} ${item.strength}'),
-                      subtitle: Text(
-                        '${item.dosageForm}\n${item.packageDescription}',
-                      ),
-                      isThreeLine: true,
-                      onTap: () => Navigator.pop(sheetContext, item),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (selected != null && mounted) setState(() => vvktMatch = selected);
-  }
-
-  Future<void> ocr(ImageSource src) async {
-    if (busy) return;
-    setState(() => busy = true);
-    TextRecognizer? r;
-    try {
-      final f = await ImagePicker().pickImage(source: src, imageQuality: 90);
-      if (f == null || !mounted) return;
-      final directory = await getApplicationDocumentsDirectory();
-      final saved = await File(f.path)
-          .copy('${directory.path}/scan_${newId()}.jpg');
-      r = TextRecognizer(script: TextRecognitionScript.latin);
-      final out = await r.processImage(InputImage.fromFilePath(saved.path));
-      if (mounted) {
-        setState(() {
-          text = out.text;
-          imagePath = saved.path;
-        });
-        await _lookupVvkt(out.text);
-      }
-    } catch (_) {
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              tx(context, 'Nepavyko nuskaityti.', 'Could not scan.'),
-            ),
-          ),
-        );
-    } finally {
-      if (mounted) setState(() => busy = false);
-      await r?.close();
-    }
-  }
-
-  Future<void> openCamera() async {
-    final result = await Navigator.push<ScanCaptureResult>(
-      context,
-      MaterialPageRoute(
-        builder: (_) =>
-            CameraCapturePage(data: widget.data, onChanged: widget.onChanged),
-      ),
-    );
-    if (result != null && mounted) {
-      setState(() {
-        text = result.text;
-        imagePath = result.imagePath;
-      });
-      await _lookupVvkt(result.text);
-    }
-  }
-
-  @override
-  Widget build(c) => Scaffold(
-    appBar: AppBar(title: Text(tx(c, 'Skenuoti', 'Scan'))),
-    body: ListView(
-      padding: const EdgeInsets.all(18),
-      children: [
-        FilledButton.icon(
-          onPressed: busy ? null : openCamera,
-          icon: const Icon(Icons.camera_alt),
-          label: Text(tx(c, 'Fotografuoti', 'Take photo')),
-        ),
-        OutlinedButton.icon(
-          onPressed: busy ? null : () => ocr(ImageSource.gallery),
-          icon: const Icon(Icons.photo_library),
-          label: Text(tx(c, 'Pasirinkti nuotraukƒÖ', 'Choose photo')),
-        ),
-        OutlinedButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) =>
-                  BarcodePage(data: widget.data, onChanged: widget.onChanged),
-            ),
-          ),
-          icon: const Icon(Icons.qr_code_scanner),
-          label: Text(tx(c, 'Skenuoti kodƒÖ', 'Scan code')),
-        ),
-        if (busy) const Center(child: CircularProgressIndicator()),
-        if (text.isNotEmpty) ...[
-          if (imagePath.isNotEmpty)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: Image.file(
-                File(imagePath),
-                height: 180,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) =>
-                    const SizedBox.shrink(),
-              ),
-            ),
-          card(
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  tx(c, 'Atpa≈æinimo rezultatas', 'Recognition result'),
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${_guessName(text)}\n${_guessStrength(text)}',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-                const Divider(),
-                Text(
-                  tx(
-                    c,
-                    'Duomenys nuskaityti nuo pakuotƒós. Prie≈° i≈°saugodami juos patikrinkite.',
-                    'Data was read from the package. Check it before saving.',
-                  ),
-                  style: const TextStyle(color: Color(0xff526572)),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${tx(c, 'Galiojimo data', 'Expiry')}: ${MedicineMatcher.expiry(text) ?? tx(c, 'neatpa≈æinta', 'not recognized')}',
-                ),
-                ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  title: Text(
-                    tx(c, 'Visas atpa≈æintas tekstas', 'All recognized text'),
-                  ),
-                  children: [SelectableText(text)],
-                ),
-              ],
-            ),
-          ),
-          if (vvktBusy)
-            card(
-              Row(
-                children: [
-                  const SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 3),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      tx(
-                        c,
-                        'Tikrinama VVKT registre‚Ä¶',
-                        'Checking the VVKT register‚Ä¶',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (!vvktBusy && vvktMatch != null)
-            Card(
-              color: const Color(0xffe5f7f0),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.verified_rounded, color: green),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            tx(
-                              c,
-                              'Rastas oficialiame VVKT duomen≈≥ rinkinyje',
-                              'Found in official VVKT data',
-                            ),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w800,
-                              color: green,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${vvktMatch!.name} ${vvktMatch!.strength}',
-                      style: const TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    Text(vvktMatch!.substance),
-                    Text(
-                      '${vvktMatch!.dosageForm} ‚Ä¢ ${vvktMatch!.packageDescription}',
-                    ),
-                    Text(
-                      '${tx(c, 'Tiekimas', 'Supply')}: ${vvktMatch!.supplyStatus}',
-                    ),
-                    Text(
-                      '${tx(c, 'Registracijos Nr.', 'Registration No.')}: ${vvktMatch!.registrationNumber}',
-                    ),
-                    if (vvktMatches.length > 1)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: _chooseVvktVariant,
-                          icon: const Icon(Icons.swap_horiz),
-                          label: Text(
-                            tx(
-                              c,
-                              'Keisti variantƒÖ (${vvktMatches.length})',
-                              'Change variant (${vvktMatches.length})',
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          if (!vvktBusy && vvktChecked && vvktMatch == null)
-            Card(
-              color: const Color(0xfffff4dc),
-              child: ListTile(
-                leading: Icon(
-                  vvktError.isEmpty
-                      ? Icons.info_outline
-                      : Icons.cloud_off_outlined,
-                  color: const Color(0xffbd7200),
-                ),
-                title: Text(
-                  vvktError.isEmpty
-                      ? tx(
-                          c,
-                          'VVKT registre automati≈°kai nepatvirtinta',
-                          'Not automatically confirmed in VVKT',
-                        )
-                      : tx(
-                          c,
-                          'Nepavyko prisijungti prie VVKT',
-                          'Could not connect to VVKT',
-                        ),
-                ),
-                subtitle: Text(
-                  vvktError.isEmpty
-                      ? tx(
-                          c,
-                          'Patikrinkite nuskaitytƒÖ pavadinimƒÖ arba ƒØveskite duomenis rankiniu b≈´du.',
-                          'Check the recognized name or enter the details manually.',
-                        )
-                      : tx(
-                          c,
-                          'Patikrinkite interneto ry≈°ƒØ ir nuskaitykite dar kartƒÖ. Duomenis taip pat galite ƒØvesti rankiniu b≈´du.',
-                          'Check your connection and scan again. You can also enter the details manually.',
-                        ),
-                ),
-              ),
-            ),
-          const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => MedicineEditor(
-                  data: widget.data,
-                  onChanged: widget.onChanged,
-                  sourceText: text,
-                  initialImagePath: imagePath,
-                  registryMedicine: vvktMatch,
-                ),
-              ),
-            ),
-            icon: const Icon(Icons.add_circle_outline),
-            label: Text(
-              tx(
-                c,
-                'Patikrinti ir pridƒóti ƒØ vaistinƒólƒô',
-                'Review and add to medicine cabinet',
-              ),
-            ),
-          ),
-        ],
-      ],
-    ),
-  );
-}
-
-class CameraCapturePage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const CameraCapturePage({
-    super.key,
-    required this.data,
-    required this.onChanged,
-  });
-  State<CameraCapturePage> createState() => _CameraCapturePage();
-}
-
-class _CameraCapturePage extends State<CameraCapturePage> {
-  String mode = 'box';
-  bool busy = false;
-  CameraController? camera;
-  Future<void>? cameraReady;
-
-  @override
-  void initState() {
-    super.initState();
-    cameraReady = _startCamera();
-  }
-
-  Future<void> _startCamera() async {
-    final cameras = await availableCameras();
-    if (cameras.isEmpty) throw StateError('No camera');
-    final back = cameras.where(
-      (x) => x.lensDirection == CameraLensDirection.back,
-    );
-    camera = CameraController(
-      back.isEmpty ? cameras.first : back.first,
-      ResolutionPreset.high,
-      enableAudio: false,
-    );
-    await camera!.initialize();
-    if (mounted) setState(() {});
-  }
-
-  @override
-  void dispose() {
-    camera?.dispose();
-    super.dispose();
-  }
-
-  Future<void> capture() async {
-    if (mode == 'barcode') {
-      await camera?.dispose();
-      camera = null;
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>
-              BarcodePage(data: widget.data, onChanged: widget.onChanged),
-        ),
-      );
-      if (mounted) setState(() => cameraReady = _startCamera());
-      return;
-    }
-    final controller = camera;
-    if (controller == null || !controller.value.isInitialized) return;
-    setState(() => busy = true);
-    TextRecognizer? recognizer;
-    try {
-      final file = await controller.takePicture();
-      if (!mounted) return;
-      recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final result = await recognizer.processImage(
-        InputImage.fromFilePath(file.path),
-      );
-      final directory = await getApplicationDocumentsDirectory();
-      final saved = await File(file.path)
-          .copy('${directory.path}/scan_${newId()}.jpg');
-      if (mounted) {
-        Navigator.pop(context, ScanCaptureResult(result.text, saved.path));
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              tx(context, 'Nepavyko nuskaityti.', 'Could not scan.'),
-            ),
-          ),
-        );
-      }
-    } finally {
-      await recognizer?.close();
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final modes = [
-      ('box', Icons.medication_outlined, 'Dƒó≈æutƒó', 'Box'),
-      ('receipt', Icons.receipt_long_outlined, 'ƒåekis', 'Receipt'),
-      ('barcode', Icons.qr_code_scanner, 'Br≈´k≈°ninis kodas', 'Barcode'),
-      ('document', Icons.description_outlined, 'Dokumentas', 'Document'),
-    ];
-    return Scaffold(
-      backgroundColor: const Color(0xff17211f),
-      appBar: AppBar(
-        foregroundColor: Colors.white,
-        backgroundColor: Colors.transparent,
-        title: Text(tx(context, 'Fotografuoti', 'Take photo')),
-      ),
-      body: SafeArea(
-        top: false,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 12, 24, 18),
-              child: Text(
-                mode == 'barcode'
-                    ? tx(
-                        context,
-                        'Sulygiuokite kodƒÖ rƒómelyje',
-                        'Align the code in the frame',
-                      )
-                    : tx(
-                        context,
-                        'Sutalpinkite objektƒÖ ƒØ rƒómelƒØ',
-                        'Fit the object inside the frame',
-                      ),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-            Expanded(
-              child: FutureBuilder<void>(
-                future: cameraReady,
-                builder: (context, snapshot) {
-                  if (snapshot.hasError) {
-                    return Center(
-                      child: Text(
-                        tx(
-                          context,
-                          'Kamera nepasiekiama. Patikrinkite leidimƒÖ.',
-                          'Camera unavailable. Check permission.',
-                        ),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                    );
-                  }
-                  if (snapshot.connectionState != ConnectionState.done ||
-                      camera == null) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  return Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 22),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(26),
-                      border: Border.all(color: Colors.white70, width: 2),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          CameraPreview(camera!),
-                          Center(
-                            child: Icon(
-                              mode == 'barcode'
-                                  ? Icons.qr_code_2_rounded
-                                  : Icons.center_focus_strong,
-                              size: 115,
-                              color: Colors.white70,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 18),
-            SizedBox(
-              height: 82,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                children: modes.map((item) {
-                  final selected = mode == item.$1;
-                  return InkWell(
-                    onTap: () => setState(() => mode = item.$1),
-                    child: SizedBox(
-                      width: 94,
-                      child: Column(
-                        children: [
-                          Icon(
-                            item.$2,
-                            color: selected
-                                ? const Color(0xff5ee2bf)
-                                : Colors.white70,
-                          ),
-                          const SizedBox(height: 5),
-                          Text(
-                            tx(context, item.$3, item.$4),
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: selected
-                                  ? const Color(0xff5ee2bf)
-                                  : Colors.white70,
-                              fontSize: 12,
-                              fontWeight: selected
-                                  ? FontWeight.w800
-                                  : FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 18),
-              child: InkWell(
-                onTap: busy ? null : capture,
-                customBorder: const CircleBorder(),
-                child: Container(
-                  width: 70,
-                  height: 70,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: busy ? Colors.grey : Colors.white,
-                    border: Border.all(
-                      color: const Color(0xff5ee2bf),
-                      width: 5,
-                    ),
-                  ),
-                  child: busy
-                      ? const Padding(
-                          padding: EdgeInsets.all(18),
-                          child: CircularProgressIndicator(),
-                        )
-                      : Icon(
-                          mode == 'barcode'
-                              ? Icons.qr_code_scanner
-                              : Icons.camera_alt,
-                          color: navy,
-                        ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class BarcodePage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const BarcodePage({super.key, required this.data, required this.onChanged});
-  State<BarcodePage> createState() => _BarcodePage();
-}
-
-class _BarcodePage extends State<BarcodePage> {
-  bool done = false;
-  @override
-  Widget build(c) => Scaffold(
-    appBar: AppBar(title: Text(tx(c, 'Kodo skenavimas', 'Code scanner'))),
-    body: MobileScanner(
-      onDetect: (x) {
-        if (done || !mounted) return;
-        final v = x.barcodes.firstOrNull?.rawValue;
-        if (v == null) return;
-        done = true;
-        Navigator.pushReplacement(
-          c,
-          MaterialPageRoute(
-            builder: (_) => MedicineEditor(
-              data: widget.data,
-              onChanged: widget.onChanged,
-              sourceText: v,
-            ),
-          ),
-        );
-      },
-    ),
-  );
-}
-
-class SymptomsPage extends StatefulWidget {
-  final AppData data;
-  final VoidCallback onChanged;
-  const SymptomsPage({super.key, required this.data, required this.onChanged});
-  @override
-  State<SymptomsPage> createState() => _SymptomsPageState();
-}
-
-class _SymptomsPageState extends State<SymptomsPage> {
-  String memberId = '';
-  final customSymptom = TextEditingController();
-
-  @override
-  void dispose() {
-    customSymptom.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(c) {
-    final cats = <(String, String, IconData, Color)>[
-      ('Skausmas', 'Pain', Icons.healing_rounded, const Color(0xffe53935)),
-      (
-        'Kar≈°ƒçiavimas',
-        'Fever',
-        Icons.thermostat_rounded,
-        const Color(0xffe53935),
-      ),
-      ('Per≈°alimas', 'Cold', Icons.sick_outlined, green),
-      (
-        'Pilvo problemos',
-        'Stomach problems',
-        Icons.health_and_safety_rounded,
-        green,
-      ),
-      ('Alergija', 'Allergy', Icons.air_rounded, navy),
-      (
-        'Viduriavimas / u≈ækietƒójimas',
-        'Diarrhea / constipation',
-        Icons.wc_rounded,
-        navy,
-      ),
-      ('Odos problemos', 'Skin problems', Icons.water_drop_outlined, navy),
-      ('Galvos svaigimas', 'Dizziness', Icons.sync_problem_outlined, navy),
-    ];
-    return Scaffold(
-      appBar: AppBar(title: Text(tx(c, 'Man bloga', 'Symptoms'))),
-      body: ListView(
-        padding: EdgeInsets.fromLTRB(
-          18,
-          18,
-          18,
-          MediaQuery.paddingOf(c).bottom + 32,
-        ),
-        children: [
-          title(tx(c, 'Kas labiausiai vargina?', 'What bothers you most?')),
-          Text(
-            tx(
-              c,
-              'Vedlys nediagnozuoja. Pavojingus ar stiprƒójanƒçius simptomus turi ƒØvertinti medikas.',
-              'This guide does not diagnose. Urgent or worsening symptoms require medical assessment.',
-            ),
-          ),
-          const SizedBox(height: 16),
-          if (widget.data.members.isNotEmpty) ...[
-            Text(
-              tx(c, 'Kam pasirei≈°kƒó simptomai?', 'Who has symptoms?'),
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: navy,
-              ),
-            ),
-            const SizedBox(height: 8),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: widget.data.members
-                    .map(
-                      (member) => Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          avatar: Text(
-                            _memberEmoji(member.gender, member.ageGroup),
-                          ),
-                          label: Text(member.name),
-                          selected: memberId == member.id,
-                          onSelected: (_) =>
-                              setState(() => memberId = member.id),
-                        ),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
-          ...cats.map(
-            (x) => Card(
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: x.$4.withValues(alpha: .11),
-                  child: Icon(x.$3, color: x.$4),
-                ),
-                title: Text(
-                  tx(c, x.$1, x.$2),
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _openWizard(c, x.$1),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: customSymptom,
-            onChanged: (_) => setState(() {}),
-            minLines: 2,
-            maxLines: 4,
-            decoration: InputDecoration(
-              labelText: tx(
-                c,
-                'Apra≈°yti kitus simptomus',
-                'Describe other symptoms',
-              ),
-              hintText: tx(
-                c,
-                'Pvz., silpna, pykina ir svaigsta galva‚Ä¶',
-                'For example: weakness, nausea and dizziness‚Ä¶',
-              ),
-              prefixIcon: const Icon(Icons.auto_awesome_outlined),
-            ),
-          ),
-          const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: customSymptom.text.trim().isEmpty
-                ? null
-                : () => _openWizard(
-                    c,
-                    'Kiti simptomai',
-                    customSymptom.text.trim(),
-                  ),
-            icon: const Icon(Icons.arrow_forward_rounded),
-            label: Text(tx(c, 'Tƒôsti', 'Continue')),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _openWizard(
-    BuildContext context,
-    String category, [
-    String details = '',
-  ]) async {
-    if (widget.data.members.isNotEmpty && memberId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tx(
-              context,
-              'Pirmiausia pasirinkite ≈°eimos narƒØ.',
-              'Choose a family member first.',
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => SymptomWizardPage(
-          data: widget.data,
-          memberId: memberId,
-          category: category,
-          initialDetails: details,
-          directTextAnalysis: details.isNotEmpty,
-          onChanged: widget.onChanged,
-        ),
-      ),
-    );
-  }
-}
-
-class SymptomWizardPage extends StatefulWidget {
-  final AppData data;
-  final String memberId;
-  final String category;
-  final String initialDetails;
-  final bool directTextAnalysis;
-  final VoidCallback onChanged;
-  const SymptomWizardPage({
-    super.key,
-    required this.data,
-    required this.memberId,
-    required this.category,
-    this.initialDetails = '',
-    this.directTextAnalysis = false,
-    required this.onChanged,
-  });
-  @override
-  State<SymptomWizardPage> createState() => _SymptomWizardPageState();
-}
-
-class _SymptomWizardPageState extends State<SymptomWizardPage> {
-  int step = 0;
-  String location = '';
-  String severity = 'vidutinis';
-  String painType = '';
-  String duration = '';
-  bool fever = false;
-  bool highFever = false;
-  bool vomiting = false;
-  bool persistentVomiting = false;
-  bool blood = false;
-  bool breathingProblem = false;
-  bool faintingOrConfusion = false;
-  bool rash = false;
-  bool swelling = false;
-  bool cannotDrink = false;
-  bool neurologicDeficit = false;
-  late bool aiConsent;
-  final Set<String> selectedSymptoms = {};
-  Future<String?>? aiAssessment;
-
-  @override
-  void initState() {
-    super.initState();
-    aiConsent = widget.data.aiConsentGranted;
-    if (widget.directTextAnalysis) {
-      step = 2;
-      duration = 'nenurodyta';
-      selectedSymptoms.add('Laisvas simptom≈≥ apra≈°ymas');
-      final details = widget.initialDetails.toLowerCase();
-      breathingProblem = details.contains('sunku kvƒópuoti') ||
-          details.contains('dusul') || details.contains('nekvƒópu');
-      blood = details.contains('krauj');
-      faintingOrConfusion = details.contains('alp') ||
-          details.contains('sumi≈°') || details.contains('sƒÖmon');
-      swelling = (details.contains('veid') || details.contains('l≈´p')) &&
-          (details.contains('tin') || details.contains('patin'));
-      cannotDrink = details.contains('negaliu gerti') ||
-          details.contains('nei≈°laikau skys');
-      neurologicDeficit = details.contains('sunku kalbƒóti') ||
-          details.contains('paraly') || details.contains('nevaldau');
-      aiAssessment = aiConsent ? _requestAiAssessment() : null;
-    }
-  }
-
-  List<String> get locations => switch (widget.category) {
-    'Pilvo problemos' => [
-      'Vir≈°utinƒóje pilvo dalyje',
-      'De≈°inƒóje',
-      'Kairƒóje',
-      'Apatinƒóje dalyje',
-      'VisƒÖ pilvƒÖ',
-      'Sunku pasakyti',
-    ],
-    'Skausmas' => [
-      'Galva',
-      'Gerklƒó',
-      'Kr≈´tinƒó',
-      'Pilvas',
-      'Nugara',
-      'SƒÖnariai / raumenys',
-      'Kita vieta',
-    ],
-    'Odos problemos' => [
-      'Galva / veidas',
-      'Kr≈´tinƒó / liemuo',
-      'Pilvas',
-      'Nugara',
-      'Rankos',
-      'Kojos',
-      'Kelios k≈´no vietos',
-    ],
-    _ => const [],
-  };
-
-  bool get usesBodyMap =>
-      widget.category == 'Skausmas' ||
-      widget.category == 'Pilvo problemos' ||
-      widget.category == 'Odos problemos';
-
-  String get bodyMapAsset {
-    final member = widget.data.members
-        .where((item) => item.id == widget.memberId)
-        .firstOrNull;
-    final child = member?.ageGroup == 'child';
-    final female = member?.gender == 'female';
-    if (child) {
-      return female
-          ? 'assets/images/body_maps/child_female.png'
-          : 'assets/images/body_maps/child_male.png';
-    }
-    return female
-        ? 'assets/images/body_maps/adult_female.png'
-        : 'assets/images/body_maps/adult_male.png';
-  }
-
-  List<String> get symptomOptions => switch (widget.category) {
-    'Per≈°alimas' => [
-      'Sloga',
-      'U≈ægulta nosis',
-      'Gerklƒós skausmas',
-      'Kosulys',
-      'U≈ækimimas',
-      'Bendras silpnumas',
-    ],
-    'Kar≈°ƒçiavimas' => [
-      'Iki 38 ¬∞C',
-      '38‚Äì39 ¬∞C',
-      '39 ¬∞C ar daugiau',
-      '≈†altkrƒótis',
-      'Prakaitavimas',
-      'Silpnumas',
-    ],
-    'Alergija' => [
-      'Sloga / ƒçiaudulys',
-      'Aki≈≥ nie≈æƒójimas',
-      'Odos bƒórimas',
-      'Nie≈æƒójimas',
-      'Veido ar l≈´p≈≥ tinimas',
-      'Sunku kvƒópuoti',
-    ],
-    'Viduriavimas / u≈ækietƒójimas' => [
-      'Viduriavimas',
-      'U≈ækietƒójimas',
-      'Pilvo p≈´timas',
-      'Pilvo spazmai',
-      'Pykinimas',
-      'Vƒómimas',
-    ],
-    'Galvos svaigimas' => [
-      'Sukasi aplinka',
-      'Silpnumas / aptemimas',
-      'Pusiausvyros sutrikimas',
-      'Pykinimas',
-      'Galvos skausmas',
-      '≈™≈æimas ausyse',
-    ],
-    _ => ['Kitas simptomas'],
-  };
-
-  bool get dangerous =>
-      severity == 'labai stiprus' ||
-      blood ||
-      breathingProblem ||
-      faintingOrConfusion ||
-      neurologicDeficit ||
-      persistentVomiting ||
-      cannotDrink ||
-      highFever ||
-      (widget.category == 'Alergija' && swelling) ||
-      (widget.category == 'Pilvo problemos' &&
-          location == 'De≈°inƒóje' &&
-          fever &&
-          vomiting);
-
-  @override
-  Widget build(c) => Scaffold(
-    appBar: AppBar(
-      title: Text(
-        step == 0
-            ? widget.category
-            : tx(c, 'Simptom≈≥ ƒØvertinimas', 'Symptom assessment'),
-      ),
-    ),
-    body: SafeArea(
-      top: false,
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 220),
-        child: step == 0
-            ? _firstStep(c)
-            : step == 1
-            ? _questionsStep(c)
-            : _resultStep(c),
-      ),
-    ),
-  );
-
-  Widget _firstStep(BuildContext c) =>
-      usesBodyMap ? _locationStep(c) : _symptomStep(c);
-
-  Widget _locationStep(BuildContext c) => ListView(
-    key: const ValueKey('location'),
-    padding: const EdgeInsets.all(18),
-    children: [
-      title(
-        tx(
-          c,
-          widget.category == 'Pilvo problemos'
-              ? 'Kurioje pilvo vietoje jauƒçiate problemƒÖ?'
-              : 'Kurioje vietoje jauƒçiate problemƒÖ?',
-          widget.category == 'Pilvo problemos'
-              ? 'Where in the abdomen is the problem?'
-              : 'Where do you feel the problem?',
-        ),
-      ),
-      const SizedBox(height: 12),
-      Center(
-        child: Container(
-          width: 210,
-          height: 270,
-          decoration: BoxDecoration(
-            color: const Color(0xfff2fbf8),
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: const Color(0xffd7ebe5)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(7),
-            child: BodyMapView(
-              asset: bodyMapAsset,
-              location: location,
-              errorLabel: tx(
-                c,
-                'K≈´no vaizdo nepavyko ƒØkelti',
-                'Body image could not be loaded',
-              ),
-            ),
-          ),
-        ),
-      ),
-      const SizedBox(height: 12),
-      ...locations.map(
-        (item) => Card(
-          color: location == item ? mint : Colors.white,
-          child: ListTile(
-            leading: Icon(
-              location == item
-                  ? Icons.check_circle
-                  : Icons.radio_button_unchecked,
-              color: green,
-            ),
-            title: Text(item),
-            onTap: () => setState(() => location = item),
-          ),
-        ),
-      ),
-      const SizedBox(height: 10),
-      FilledButton(
-        onPressed: location.isEmpty ? null : () => setState(() => step = 1),
-        child: Text(tx(c, 'Tƒôsti', 'Continue')),
-      ),
-    ],
-  );
-
-  Widget _symptomStep(BuildContext c) => ListView(
-    key: const ValueKey('symptoms'),
-    padding: const EdgeInsets.all(18),
-    children: [
-      title(tx(c, 'KƒÖ jauƒçiate?', 'What are you experiencing?')),
-      const SizedBox(height: 6),
-      Text(
-        tx(
-          c,
-          'Galite pasirinkti kelis simptomus.',
-          'You can select more than one symptom.',
-        ),
-      ),
-      const SizedBox(height: 14),
-      ...symptomOptions.map((item) {
-        final selected = selectedSymptoms.contains(item);
-        return Card(
-          color: selected ? mint : Colors.white,
-          child: CheckboxListTile(
-            value: selected,
-            activeColor: green,
-            secondary: Icon(_symptomIcon(item), color: selected ? green : navy),
-            title: Text(item),
-            onChanged: (_) => setState(() {
-              selected
-                  ? selectedSymptoms.remove(item)
-                  : selectedSymptoms.add(item);
-              if (item == '39 ¬∞C ar daugiau')
-                highFever = selectedSymptoms.contains(item);
-              if (item == 'Sunku kvƒópuoti')
-                breathingProblem = selectedSymptoms.contains(item);
-              if (item == 'Veido ar l≈´p≈≥ tinimas')
-                swelling = selectedSymptoms.contains(item);
-              if (item == 'Vƒómimas') vomiting = selectedSymptoms.contains(item);
-            }),
-          ),
-        );
-      }),
-      const SizedBox(height: 10),
-      FilledButton(
-        onPressed: selectedSymptoms.isEmpty
-            ? null
-            : () => setState(() => step = 1),
-        child: Text(tx(c, 'Tƒôsti', 'Continue')),
-      ),
-    ],
-  );
-
-  IconData _symptomIcon(String item) {
-    if (item.contains('Kosul') || item.contains('Gerkl'))
-      return Icons.record_voice_over_outlined;
-    if (item.contains('nos') || item.contains('Sloga'))
-      return Icons.air_rounded;
-    if (item.contains('39') || item.contains('38') || item.contains('≈†altkr'))
-      return Icons.thermostat_rounded;
-    if (item.contains('Odos') || item.contains('Nie≈æ'))
-      return Icons.water_drop_outlined;
-    if (item.contains('Viduri') || item.contains('U≈ækiet'))
-      return Icons.wc_rounded;
-    if (item.contains('Vƒóm') || item.contains('Pykin'))
-      return Icons.sick_outlined;
-    if (item.contains('kvƒópuoti') || item.contains('tinimas'))
-      return Icons.warning_amber_rounded;
-    return Icons.health_and_safety_outlined;
-  }
-
-  Widget _questionsStep(BuildContext c) => ListView(
-    key: const ValueKey('questions'),
-    padding: const EdgeInsets.all(18),
-    children: [
-      title(tx(c, 'Papildomi klausimai', 'Additional questions')),
-      if (widget.initialDetails.isNotEmpty) ...[
-        const SizedBox(height: 8),
-        card(Text(widget.initialDetails)),
-      ],
-      const SizedBox(height: 12),
-      _choice(
-        c,
-        tx(c, 'Koks simptom≈≥ stiprumas?', 'How severe are the symptoms?'),
-        ['lengvas', 'vidutinis', 'stiprus', 'labai stiprus'],
-        severity,
-        (v) => severity = v,
-      ),
-      const SizedBox(height: 14),
-      _choice(
-        c,
-        tx(c, 'Kiek laiko tai tƒôsiasi?', 'How long has this lasted?'),
-        ['kelias valandas', '1 dienƒÖ', '2‚Äì3 dienas', 'ilgiau'],
-        duration,
-        (v) => duration = v,
-      ),
-      if (widget.category == 'Skausmas' ||
-          widget.category == 'Pilvo problemos') ...[
-        const SizedBox(height: 14),
-        _choice(
-          c,
-          tx(c, 'Koks skausmas?', 'What is the pain like?'),
-          ['spazminis', 'degina', 'maud≈æia', 'a≈°trus'],
-          painType,
-          (v) => painType = v,
-        ),
-      ],
-      const SizedBox(height: 14),
-      ..._categoryQuestions(c),
-      const SizedBox(height: 14),
-      FilledButton(
-        onPressed: duration.isEmpty
-            ? null
-            : () {
-                setState(() {
-                  step = 2;
-                  aiAssessment = aiConsent ? _requestAiAssessment() : null;
-                });
-              },
-        child: Text(tx(c, 'Atlikti saugumo patikrƒÖ', 'Run safety check')),
-      ),
-    ],
-  );
-
-  Future<String?> _requestAiAssessment() {
-    final member = widget.data.members
-        .where((item) => item.id == widget.memberId)
-        .firstOrNull;
-    int? age;
-    final birth = DateTime.tryParse(member?.birthDate ?? '');
-    if (birth != null) {
-      final now = DateTime.now();
-      age = now.year - birth.year;
-      if (now.month < birth.month ||
-          (now.month == birth.month && now.day < birth.day)) {
-        age--;
-      }
-    }
-    final eligibleMedicines = widget.data.meds.where(
-      (medicine) =>
-          medicine.memberIds.isEmpty ||
-          medicine.memberIds.contains(widget.memberId),
-    );
-    return AiSymptomService.assess(
-      category: widget.category,
-      location: location,
-      symptoms: selectedSymptoms.toList(),
-      severity: severity,
-      duration: duration,
-      details: widget.initialDetails,
-      safetyAnswers: {
-        'highFever': highFever,
-        'vomiting': vomiting,
-        'persistentVomiting': persistentVomiting,
-        'blood': blood,
-        'breathingProblem': breathingProblem,
-        'faintingOrConfusion': faintingOrConfusion,
-        'swelling': swelling,
-        'cannotDrink': cannotDrink,
-        'neurologicDeficit': neurologicDeficit,
-      },
-      patient: <String, Object?>{
-        'ageGroup': member?.ageGroup ?? '',
-        'ageYears': age,
-        'weightKg': member?.weight ?? '',
-        'allergies': member?.allergies ?? '',
-        'conditions': member?.conditions ?? '',
-        'intolerantMedicines': member?.intolerantMedicines ?? '',
-      },
-      cabinetMedicines: eligibleMedicines.map((medicine) {
-        final guidance = member == null
-            ? null
-            : calculateDoseGuidance(medicine, member);
-        return <String, Object?>{
-          'name': medicine.name,
-          'substance': medicine.substance,
-          'strength': medicine.strength,
-          'form': medicine.dosageForm,
-          'category': medicine.category,
-          'purpose': medicine.purpose,
-          'prescription': medicine.prescription,
-          'officialUseText': medicine.dosage,
-          'warnings': medicine.warnings,
-          'interactions': medicine.interactions,
-          'expired':
-              (daysUntilMedicineExpiry(medicine.expiry, DateTime.now()) ?? 0) <
-              0,
-          'stock': medicine.stock,
-          'verifiedDose': guidance == null
-              ? null
-              : <String, Object?>{
-                  'doseMg': guidance.doseMg,
-                  'volumeMl': guidance.volumeMl,
-                  'units': guidance.units,
-                  'source': guidance.source,
-                },
-        };
-      }).toList(),
-    );
-  }
-
-  Widget _aiCard(BuildContext c) {
-    if (!aiConsent) {
-      return card(
-        Text(
-          tx(
-            c,
-            'AI analizƒó nevykdyta ‚Äì sveikatos duomenys nei≈°si≈≥sti.',
-            'AI analysis was not run ‚Äî no health data was sent.',
-          ),
-        ),
-      );
-    }
-    if (!AiSymptomService.isConfigured) {
-      return card(
-        Row(
-          children: [
-            const Icon(Icons.auto_awesome_rounded, color: green),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                tx(
-                  c,
-                  'AI analizƒó paruo≈°ta. Ji bus aktyvuota prijungus saug≈≥ ‚ÄûFirebase‚Äú servisƒÖ.',
-                  'AI analysis is ready and will activate after connecting the secure Firebase service.',
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    return FutureBuilder<String?>(
-      future: aiAssessment,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return card(
-            const Row(
-              children: [
-                SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2.5),
-                ),
-                SizedBox(width: 12),
-                Expanded(child: Text('AI analizuoja pateiktƒÖ informacijƒÖ‚Ä¶')),
-              ],
-            ),
-          );
-        }
-        if (snapshot.data == null) return const SizedBox.shrink();
-        return card(
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Row(
-                children: [
-                  Icon(Icons.auto_awesome_rounded, color: green),
-                  SizedBox(width: 8),
-                  Text(
-                    'AI paai≈°kinimas',
-                    style: TextStyle(fontWeight: FontWeight.w700, color: navy),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(snapshot.data!),
-              const SizedBox(height: 6),
-              Text(
-                tx(
-                  c,
-                  'Tai nƒóra diagnozƒó ar gydymo paskyrimas.',
-                  'This is not a diagnosis or treatment prescription.',
-                ),
-                style: const TextStyle(fontSize: 12, color: Color(0xff526572)),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  List<Widget> _categoryQuestions(BuildContext c) => switch (widget.category) {
-    'Per≈°alimas' => [
-      _yesNo(
-        c,
-        tx(c, 'Ar yra temperat≈´ra?', 'Do you have a fever?'),
-        fever,
-        (v) => fever = v,
-      ),
-      if (fever)
-        _yesNo(
-          c,
-          tx(c, 'Ar temperat≈´ra 39 ¬∞C ar auk≈°tesnƒó?', 'Is it 39¬∞C or higher?'),
-          highFever,
-          (v) => highFever = v,
-        ),
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar sunku kvƒópuoti arba jauƒçiate dusulƒØ?',
-          'Difficulty breathing or shortness of breath?',
-        ),
-        breathingProblem,
-        (v) => breathingProblem = v,
-      ),
-    ],
-    'Kar≈°ƒçiavimas' => [
-      _yesNo(
-        c,
-        tx(c, 'Ar temperat≈´ra 39 ¬∞C ar auk≈°tesnƒó?', 'Is it 39¬∞C or higher?'),
-        highFever,
-        (v) => highFever = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar yra neƒØprastas bƒórimas?', 'Is there an unusual rash?'),
-        rash,
-        (v) => rash = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar sunku kvƒópuoti?', 'Difficulty breathing?'),
-        breathingProblem,
-        (v) => breathingProblem = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar alpstate arba esate sumi≈°ƒô?', 'Fainting or confusion?'),
-        faintingOrConfusion,
-        (v) => faintingOrConfusion = v,
-      ),
-    ],
-    'Alergija' => [
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar tinsta veidas, l≈´pos arba lie≈æuvis?',
-          'Swelling of the face, lips or tongue?',
-        ),
-        swelling,
-        (v) => swelling = v,
-      ),
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar sunku kvƒópuoti arba ryti?',
-          'Difficulty breathing or swallowing?',
-        ),
-        breathingProblem,
-        (v) => breathingProblem = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar bƒórimas greitai plinta?', 'Is the rash spreading quickly?'),
-        rash,
-        (v) => rash = v,
-      ),
-    ],
-    'Viduriavimas / u≈ækietƒójimas' => [
-      _yesNo(
-        c,
-        tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'),
-        vomiting,
-        (v) => vomiting = v,
-      ),
-      if (vomiting)
-        _yesNo(
-          c,
-          tx(c, 'Ar vƒómimas kartojasi?', 'Is vomiting persistent?'),
-          persistentVomiting,
-          (v) => persistentVomiting = v,
-        ),
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar nepavyksta gerti arba i≈°laikyti skysƒçi≈≥?',
-          'Unable to drink or keep fluids down?',
-        ),
-        cannotDrink,
-        (v) => cannotDrink = v,
-      ),
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar i≈°matose pastebƒójote kraujo?',
-          'Have you noticed blood in stool?',
-        ),
-        blood,
-        (v) => blood = v,
-      ),
-    ],
-    'Pilvo problemos' => [
-      _yesNo(
-        c,
-        tx(c, 'Ar yra temperat≈´ra?', 'Do you have a fever?'),
-        fever,
-        (v) => fever = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'),
-        vomiting,
-        (v) => vomiting = v,
-      ),
-      if (vomiting)
-        _yesNo(
-          c,
-          tx(
-            c,
-            'Ar vƒómimas kartojasi ir nepavyksta gerti?',
-            'Persistent vomiting or unable to drink?',
-          ),
-          persistentVomiting,
-          (v) => persistentVomiting = v,
-        ),
-      _yesNo(
-        c,
-        tx(c, 'Ar pastebƒójote kraujo?', 'Have you noticed blood?'),
-        blood,
-        (v) => blood = v,
-      ),
-    ],
-    'Odos problemos' => [
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar bƒórimas arba paraudimas greitai plinta?',
-          'Is the rash or redness spreading quickly?',
-        ),
-        rash,
-        (v) => rash = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar tinsta veidas arba l≈´pos?', 'Swelling of the face or lips?'),
-        swelling,
-        (v) => swelling = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar sunku kvƒópuoti?', 'Difficulty breathing?'),
-        breathingProblem,
-        (v) => breathingProblem = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar yra temperat≈´ra?', 'Do you have a fever?'),
-        fever,
-        (v) => fever = v,
-      ),
-    ],
-    'Galvos svaigimas' => [
-      _yesNo(
-        c,
-        tx(c, 'Ar alpstate arba esate sumi≈°ƒô?', 'Fainting or confusion?'),
-        faintingOrConfusion,
-        (v) => faintingOrConfusion = v,
-      ),
-      _yesNo(
-        c,
-        tx(
-          c,
-          'Ar sunku kalbƒóti, matyti arba valdyti gal≈´nes?',
-          'Difficulty speaking, seeing or controlling a limb?',
-        ),
-        neurologicDeficit,
-        (v) => neurologicDeficit = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar pykina arba vemiate?', 'Nausea or vomiting?'),
-        vomiting,
-        (v) => vomiting = v,
-      ),
-    ],
-    _ => [
-      _yesNo(
-        c,
-        tx(c, 'Ar yra temperat≈´ra?', 'Do you have a fever?'),
-        fever,
-        (v) => fever = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar pastebƒójote kraujo?', 'Have you noticed blood?'),
-        blood,
-        (v) => blood = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar sunku kvƒópuoti?', 'Difficulty breathing?'),
-        breathingProblem,
-        (v) => breathingProblem = v,
-      ),
-      _yesNo(
-        c,
-        tx(c, 'Ar alpstate arba esate sumi≈°ƒô?', 'Fainting or confusion?'),
-        faintingOrConfusion,
-        (v) => faintingOrConfusion = v,
-      ),
-    ],
-  };
-
-  Widget _choice(
-    BuildContext c,
-    String label,
-    List<String> values,
-    String selected,
-    ValueChanged<String> onSelect,
-  ) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        label,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w700,
-          color: navy,
-        ),
-      ),
-      const SizedBox(height: 7),
-      Wrap(
-        spacing: 7,
-        runSpacing: 7,
-        children: values
-            .map(
-              (value) => ChoiceChip(
-                label: Text(value),
-                selected: selected == value,
-                onSelected: (_) => setState(() => onSelect(value)),
-              ),
-            )
-            .toList(),
-      ),
-    ],
-  );
-
-  Widget _yesNo(
-    BuildContext c,
-    String label,
-    bool value,
-    ValueChanged<bool> onChanged,
-  ) => SwitchListTile(
-    contentPadding: EdgeInsets.zero,
-    title: Text(label),
-    value: value,
-    onChanged: (next) => setState(() => onChanged(next)),
-  );
-
-  Widget _resultStep(BuildContext c) {
-    if (dangerous) return _dangerResult(c);
-    final member = widget.data.members
-        .where((x) => x.id == widget.memberId)
-        .firstOrNull;
-    final allergyText =
-        '${member?.allergies ?? ''} '
-                '${member?.intolerantMedicines ?? ''}'
-            .toLowerCase();
-    final matches = widget.data.meds.where((medicine) {
-      if (medicine.prescription || medicine.stock <= 0) return false;
-      if (widget.memberId.isNotEmpty &&
-          medicine.memberIds.isNotEmpty &&
-          !medicine.memberIds.contains(widget.memberId))
-        return false;
-      if (!_matchesSymptomCategory(medicine, widget.category)) return false;
-      final expiryDays = daysUntilMedicineExpiry(
-        medicine.expiry,
-        DateTime.now(),
-      );
-      if (expiryDays != null && expiryDays < 0) return false;
-      final identity = '${medicine.name} ${medicine.substance}'.toLowerCase();
-      final allergyWords = allergyText
-          .split(RegExp(r'[,;\s]+'))
-          .where((word) => word.length > 3);
-      return !allergyWords.any(identity.contains);
-    }).toList();
-    return ListView(
-      key: const ValueKey('safe'),
-      padding: const EdgeInsets.all(18),
-      children: [
-        const Center(
-          child: CircleAvatar(
-            radius: 42,
-            backgroundColor: mint,
-            child: Icon(Icons.check_circle, size: 58, color: green),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text(
-          tx(
-            c,
-            'Pagal pateiktus atsakymus pavojing≈≥ po≈æymi≈≥ nenustatyta',
-            'No danger signs identified from the answers provided',
-          ),
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 21,
-            fontWeight: FontWeight.w700,
-            color: green,
-          ),
-        ),
-        const SizedBox(height: 10),
-        card(
-          Text(
-            tx(
-              c,
-              'Tai nƒóra diagnozƒó. Jei b≈´klƒó blogƒója, simptomai stiprƒója ar kelia nerimƒÖ ‚Äì kreipkitƒós ƒØ gydytojƒÖ.',
-              'This is not a diagnosis. Seek medical care if symptoms worsen or concern you.',
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        _aiCard(c),
-        const SizedBox(height: 14),
-        Text(
-          tx(
-            c,
-            'Asmens ir bendroje vaistinƒólƒóje radome:',
-            'Found in the personal and shared medicine cabinet:',
-          ),
-          style: const TextStyle(
-            fontSize: 19,
-            fontWeight: FontWeight.w700,
-            color: navy,
-          ),
-        ),
-        const SizedBox(height: 8),
-        if (matches.isEmpty)
-          card(
-            Text(
-              tx(
-                c,
-                'Tinkam≈≥ ir galiojanƒçi≈≥ nereceptini≈≥ vaist≈≥ nerasta.',
-                'No suitable, unexpired non-prescription medicines found.',
-              ),
-            ),
-          ),
-        ...matches.map((medicine) {
-          final isShared = medicine.memberIds.isEmpty;
-          final source = isShared
-              ? tx(c, 'Bendra vaistinƒólƒó', 'Shared medicine cabinet')
-              : tx(
-                  c,
-                  'Priskirta pasirinktam asmeniui',
-                  'Assigned to selected person',
-                );
-          final guidance = member == null
-              ? null
-              : calculateDoseGuidance(medicine, member);
-          final doseLine = guidance == null
-              ? tx(
-                  c,
-                  'Dozƒó nerodoma ‚Äì nƒóra patvirtintos strukt≈´rinƒós lapelio taisyklƒós.',
-                  'Dose not shown ‚Äî no approved structured leaflet rule.',
-                )
-              : '${tx(c, 'Pagal patvirtintƒÖ lapelƒØ', 'From approved leaflet')}: '
-                    '${quantityLabel(guidance.doseMg)} mg'
-                    '${guidance.volumeMl == null ? '' : ' ‚Ä¢ ${quantityLabel(guidance.volumeMl!)} ml'}'
-                    '${guidance.units == null ? '' : ' ‚Ä¢ ${quantityLabel(guidance.units!)} vnt.'}';
-          return Card(
-            child: ListTile(
-              leading:
-                  medicine.imagePath.isNotEmpty &&
-                      File(medicine.imagePath).existsSync()
-                  ? ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.file(
-                        File(medicine.imagePath),
-                        width: 52,
-                        height: 52,
-                        fit: BoxFit.cover,
-                      ),
-                    )
-                  : const CircleAvatar(
-                      backgroundColor: mint,
-                      child: Icon(Icons.medication, color: green),
-                    ),
-              title: Text(
-                '${medicine.name} ${medicine.strength}',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(
-                '$source ‚Ä¢ ${medicine.substance}\n'
-                '${_matchReason(c, widget.category)}\n$doseLine\n'
-                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}',
-              ),
-              isThreeLine: false,
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                c,
-                MaterialPageRoute(
-                  builder: (_) => MedicinePage(
-                    data: widget.data,
-                    med: medicine,
-                    onChanged: widget.onChanged,
-                  ),
-                ),
-              ),
-            ),
-          );
-        }),
-        const SizedBox(height: 10),
-        OutlinedButton.icon(
-          onPressed: () => Navigator.pop(c),
-          icon: const Icon(Icons.restart_alt),
-          label: Text(tx(c, 'Pradƒóti i≈° naujo', 'Start again')),
-        ),
-      ],
-    );
-  }
-
-  Widget _dangerResult(BuildContext c) {
-    final signs = <String>[
-      if (severity == 'labai stiprus')
-        tx(c, 'Labai stipr≈´s simptomai', 'Very severe symptoms'),
-      if (highFever)
-        tx(
-          c,
-          'Temperat≈´ra 39 ¬∞C ar auk≈°tesnƒó',
-          'Temperature of 39¬∞C or higher',
-        ),
-      if (persistentVomiting)
-        tx(
-          c,
-          'Nuolatinis vƒómimas arba nepavyksta gerti',
-          'Persistent vomiting or unable to drink',
-        ),
-      if (cannotDrink)
-        tx(
-          c,
-          'Nepavyksta gerti arba i≈°laikyti skysƒçi≈≥',
-          'Unable to drink or keep fluids down',
-        ),
-      if (blood) tx(c, 'Pastebƒótas kraujas', 'Blood reported'),
-      if (breathingProblem) tx(c, 'Sunku kvƒópuoti', 'Difficulty breathing'),
-      if (swelling)
-        tx(
-          c,
-          'Tinsta veidas, l≈´pos arba lie≈æuvis',
-          'Swelling of the face, lips or tongue',
-        ),
-      if (faintingOrConfusion)
-        tx(c, 'Alpimas arba sumi≈°imas', 'Fainting or confusion'),
-      if (neurologicDeficit)
-        tx(
-          c,
-          'Kalbos, regƒójimo arba gal≈´ni≈≥ valdymo sutrikimas',
-          'Speech, vision or limb control problem',
-        ),
-      if (widget.category == 'Pilvo problemos' &&
-          location == 'De≈°inƒóje' &&
-          fever &&
-          vomiting)
-        tx(
-          c,
-          'Pilvo skausmas de≈°inƒóje su temperat≈´ra ir vƒómimu',
-          'Right-sided abdominal pain with fever and vomiting',
-        ),
-    ];
-    return ListView(
-      key: const ValueKey('danger'),
-      padding: const EdgeInsets.all(18),
-      children: [
-        const Center(
-          child: CircleAvatar(
-            radius: 42,
-            backgroundColor: Color(0xffffe7e7),
-            child: Icon(Icons.warning_rounded, size: 54, color: Colors.red),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text(
-          tx(c, 'Galimi pavojingi po≈æymiai', 'Possible danger signs'),
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 23,
-            fontWeight: FontWeight.w700,
-            color: Colors.red,
-          ),
-        ),
-        const SizedBox(height: 12),
-        ...signs.map(
-          (sign) => ListTile(
-            leading: const Icon(Icons.circle, size: 10, color: Colors.red),
-            title: Text(sign),
-          ),
-        ),
-        Card(
-          color: const Color(0xffffe7e7),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              tx(
-                c,
-                'Rekomenduojama nedelsiant kreiptis ƒØ gydytojƒÖ arba skubios pagalbos skyri≈≥. Jei kyla grƒósmƒó gyvybei ‚Äì skambinkite 112.',
-                'Seek urgent medical assessment. Call emergency services if there is an immediate threat to life.',
-              ),
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontWeight: FontWeight.w700,
-                color: Color(0xffa31717),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        FilledButton.icon(
-          style: FilledButton.styleFrom(backgroundColor: Colors.red),
-          onPressed: () => Clipboard.setData(const ClipboardData(text: '112'))
-              .then(
-                (_) => ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      tx(c, 'Numeris 112 nukopijuotas.', '112 copied.'),
-                    ),
-                  ),
-                ),
-              ),
-          icon: const Icon(Icons.emergency_outlined),
-          label: Text(tx(c, 'Kopijuoti numerƒØ 112', 'Copy emergency number')),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton(
-          onPressed: () => setState(() => step = 1),
-          child: Text(tx(c, 'Patikslinti atsakymus', 'Review answers')),
-        ),
-      ],
-    );
-  }
-}
-
-String _matchReason(BuildContext c, String category) => switch (category) {
-  'Skausmas' => tx(
-    c,
-    'Gali b≈´ti susijƒôs su pasirinktu skausmo simptomu.',
-    'May relate to the selected pain symptom.',
-  ),
-  'Kar≈°ƒçiavimas' => tx(
-    c,
-    'Paskirtis susijusi su kar≈°ƒçiavimu.',
-    'Its purpose relates to fever.',
-  ),
-  'Per≈°alimas' => tx(
-    c,
-    'Paskirtis susijusi su per≈°alimo simptomais.',
-    'Its purpose relates to cold symptoms.',
-  ),
-  'Pilvo problemos' || 'Viduriavimas / u≈ækietƒójimas' => tx(
-    c,
-    'Paskirtis susijusi su vir≈°kinimo simptomais.',
-    'Its purpose relates to digestive symptoms.',
-  ),
-  'Alergija' => tx(
-    c,
-    'Paskirtis susijusi su alergijos simptomais.',
-    'Its purpose relates to allergy symptoms.',
-  ),
-  _ => tx(
-    c,
-    'Atitinka vaisto kortelƒóje nurodytƒÖ paskirtƒØ.',
-    'Matches the purpose recorded on the medicine card.',
-  ),
-};
-
-class MatchesPage extends StatelessWidget {
-  final AppData data;
-  final String category;
-  final VoidCallback onChanged;
-  const MatchesPage({
-    super.key,
-    required this.data,
-    required this.category,
-    required this.onChanged,
-  });
-  @override
-  Widget build(c) {
-    final m = data.meds
-        .where((x) => _matchesSymptomCategory(x, category) && !x.prescription)
-        .toList();
-    return Scaffold(
-      appBar: AppBar(title: Text(tx(c, 'KƒÖ turiu?', 'What do I have?'))),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          Text(
-            tx(
-              c,
-              'Rodomi tik vaistinƒólƒóje esantys nereceptiniai preparatai. Tai nƒóra gydymo paskyrimas.',
-              'Only non-prescription medicines in your cabinet are shown. This is not a treatment recommendation.',
-            ),
-          ),
-          if (m.isEmpty)
-            card(
-              Text(
-                tx(
-                  c,
-                  'Tinkam≈≥ preparat≈≥ nerasta.',
-                  'No matching medicines found.',
-                ),
-              ),
-            ),
-          ...m.map(
-            (x) => Card(
-              child: ListTile(
-                title: Text(
-                  '${x.name} ${x.strength}',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: Text(x.purpose),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => Navigator.push(
-                  c,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        MedicinePage(data: data, med: x, onChanged: onChanged),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-bool _matchesSymptomCategory(Med medicine, String symptom) {
-  final categories = _splitCategories(medicine.category)
-      .map((x) => x.toLowerCase())
-      .toSet();
-  final expected = switch (symptom) {
-    'Skausmas' || 'Kar≈°ƒçiavimas' => {'skausmas', 'skausmas ir kar≈°ƒçiavimas'},
-    'Per≈°alimas' => {'per≈°alimas', 'kvƒópavimo sistema'},
-    'Pilvo problemos' ||
-    'Viduriavimas / u≈ækietƒójimas' => {'pilvo problemos', 'vir≈°kinimas'},
-    'Alergija' => {'alergija'},
-    'Odos problemos' => {'oda'},
-    'Galvos svaigimas' => {'nerv≈≥ sistema', 'kraujas', '≈°irdis ir kraujotaka'},
-    _ => {symptom.toLowerCase()},
-  };
-  return categories.any(expected.contains);
-}
+Y™Áäx-ÆÈ‹j◊ù¢Îi∫⁄+äßj[hëÈ‹¢ÈÌ◊Mª˜‘Ëµ©h∫⁄n∂XßzÕZ[\‹ù	Ÿ\ùò\ﬁ[ò…Œ¬ö[\‹ù	Ÿ\ùò€€ùô\ù	Œ¬ö[\‹ù	Ÿ\ùö[…Œ¬Çö[\‹ù	‹X⁄ÿYŸNôõ]\ã€X]\öX[ô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNôõ]\ó€ÿÿ[^ò][€úÀŸõ]\ó€ÿÿ[^ò][€úÀô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNôõ]\ã‹Ÿ\ùöXŸ\Àô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNòÿ[Y\òKÿÿ[Y\òKô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNö[XYŸW‹X⁄Ÿ\ã⁄[XYŸW‹X⁄Ÿ\ãô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNö[ù⁄[ùô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNõÿÿ[ÿ]]€ÿÿ[ÿ]]ô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNô€€Ÿ€W€[⁄]›^‹ôX€Ÿ€ö][€ãŸ€€Ÿ€W€[⁄]›^‹ôX€Ÿ€ö][€ãô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNõ[ÿö[W‹ÿÿ[õô\ã€[ÿö[W‹ÿÿ[õô\ãô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNú]‹õ›öY\ã‹]‹õ›öY\ãô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNú\õZ\‹⁄[€ó⁄[ô\ã‹\õZ\‹⁄[€ó⁄[ô\ãô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNù\õ€][ò⁄\ã›\õ€][ò⁄\ãô\ù	Œ¬ö[\‹ù	‹X⁄ÿYŸNùŸXùöY]◊Ÿõ]\ã›ŸXùöY]◊Ÿõ]\ãô\ù	Œ¬Çö[\‹ù	€[Ÿ[À€[Ÿ[Àô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\À€YYX⁄[ôW€X]⁄\ãô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\À‹ô[Z[ô\ó€Ÿ⁄XÀô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\À‹ô[Z[ô\ó€õ›YöXÿ][€úÀô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\ÀŸ^\ûW‹›]\Àô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\À‹›‹ôKô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\À›ùö›‹Ÿ\ùöXŸKô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\ÀÿZW‹ﬁ[\€W‹Ÿ\ùöXŸKô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\ÀÿZW€YYX⁄[ôW‹õŸö[W‹Ÿ\ùöXŸKô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\ÀÿZW€YYX⁄[ôWÿYö\€‹ó‹Ÿ\ùöXŸKô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\ÀŸ‹ŸWŸ›ZY[òŸKô\ù	Œ¬ö[\‹ù	›⁄YŸ]ÀÿõŸW€X\ô\ù	Œ¬ö[\‹ù	€[Ÿ[À€XYõ]ŸòYùô\ù	Œ¬ö[\‹ù	›⁄YŸ]À€XYõ]⁄[\‹ù‹YŸKô\ù	Œ¬ö[\‹ù	‹Ÿ\ùöXŸ\ÀŸö\ôXò\ŸW€XYõ]‹Ÿ\ùöXŸKô\ù	Œ¬Çëù]\ôOõ⁄YàXZ[ä
+H\ﬁ[ò»¬à⁄YŸ]—õ]\êö[ô[ôÀô[ú›\ôR[ö]X[^ôY
+
+N¬à]ÿZ]ô[Z[ô\ìõ›YöXÿ][€úÀö[ö]X[^ôJ
+N¬àù[ê\
+€€ú›\
+
+JN¬üBÇò€€ú›‹ôY[àH€€‹äôåŒXçÿJKàò]ûHH€€‹äôåLòM KàZ[ùH€€‹äôôNYéç
+N¬î›ö[ô»
+ùZ[€€ù^À›ö[ô»›ö[ô»[äHOÇàÿÿ[^ò][€úÀõÿÿ[SŸä Kõ[ô›XYŸP€ŸHOH	Ÿ[â»»[àà¬î›ö[ô»ô]“Y
+
+HOà]U[YKõõ› 
+KõZX‹õ‹ŸX€€ô‘⁄[òŸQ\ÿ⁄ù‘›ö[ô 
+N¬î›ö[ô»]RŸ^J—]U[YO»ò[YWJH¬àö[ò[Hò[YHœ»]U[YKõõ› 
+N¬àô]\õà	…ŸûYX\ãù‘›ö[ô 
+KúYYù
+	Ã	 _KIŸõ[€ùù‘›ö[ô 
+KúYYù
+ã	Ã	 _KIŸô^Kù‘›ö[ô 
+KúYYù
+ã	Ã	 _IŒ¬üBÇî›ö[ô»]X[ù]SXô[
+ù[Hò[YJHOàò[YHOHò[YKúõ›[ô—›XõJ
+Bà»ò[YKù“[ù
+
+Kù‘›ö[ô 
+Bààò[YKù‘›ö[ô–\—ö^Y
+äKúô\XŸQö\ú›
+ôY—^
+âÃ
+…	 K	… N¬Çòõ€€ô[Z[ô\ìX]⁄\”Y[Xô\ä\]H]Kô[Z[ô\àô[Z[ô\ã›ö[ô»Y[Xô\íY
+H¬àYà
+Y[Xô\íYö\—[\JHô]\õàùYN¬àYà
+ô[Z[ô\ãõY[Xô\íYOHY[Xô\íY
+Hô]\õàùYN¬àYà
+ô[Z[ô\ãõY[Xô\íYö\”õ›[\JHô]\õàò[ŸN¬Çàö[ò[YYX⁄[ôHH]KõYY¬àù⁄\ôJ
+][JHOà][KöYOHô[Z[ô\ãõYYY
+Bàôö\ú›‹ìù[¬àYà
+YYX⁄[ôHOHù[	âàYYX⁄[ôKõY[Xô\íYÀò€€ùZ[ú Y[Xô\íY
+JHô]\õàùYN¬Çàö[ò[Y[Xô\àH]KõY[Xô\úÀù⁄\ôJ
+][JHOà][KöYOHY[Xô\íY
+Kôö\ú›‹ìù[¬àô]\õàYYX⁄[ôHOHù[	âÇàYYX⁄[ôKõY[Xô\íYÀö\—[\H	âÇàY[Xô\èÀúô[][€àOH	‹Ÿ[âŒ¬üBÇò€\‹»]Q\⁄õ‹õX]\à^[ô»^[ú]õ‹õX]\à¬àö[ò[õ€€[€ù€õN¬à]Q\⁄õ‹õX]\ä›\Àõ[€ù€õHHò[Ÿ_JN¬à›ô\úöYBà^Y][ô’ò[YHõ‹õX]Y]\]Jà^Y][ô’ò[YH€ò[YKà^Y][ô’ò[YHô]’ò[YKà
+H¬àö[ò[Y⁄]»Hô]’ò[YKù^úô\XŸP[
+ôY—^
+â◊	 K	… N¬àö[ò[X^H[€ù€õH»àà¬àö[ò[[ô›HY⁄]Àõ[ô›àX^»X^àY⁄]Àõ[ô›¬àö[ò[ò[YHHY⁄]Àú›Xú›ö[ô [ô›
+N¬àö[ò[›]H›ö[ô–ùYôô\ä
+N¬àõ‹à
+ò\àHH»Hò[YKõ[ô›»J  H¬àYà
+HOH
+[[€ù€õH	âàHOHäJH›]ù‹ö]J	ÀI N¬à›]ù‹ö]Jò[YV⁄WJN¬àBàô]\õà^Y][ô’ò[YJà^à›]ù‘›ö[ô 
+KàŸ[X›[€éà^Ÿ[X›[€ãò€€\ŸY
+ŸôúŸ]à›]õ[ô›
+Kà
+N¬àBüBÇò€\‹»\^[ô»›]Yù[⁄YŸ]¬à€€ú›\
+‹›\\ãöŸ^_JN¬à›]O\à‹ôX]T›]J
+HOà–\
+
+N¬üBÇò€\‹»–\^[ô»›]O\à¬à\]O»]N¬àõ€€][ò⁄XÿŸ\YHò[ŸN¬àõ€€]][ùXÿ][ô»Hò[ŸN¬àö[ò[ò]öYÿ]‹íŸ^HH€ÿò[Ÿ^Oò]öYÿ]‹î›]Oä
+N¬Çàù]\ôOõ⁄YàŸö[ö\⁄‹[ö[ô \]H›\úô[ù
+H\ﬁ[ò»¬àYà
+X›\úô[ùòZP€€úŸ[ù⁄⁄XŸSXYH	âà[›[ùY
+H¬àö[ò[‹ò[ùYH]ÿZ]⁄›—X[Ÿœõ€€äà€€ù^àò]öYÿ]‹íŸ^Kò›\úô[ù€€ù^Kàò\úöY\ë\€Z\‹⁄XõNàò[ŸKàùZ[\éà
+X[Ÿ–€€ù^
+HOà[\ùX[Ÿ à]Nà€€ú›^
+	“qh[X[ö[‹⁄[‹»YYPõﬁù[öÿ⁄Zõ‹… Kà€€ù[ùà€€ú›^
+à	–\à›][öÿ]KÿY8†'ëö\ôXò\ŸHRH»€€Ÿ€HŸ[Z[öx†'\‹õ›1l»òZ\›»	¬à	‹Z›[›1%‹»Z‹›1!H\à\⁄\ö[ö›\»›ôZZÿ]‹»[€Y[ö\Œà[qoöqlÀ›õ‹±+À	¬à	ÿ[\ô⁄Zò\ÀYÿ\À⁄[\€]\»ôZH[öÿ[]\»òZ\›[±%€1%‹»1+‹òqh]\œ»	¬à	’ò\ô\»ô\⁄][±#ZX[X\Àà›]Z⁄[X\»qh\ÿ]Y€€X\»\à]Y⁄X]HôZÿ\ù⁄ò[X\Àà	¬à	—ﬁ±%‹»õŸ€[‹»Z»Yÿ[]ö\ù[ù\»ŸöX⁄X[X\»Z\ﬁZ€\Àà	¬à	‘»1hZ[»\⁄\ö[ö⁄[[»[Yõ€ò\»qhZÿ\ù\òqh^\»ÿ[Y\õ‹»öYZY€‹À	¬à	⁄ÿYÿ[1%›[q%›Hõ›Ÿ‹òYù[›H\à]qoö[ùHòZ\›1l»Z›[›\ÀâÀà
+KàX›[€úŒà¬à^ù]€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+X[Ÿ–€€ù^ò[ŸJKà⁄[à€€ú›^
+	”ò]Y›HôHRI Kà
+Kàö[Yù]€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+X[Ÿ–€€ù^ùYJKà⁄[à€€ú›^
+	‘›][ö›H\à1&\›I Kà
+KàKà
+Kà
+N¬à›\úô[ùòZP€€úŸ[ù⁄⁄XŸSXYHHùYN¬à›\úô[ùòZP€€úŸ[ù‹ò[ùYH‹ò[ùYOHùYN¬à]ÿZ]›‹ôKúÿ]ôJ›\úô[ù
+N¬àBàYà
+X›\úô[ùòÿ[Y\òT\õZ\‹⁄[€ê\⁄ŸY
+H¬à]ÿZ]\õZ\‹⁄[€ãòÿ[Y\òKúô\]Y\›
+
+N¬à›\úô[ùòÿ[Y\òT\õZ\‹⁄[€ê\⁄ŸYHùYN¬à]ÿZ]›‹ôKúÿ]ôJ›\úô[ù
+N¬àBàYà
+[›[ùY
+HŸ]›]J
+
+HOà][ò⁄XÿŸ\YHùYJN¬àBÇàù]\ôOõ⁄Yà€‹[ê\
+
+H\ﬁ[ò»¬àö[ò[›\úô[ùH]N¬àYà
+›\úô[ùOHù[]][ùXÿ][ô Hô]\õé¬àYà
+X›\úô[ùúö]òXﬁSÿ⁄ H¬à]ÿZ]Ÿö[ö\⁄‹[ö[ô ›\úô[ù
+N¬àô]\õé¬àBàŸ]›]J
+
+HOà]][ùXÿ][ô»HùYJN¬àûH¬àö[ò[XÿŸ\YH]ÿZ]ÿÿ[]][ùXÿ][€ä
+Kò]][ùXÿ]Jàÿÿ[^ôYôX\€€éà	–]òZ⁄[ö⁄]HYYPõﬁ›ôZZÿ]‹»[€Y[ö\…Àà‹[€úŒà€€ú›]][ùXÿ][€ì‹[€ú àö[€Y]öX”€õNàò[ŸKà›X⁄ﬁP]]àùYKà
+Kà
+N¬àYà
+[›[ùY	âàXÿŸ\Y
+H]ÿZ]Ÿö[ö\⁄‹[ö[ô ›\úô[ù
+N¬àHÿ]⁄
+ H¬àÀ»H\ô[XZ[ú»ÿ⁄ŸYYàH]öXŸHÿ[õõ›]][ùXÿ]KÇàHö[ò[H¬àYà
+[›[ùY
+HŸ]›]J
+
+HOà]][ùXÿ][ô»Hò[ŸJN¬àBàBÇà›ô\úöYBàõ⁄Y[ö]›]J
+H¬à›\\ãö[ö]›]J
+N¬àù]\ôKùÿZ]
+¬à›‹ôKõÿY
+
+Kàù]\ôOõ⁄Yãô[^YY
+€€ú›\ò][€äZ[\ŸX€€ôŒàM
+JKàJKù[ä
+ò[Y\ H¬àö[ò[àHò[Y\Àôö\ú›\»\]N¬àô[Z[ô\ìõ›YöXÿ][€úÀõ€êX›[€àH⁄[ôTô[Z[ô\êX›[€é¬àô[Z[ô\ìõ›YöXÿ][€úÀúÿ⁄Y[P[
+äN¬àYà
+[›[ùY
+HŸ]›]J
+
+HOà]HHäN¬àJN¬àBÇàù]\ôOõ⁄Yà⁄[ôTô[Z[ô\êX›[€äà›ö[ô»X›[€ãà›ö[ô»ô[Z[ô\íYà]U[YHÿÿ›\úô[òŸKà
+H\ﬁ[ò»¬àö[ò[›\úô[ùH]N¬àYà
+›\úô[ùOHù[
+Hô]\õé¬àö[ò[X]⁄\»H›\úô[ùúô[Z[ô\úÀù⁄\ôJ
+
+HOàöYOHô[Z[ô\íY
+N¬àYà
+X]⁄\Àö\—[\JHô]\õé¬àö[ò[ô[Z[ô\àHX]⁄\Àôö\ú›¬àYà
+X›[€àOH	›ZŸ[â H¬àX\ö—‹ŸUZŸ[ä›\úô[ùô[Z[ô\ãÿÿ›\úô[òŸJN¬à]ÿZ]ô[Z[ô\ìõ›YöXÿ][€úÀòÿ[òŸ[ÿÿ›\úô[òŸJô[Z[ô\ãÿÿ›\úô[òŸJN¬àH[ŸHYà
+X›[€àOH	‹⁄⁄\	 H¬àX\ö—‹ŸT⁄⁄\Y
+ô[Z[ô\ãÿÿ›\úô[òŸJN¬à]ÿZ]ô[Z[ô\ìõ›YöXÿ][€úÀòÿ[òŸ[ÿÿ›\úô[òŸJô[Z[ô\ãÿÿ›\úô[òŸJN¬àH[ŸHYà
+X›[€àOH	‹€õ€ﬁôI H¬à]ÿZ]ô[Z[ô\ìõ›YöXÿ][€úÀú€õ€ﬁôJô[Z[ô\ã›\úô[ùÿÿ›\úô[òŸJN¬àBà]ÿZ]›‹ôKúÿ]ôJ›\úô[ù
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HﬂJN¬àBÇàõ⁄Y⁄[ôŸY
+
+H¬àYà
+]HOHù[
+H¬à›‹ôKúÿ]ôJ]HJN¬àô[Z[ô\ìõ›YöXÿ][€úÀúÿ⁄Y[P[
+]HJN¬àŸ]›]J
+
+HﬂJN¬àBàBÇà›ô\úöYBà⁄YŸ]ùZ[
+ H¬àö[ò[H]N¬àYà
+OHù[[][ò⁄XÿŸ\Y
+H¬àô]\õàX]\öX[\
+àò]öYÿ]‹íŸ^Nàò]öYÿ]‹íŸ^KàXùY‘⁄›–⁄X⁄ŸY[ŸPò[õô\éàò[ŸKàÿÿ[NàOHù[	âàõ[ô›XYŸHOH	‹ﬁ\›[I»»ÿÿ[Jõ[ô›XYŸJHàù[à›\‹ùYÿÿ[\Œà€€ú›”ÿÿ[J	€	 Kÿÿ[J	Ÿ[â WKàÿÿ[^ò][€ú—[Yÿ]\Œà€ÿò[X]\öX[ÿÿ[^ò][€úÀô[Yÿ]\Àà€YNà][ò⁄ÿ‹ôY[äàôXYNàOHù[à€î›\ùàOHù[»ù[à€‹[ê\à
+Kà
+N¬àBàÿÿ[O»ÿÿ[N¬àYà
+õ[ô›XYŸHOH	‹ﬁ\›[I Hÿÿ[HHÿÿ[Jõ[ô›XYŸJN¬àô]\õàX]\öX[\
+àò]öYÿ]‹íŸ^Nàò]öYÿ]‹íŸ^KàXùY‘⁄›–⁄X⁄ŸY[ŸPò[õô\éàò[ŸKà]Nà	”YYPõﬁ	ÀàùZ[\éà
+€€ù^⁄[
+HOàYYXT]Y\ûKù⁄]€[\Y^ÿÿ[[ô àZ[îÿÿ[QòX›‹éàéKàX^ÿÿ[QòX›‹éàKåãà⁄[à⁄[Kà
+Kàÿÿ[Nàÿÿ[Kà›\‹ùYÿÿ[\Œà€€ú›”ÿÿ[J	€	 Kÿÿ[J	Ÿ[â WKàÿÿ[^ò][€ú—[Yÿ]\Œà€ÿò[X]\öX[ÿÿ[^ò][€úÀô[Yÿ]\Àà[YNà[YQ]JàúöY⁄ô\‹ŒàúöY⁄ô\‹ÀõY⁄àõ€ùò[Z[Nà	‹ÿ[úÀ\Ÿ\öYâÀà€€‹îÿ⁄[YNà€€‹îÿ⁄[YKôúõ€TŸYY
+àŸYY€€‹éà‹ôY[ãàúöY⁄ô\‹ŒàúöY⁄ô\‹ÀõY⁄à
+Kà\ŸSX]\öX[ŒàùYKàÿÿYôõ€òX⁄Ÿ‹õ›[ô€€‹éà€€ú›€€‹äôôçôòôòJKàÿ\ô[YNàÿ\ô[YQ]Jà€€‹éà€€‹úÀù⁄]Kà[]ò][€éàà⁄\Nàõ›[ôYôX›[ô€Põ‹ô\äàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äN
+Kà⁄YNà€€ú›õ‹ô\î⁄YJ€€‹éà€€‹äôôLYYXäJKà
+Kà
+Kàö[Yù]€ï[YNàö[Yù]€ï[YQ]Jà›[Nàö[Yù]€ãú›[Qúõ€JàòX⁄Ÿ‹õ›[ô€€‹éà€€ú›€€‹äôåŒçÃJKàõ‹ôY‹õ›[ô€€‹éà€€‹úÀù⁄]KàZ[ö[][T⁄^ôNà€€ú›⁄^ôKôúõ€RZY⁄
+M
+Kà⁄\Nàõ›[ôYôX›[ô€Põ‹ô\äàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKà
+Kà
+Kà
+Kà[ú]X€‹ò][€ï[YNà€€ú›[ú]X€‹ò][€ï[YJàõ‹ô\éà›][ôR[ú]õ‹ô\ä
+Kà
+Kà
+Kà€YNàõ€òõÿ\ôYà»⁄[
+]Nà€ê⁄[ôŸYà⁄[ôŸY
+Bàà€òõÿ\ô[ô‘YŸJ]Nà€ê⁄[ôŸYà⁄[ôŸY
+Kà
+N¬àBüBÇò€\‹»][ò⁄ÿ‹ôY[à^[ô»›][\‹’⁄YŸ]¬àö[ò[õ€€ôXYN¬àö[ò[õ⁄Yÿ[òX⁄œ»€î›\ù¬à€€ú›][ò⁄ÿ‹ôY[ä‹›\\ãöŸ^Kô\]Z\ôY\ÀúôXYK\Àõ€î›\ùJN¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+HOàÿÿYôõ€
+àòX⁄Ÿ‹õ›[ô€€‹éà€€ú›€€‹äôôéòŸòäKàõŸNà›X⁄ à⁄[ô[éà¬à‹⁄][€ôYôö[
+à⁄[à[XYŸKò\‹Ÿ]
+à	ÿ\‹Ÿ]À⁄[XYŸ\À€YYXõﬁ⁄€YWÿòX⁄Ÿ‹õ›[ôùŸXú	Ààö]àõﬁö]ò€›ô\ãà
+Kà
+Kà‹⁄][€ôYôö[
+à⁄[à€€‹ôYõﬁ
+€€‹éà€€‹úÀù⁄]Kù⁄]ò[Y\ [Nàåç
+JKà
+KàÿYôP\ôXJà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäéçéM
+Kà⁄[à€€[[äà⁄[ô[éà¬à€€ú›YYPõﬁŸ€ ⁄^ôNàäKà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kà€€ú›^
+à	”YYPõﬁ	Àà›[Nà^›[Jàõ€ù⁄^ôNàÀàZY⁄àKàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒLà€€‹éàò]ûKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àJKà^
+à
+à€€ù^à	’]õ»qh[X[öH1hYZ[[‹»òZ\›[±%€1%ÀâÀà	÷[›\à€X\ùò[Z[HYYX⁄[ôHÿXö[ô]âÀà
+Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕåà€€‹éàò]ûKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àäKà^[ôY
+à⁄[àò[úŸõ‹õKùò[ú€]JàŸôúŸ]à€€ú›ŸôúŸ]
+MäKà⁄[à⁄^ôYõﬁ
+à⁄Yà›XõKö[ôö[ö]Kà⁄[à[XYŸKò\‹Ÿ]
+à	ÿ\‹Ÿ]À⁄[XYŸ\À€YYXõﬁŸò[Z[WŸ\]X[ùŸXú	Ààö]àõﬁö]ò€€ùZ[ãà[Y€õY[ùà[Y€õY[ùòõ›€PŸ[ù\ãàö[\î]X[]Nàö[\î]X[]KöY⁄à
+Kà
+Kà
+Kà
+Kàò[úŸõ‹õKùò[ú€]JàŸôúŸ]à€€ú›ŸôúŸ]
+LLäKà⁄[à€€ùZ[ô\äàY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäMÀLãMÀLäKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éà€€‹úÀù⁄]Kù⁄]ò[Y\ [NàéLäKàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äN
+Kàõ‹ô\éàõ‹ô\ãò[
+€€‹éà€€ú›€€‹äôôMYYôX JKàõﬁ⁄Y›Œà€€ú›¬àõﬁ⁄Y› à€€‹éà€€‹äNôåéJKàõ\îòY]\ŒàåàŸôúŸ]àŸôúŸ]
+ Kà
+KàKà
+Kà⁄[à€€ú›€€[[äà⁄[ô[éà¬à”][ò⁄ô[ôYö]
+àX€€úÀö[ùô[ù‹ûWÃó€›][ôYà	”XqoöX]H±j‹\Ò#Zql…Àà	”\‹»€‹úûIÀà
+Kà”][ò⁄ô[ôYö]
+àX€€úÀùô\öYöYY›\Ÿ\ó€›][ôYà	—]Y⁄X]Hÿ]Y›[[…Àà	”[‹ôHÿYô]IÀà
+Kà”][ò⁄ô[ôYö]
+àX€€úÀú[‹W€›][ôKà	‘›ôZZŸ\€±%»1hYZ[XIÀà	–HX[Y\àò[Z[IÀà
+KàKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à Kàö[Yù]€äà›[Nàö[Yù]€ãú›[Qúõ€JàòX⁄Ÿ‹õ›[ô€€‹éà‹ôY[ãàZ[ö[][T⁄^ôNà€€ú›⁄^ôKôúõ€RZY⁄
+M
+Kà⁄\Nàõ›[ôYôX›[ô€Põ‹ô\äàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKà
+Kà
+Kà€îô\‹ŸYà€î›\ùà⁄[àôXYBà»^
+
+€€ù^	‘òY1%›IÀ	—Ÿ]›\ùY	 JBàà€€ú›⁄^ôYõﬁ
+à⁄YàåàZY⁄àåà⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹äà›õ⁄ŸU⁄YàãçKà€€‹éà€€‹úÀù⁄]Kà
+Kà
+Kà
+Kà⁄^ôYõﬁ
+àZY⁄àÕãà⁄[à^ù]€äà€îô\‹ŸYàôXYH»€î›\ùàù[à⁄[à^
+à
+à€€ù^à	’\öH\⁄ﬁ\±!O»ö\⁄Zù[ô›IÀà	“]ôH[àXÿ€›[ù»⁄Y€à[âÀà
+Kà›[Nà€€ú›^›[Jà€€‹éà‹ôY[ãàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà
+Kà
+Kà
+Kà
+KàKà
+Kà
+Kà
+KàKà
+Kà
+N¬üBÇò€\‹»”][ò⁄ô[ôYö]^[ô»›][\‹’⁄YŸ]¬àö[ò[X€€ë]HX€€é¬àö[ò[›ö[ô»[é¬à€€ú›”][ò⁄ô[ôYö]
+\ÀöX€€ã\Àõ\Àô[äN¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+HOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ô\ùXÿ[àJKà⁄[àõ› à⁄[ô[éà¬àX€€äX€€ã€€‹éà‹ôY[ã⁄^ôNàåJKà€€ú›⁄^ôYõﬁ
+⁄YàLäKà^
+à
+€€ù^[äKà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ
+Kà
+KàKà
+Kà
+N¬üBÇò€\‹»YYPõﬁŸ€»^[ô»›][\‹’⁄YŸ]¬àö[ò[›XõH⁄^ôN¬à€€ú›YYPõﬁŸ€ ‹›\\ãöŸ^K\Àú⁄^ôHHçJN¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+HOà⁄^ôYõﬁ
+à⁄Yà⁄^ôH
+àKåMàZY⁄à⁄^ôKà⁄[à›X⁄ à⁄[ô[éà¬à‹⁄][€ôY
+àYùàà‹à⁄^ôH
+àåéà⁄[à€Ÿ€‘‹]X\ôJ⁄^ôH
+àçé€€ú›¬à€€‹äôåŒXçÿJKà€€‹äôåMÿÕçJKàJKà
+Kà‹⁄][€ôY
+àöY⁄àà‹àà⁄[à€Ÿ€‘‹]X\ôJ⁄^ôH
+àçÃã€€ú›¬à€€‹äôçNYç
+Kà€€‹äôåMXNäKàJKà
+KàŸ[ù\äà⁄[àX€€äX€€úÀòY‹õ›[ôY€€‹éà€€‹úÀù⁄]K⁄^ôNà⁄^ôH
+àçåäKà
+KàKà
+Kà
+N¬Çà⁄YŸ]€Ÿ€‘‹]X\ôJ›XõH⁄YK\›€€‹èà€€‹ú HOà€€ùZ[ô\äà⁄Yà⁄YKàZY⁄à⁄YKàX€‹ò][€éàõﬁX€‹ò][€äà‹òYY[ùà[ôX\ë‹òYY[ù
+àôY⁄[éà[Y€õY[ùù‹öY⁄à[ôà[Y€õY[ùòõ›€SYùà€€‹úŒà€€‹úÀà
+Kàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\ä⁄YH
+àåçJKàõﬁ⁄Y›Œà€€ú›¬àõﬁ⁄Y› à€€‹éà€€‹äéŒçÃJKàõ\îòY]\ŒàMàŸôúŸ]àŸôúŸ]
+äKà
+KàKà
+Kà
+N¬üBÇò€\‹»€òõÿ\ô[ô‘YŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›€òõÿ\ô[ô‘YŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\Àõ€ê⁄[ôŸYàJN¬à›ô\úöYBà›]O€òõÿ\ô[ô‘YŸOà‹ôX]T›]J
+HOà”€òõÿ\ô[ô‘YŸT›]J
+N¬üBÇò€\‹»”€òõÿ\ô[ô‘YŸT›]H^[ô»›]O€òõÿ\ô[ô‘YŸOà¬à[ù›\HN¬à›ö[ô»⁄⁄XŸHH	‹Ÿ[âŒ¬à›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+HOàÿÿYôõ€
+àõŸNàÿYôP\ôXJà⁄[à[ö[X]Y›⁄]⁄\äà\ò][€éà€€ú›\ò][€äZ[\ŸX€€ôŒàçL
+Kà⁄[à›\OH»›Ÿ[€€YJ€€ù^
+Hàÿ⁄⁄XŸJ€€ù^
+Kà
+Kà
+Kà
+N¬Çà⁄YŸ]›Ÿ[€€YJùZ[€€ù^€€ù^
+HOàY[ô àŸ^Nà€€ú›ò[YRŸ^J	›Ÿ[€€YI KàY[ôŒà€€ú›YŸR[úŸ]Àôúõ€Sêäéééç
+Kà⁄[à€€[[äà⁄[ô[éà¬à€€ú›YYPõﬁŸ€ ⁄^ôNàÕäKà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kà€€ú›^
+à	”YYPõﬁ	Àà›[Nà^›[Jàõ€ù⁄^ôNàŒàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+Kà^
+à
+à€€ù^à	’]õ»qh[X[öH1hYZ[[‹»òZ\›[±%€1%ÀâÀà	÷[›\à€X\ùò[Z[HYYX⁄[ôHÿXö[ô]âÀà
+Kà›[Nà€€ú›^›[Jõ€ù⁄^ôNàMÀ€€‹éàò]ûJKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kà^[ôY
+à⁄[à[XYŸKò\‹Ÿ]
+à	ÿ\‹Ÿ]À⁄[XYŸ\À€YYXõﬁŸò[Z[WŸ\]X[ùŸXú	Ààö]àõﬁö]ò€€ùZ[ãà
+Kà
+Kà€€ùZ[ô\äàY[ôŒà€€ú›YŸR[úŸ]Àò[
+MäKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éà€€‹úÀù⁄]Kàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äN
+Kà
+Kà⁄[à€€[[äà⁄[ô[éà¬àÿô[ôYö]
+àX€€úÀö[ùô[ù‹ûWÃó€›][ôYà
+€€ù^	”XqoöX]H±j‹\Ò#Zql…À	”\‹»€‹úûI Kà
+Kàÿô[ôYö]
+àX€€úÀùô\öYöYY›\Ÿ\ó€›][ôYà
+€€ù^	—]Y⁄X]Hÿ]Y›[[…À	”[‹ôHÿYô]I Kà
+Kàÿô[ôYö]
+àX€€úÀú[‹W€›][ôKà
+€€ù^	‘›ôZZŸ\€±%»1hYZ[XIÀ	–HX[Y\àò[Z[I Kà
+KàKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàö[Yù]€äà€îô\‹ŸYà
+
+HOàŸ]›]J
+
+HOà›\HJKà⁄[à^
+
+€€ù^	‘òY1%›IÀ	—Ÿ]›\ùY	 JKà
+KàKà
+Kà
+N¬Çà⁄YŸ]ÿô[ôYö]
+X€€ë]HX€€ã›ö[ô»Xô[
+HOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ô\ùXÿ[àJKà⁄[àõ› à⁄[ô[éà¬àX€€äX€€ã€€‹éà‹ôY[äKà€€ú›⁄^ôYõﬁ
+⁄YàLäKà^
+Xô[›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕå
+JKàKà
+Kà
+N¬Çà⁄YŸ]ÿ⁄⁄XŸJùZ[€€ù^€€ù^
+H¬àö[ò[‹[€ú»H¬à
+	‹Ÿ[âÀX€€úÀú\ú€€ó€›][ôK
+€€ù^	–qhIÀ	”YI JKà
+	ÿ⁄[	ÀX€€úÀò⁄[ÿÿ\ôK
+€€ù^	”X[õ»òZZÿ\…À	”^H⁄[	 JKà
+à	Ÿò[Z[IÀàX€€úÀôò[Z[W‹ô\›õ€€Kà
+€€ù^	“⁄]\»1hYZ[[‹»ò\û\…À	–[õ›\àò[Z[HY[Xô\â Kà
+Kà
+à	‹⁄\ôY	ÀàX€€úÀö€YW€›][ôYà
+€€ù^	–ô[ôòHòZ\›[±%€1%…À	‘⁄\ôYÿXö[ô]	 Kà
+KàN¬àô]\õà\›öY] àŸ^Nà€€ú›ò[YRŸ^J	ÿ⁄⁄XŸI KàY[ôŒà€€ú›YŸR[úŸ]Àò[
+ç
+Kà⁄[ô[éà¬àõ› à⁄[ô[éà¬àX€€êù]€äà€îô\‹ŸYà
+
+HOàŸ]›]J
+
+HOà›\H
+KàX€€éà€€ú›X€€äX€€úÀò\úõ›◊ÿòX⁄ Kà
+Kà€€ú›YYPõﬁŸ€ ⁄^ôNàäKà€€ú›⁄^ôYõﬁ
+⁄YàL
+Kà€€ú›^
+à	”YYPõﬁ	Àà›[Nà^›[Jàõ€ù⁄^ôNàçãàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+KàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àÃ
+Kà^
+à
+€€ù^	“ÿ\»ò]Y‹⁄\»8†'ìYYPõﬁ8†'…À	’⁄»⁄[\ŸHYYPõﬁ… Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàçKàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àMäKàããõ‹[€úÀõX\
+à
+ HOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJõ›€NàL
+Kà⁄[à[ö’Ÿ[
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKà€ï\à
+
+HOàŸ]›]J
+
+HOà⁄⁄XŸHHÀâJKà⁄[à€€ùZ[ô\äàY[ôŒà€€ú›YŸR[úŸ]Àò[
+MäKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éà⁄⁄XŸHOHÀâBà»€€ú›€€‹äôôMôçŸåäBàà€€‹úÀù⁄]Kàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKàõ‹ô\éàõ‹ô\ãò[
+à€€‹éà⁄⁄XŸHOHÀâH»‹ôY[àà€€ú›€€‹äôôLYYXäKà⁄Yà⁄⁄XŸHOHÀâH»ààKà
+Kà
+Kà⁄[àõ› à⁄[ô[éà¬àõ€P]ò]\ä\NàÀâJKà€€ú›⁄^ôYõﬁ
+⁄YàM
+Kà^[ôY
+à⁄[à^
+àÀâÀà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà
+Kà
+Kà
+KàYà
+⁄⁄XŸHOHÀâJBà€€ú›X€€äX€€úÀò⁄X⁄◊ÿ⁄\ò€K€€‹éà‹ôY[äKàKà
+Kà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàö[Yù]€äà€îô\‹ŸYà
+
+H¬à⁄YŸ]ô]Kõ€òõÿ\ôYHùYN¬àYà
+⁄⁄XŸHOH	‹Ÿ[â»	âÇà]⁄YŸ]ô]KõY[Xô\úÀò[ûJ
+
+HOàúô[][€àOH	‹Ÿ[â JH¬à⁄YŸ]ô]KõY[Xô\úÀòY
+àY[Xô\äàYàô]“Y
+
+Kàò[YNà⁄YŸ]ô]KúõŸö[Kõò[YKö\—[\Bà»
+€€ù^	–qhIÀ	”YI Bàà⁄YŸ]ô]KúõŸö[Kõò[YKàô[][€éà	‹Ÿ[âÀà
+Kà
+N¬àBà⁄YŸ]õ€ê⁄[ôŸY
+
+N¬àKà⁄[à^
+
+€€ù^	’1&\›IÀ	–€€ù[ùYI JKà
+KàKà
+N¬àBüBÇò€\‹»⁄[^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›⁄[
+‹›\\ãöŸ^Kô\]Z\ôY\Àô]Kô\]Z\ôY\Àõ€ê⁄[ôŸYJN¬à›]O⁄[à‹ôX]T›]J
+HOà‘⁄[
+
+N¬üBÇò€\‹»õ€P]ò]\à^[ô»›][\‹’⁄YŸ]¬àö[ò[›ö[ô»\N¬à€€ú›õ€P]ò]\ä‹›\\ãöŸ^Kô\]Z\ôY\Àù\_JN¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+H¬àYà
+\HOH	‹⁄\ôY	 H¬àô]\õà€€ú›⁄\ò€P]ò]\äàòY]\ŒàçÀàòX⁄Ÿ‹õ›[ô€€‹éàZ[ùà⁄[àX€€äX€€úÀö€YW‹õ›[ôY€€‹éà‹ôY[ã⁄^ôNàÃ
+Kà
+N¬àBàö[ò[òXŸHH›⁄]⁄
+\JH¬à	ÿ⁄[	»Oà	¸'‰iâÀà	Ÿò[Z[I»Oà	¸'‰mIÀà»Oà	¸'‰jIÀàN¬àô]\õà€€ùZ[ô\äà⁄YàMàZY⁄àMàX€‹ò][€éàõﬁX€‹ò][€äà⁄\Nàõﬁ⁄\Kò⁄\ò€Kà€€‹éàZ[ùàõ‹ô\éàõ‹ô\ãò[
+€€‹éà€€ú›€€‹äôòéYMYJK⁄YàäKà
+Kà⁄[àŸ[ù\ä⁄[à^
+òXŸK›[Nà€€ú›^›[Jõ€ù⁄^ôNàÃJJJKà
+N¬àBüBÇò€\‹»‘⁄[^[ô»›]O⁄[à¬à[ù[ô^H¬à›ö[ô»Ÿ[X›YY[Xô\íYH	…Œ¬à›ô\úöYBà⁄YŸ]ùZ[
+ H¬àö[ò[H⁄YŸ]ô]N¬àö[ò[YŸ\»H¬à€YTYŸJà]Nàà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYàY[Xô\íYàŸ[X›YY[Xô\íYà€ìY[Xô\ê⁄[ôŸYà
+ò[YJHOàŸ]›]J
+
+HOàŸ[X›YY[Xô\íYHò[YJKà
+KàÿXö[ô]YŸJ]Nà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+Kàﬁ[\€\‘YŸJ]Nà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+Kàò[Z[TYŸJ]Nà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+KàX[ÿ[[ô\îYŸJ]Nà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+KàN¬àô]\õàÿÿYôõ€
+àòX⁄Ÿ‹õ›[ô€€‹éà€€ú›€€‹äôôçôòôòJKàõŸNà€€‹ôYõﬁ
+à€€‹éà€€ú›€€‹äôôçôòôòJKà⁄[àÿYôP\ôXJ⁄[àYŸ\÷⁄[ô^JKà
+Kàõ›€Sò]öYÿ][€êò\éàò]öYÿ][€êò\äàŸ[X›Y[ô^à[ô^à€ë\›[ò][€îŸ[X›Yà
+äHOàŸ]›]J
+
+HOà[ô^HäKà\›[ò][€úŒà¬àò]öYÿ][€ë\›[ò][€äàX€€éà€€ú›X€€äX€€úÀö€YW€›][ôY
+KàXô[à
+À	‘òY1oöXIÀ	“€YI Kà
+Kàò]öYÿ][€ë\›[ò][€äàX€€éà€€ú›X€€äX€€úÀõYYXÿ][€ó€›][ôY
+KàXô[à
+À	’òZ\›[±%€1%…À	”YYX⁄[ôI Kà
+Kàò]öYÿ][€ë\›[ò][€äàX€€éà€€ú›X€€äX€€úÀöX[ÿ[ô‹ÿYô]W€›][ôY
+KàXô[à
+À	”X[àõŸÿIÀ	‘ﬁ[\€\… Kà
+Kàò]öYÿ][€ë\›[ò][€äàX€€éà€€ú›X€€äX€€úÀú[‹W€›][ôJKàXô[à
+À	ÒhZ[XIÀ	—ò[Z[I Kà
+Kàò]öYÿ][€ë\›[ò][€äàX€€éà€€ú›X€€äX€€úÀòÿ[[ô\ó€[€ù€›][ôY
+KàXô[à
+À	“ÿ[[ô‹ö]\…À	–ÿ[[ô\â Kà
+KàKà
+Kà
+N¬àBüBÇï⁄YŸ]ÿ\ô
+⁄YŸ]⁄[
+HOàÿ\ô
+à[]ò][€éàà€€‹éà€€‹úÀù⁄]Kà⁄[àY[ô Y[ôŒà€€ú›YŸR[úŸ]Àò[
+MäK⁄[à⁄[
+KäN¬ï⁄YŸ]]J›ö[ô» HOà^
+àÀà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàéàZY⁄àKåMKàõ€ùò[Z[Nà	‹ÿ[úÀ\Ÿ\öYâÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éàò]ûKàX€‹ò][€éà^X€‹ò][€ãõõ€ôKà
+KäN¬Çëù]\ôOõ€€à€€ôö\õQ[]JùZ[€€ù^À›ö[ô»][JH\ﬁ[ò»OÇà]ÿZ]⁄›—X[Ÿœõ€€äà€€ù^àÀàùZ[\éà
+X[Ÿ–€€ù^
+HOà[\ùX[Ÿ à]Nà^
+
+À	‘]ö\ù[ö⁄]Hqh]û[ö[q!IÀ	–€€ôö\õH[][€â JKà€€ù[ùà^
+à
+àÀà	–\àZ‹òZHõ‹ö]Hqh]ö[ùH8†'â][x†'»1h[»ôZZ‹€[»]1hX]Z›Hô\]ûZ‹ÀâÀà	—[]H8†'	][x†'O»\»X›[€àÿ[õõ›ôH[ô€ôKâÀà
+Kà
+KàX›[€úŒà¬à^ù]€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+X[Ÿ–€€ù^ò[ŸJKà⁄[à^
+
+À	–]1hX]Z›IÀ	–ÿ[òŸ[	 JKà
+Kàö[Yù]€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+X[Ÿ–€€ù^ùYJKà⁄[à^
+
+À	“qh]ö[ùIÀ	—[]I JKà
+KàKà
+Kà
+Hœ¬àò[ŸN¬Çò€\‹»€YTYŸH^[ô»›][\‹’⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬àö[ò[›ö[ô»Y[Xô\íY¬àö[ò[ò[YP⁄[ôŸY›ö[ôœà€ìY[Xô\ê⁄[ôŸY¬à€€ú›€YTYŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\Àõ€ê⁄[ôŸYà\ÀõY[Xô\íYH	…Ààô\]Z\ôY\Àõ€ìY[Xô\ê⁄[ôŸYàJN¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^ H¬àö[ò[õ›»H]U[YKõõ› 
+N¬àö[ò[Ÿ^HH]RŸ^Jõ› N¬àö[ò[X›]ôHBà]Kúô[Z[ô\ú¬àù⁄\ôJà
+
+HOÇàô[Z[ô\ê\Y\”€äõ› H	âÇàô[Z[ô\ìX]⁄\”Y[Xô\ä]KY[Xô\íY
+Kà
+Bàù”\›
+
+Bàãú€‹ù
+
+KäHOàKù[YKò€€\\ôU ãù[YJJN¬àö[ò[ZŸ[àHX›]ôKù⁄\ôJ
+
+HOàùZŸ[ë]\Àò€€ùZ[ú Ÿ^JJKõ[ô›¬àö[ò[ô[XZ[ö[ô»HX›]ôKõ[ô›HZŸ[é¬àö[ò[›‘›ÿ⁄”YY»H]KõYYÀù⁄\ôJ
+YYX⁄[ôJH¬àô]\õà
+Y[Xô\íYö\—[\HàYYX⁄[ôKõY[Xô\íYÀö\—[\HàYYX⁄[ôKõY[Xô\íYÀò€€ùZ[ú Y[Xô\íY
+JH	âÇàYYX⁄[ôKú›ÿ⁄»YYX⁄[ôKõ›‘›ÿ⁄’ô\⁄€¬àJKù”\›
+
+N¬àö[ò[^\ö[ô”YY»Bà]KõYY¬àù⁄\ôJà
+
+HOÇà
+Y[Xô\íYö\—[\HàõY[Xô\íYÀö\—[\HàõY[Xô\íYÀò€€ùZ[ú Y[Xô\íY
+JH	âÇàYYX⁄[ôSôYY—^\ûP][ù[€äô^\ûKõ› Kà
+Bàù”\›
+
+Bàãú€‹ù
+à
+KäHOà
+^\’[ù[YYX⁄[ôQ^\ûJKô^\ûKõ› Hœ»NNNNNJBàò€€\\ôU ^\’[ù[YYX⁄[ôQ^\ûJãô^\ûKõ› Hœ»NNNNNJKà
+N¬àö[ò[\€€Z[ô–\⁄[ùY[ù»Bà]Kò\⁄[ùY[ùÀù⁄\ôJ
+][JH¬àö[ò[]H]U[YKùûT\úŸJ	…⁄][Kô]_U	⁄][Kù[Y_I N¬àô]\õàZ][Kò€€\]Y	âÇà]OHù[	âÇàX]ö\–ôYõ‹ôJõ› H	âÇà
+Y[Xô\íYö\—[\H][KõY[Xô\íYOHY[Xô\íY
+N¬àJKù”\›
+
+Kãú€‹ù
+à
+KäHOà	…ÿKô]_IÿKù[Y_IÀò€€\\ôU 	…ÿãô]_Iÿãù[Y_I Kà
+N¬àö[ò[ô^\⁄[ùY[ùH\€€Z[ô–\⁄[ùY[ùÀôö\ú›‹ìù[¬Çàô]\õà›X⁄ à⁄[ô[éà¬à‹⁄][€ôYôö[
+à⁄[à[XYŸKò\‹Ÿ]
+à	ÿ\‹Ÿ]À⁄[XYŸ\À€YYXõﬁ⁄€YWÿòX⁄Ÿ‹õ›[ôùŸXú	Ààö]àõﬁö]ò€›ô\ãà
+Kà
+Kà‹⁄][€ôYôö[
+à⁄[à€€‹ôYõﬁ
+à€€‹éà€€ú›€€‹äôôçôòôòJKù⁄]ò[Y\ [Nàé
+Kà
+Kà
+Kà\›öY] àY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäMãNMãåäKà⁄[ô[éà¬àõ› à‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à^[ôY
+à⁄[à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬àö]Yõﬁ
+àö]àõﬁö]úÿÿ[Q›€ãà[Y€õY[ùà[Y€õY[ùòŸ[ù\ìYùà⁄[à^
+à]KúõŸö[Kõò[YKö\—[\Bà»
+À	”Xò\»H<'‰b…À	“[»H<'‰b… Bàà
+àÀà	”Xò\À	Ÿ]KúõŸö[Kõò[Y_HH<'‰b…Àà	“[À	Ÿ]KúõŸö[Kõò[Y_HH<'‰b…Àà
+KàX^[ô\ŒàKà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàçãàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à Kà^
+à›Ÿ^SXô[
+Àõ› Kà›[Nà€€ú›^›[J€€‹éà€€‹äôçåôäJKà
+KàKà
+Kà
+KàòYŸJà\”Xô[ö\⁄XõNàô[XZ[ö[ô»ààXô[à^
+	…ô[XZ[ö[ô… Kà⁄[àX€€êù]€äà€€\à
+À	‘ö[Z[ö[XZIÀ	‘ô[Z[ô\ú… Kà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàô[Z[ô\îõ›]TYŸJ]Nà]K€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀõõ›YöXÿ][€ú◊€›][ôY⁄^ôNàé
+Kà
+Kà
+KàX€€êù]€äà€€\à
+À	”X[õ»õŸö[\…À	”^HõŸö[I Kà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàõŸö[TYŸJ]Nà]K€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀòXÿ€›[ùÿ⁄\ò€W€›][ôY⁄^ôNàÃ
+Kà
+KàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+KàYà
+]KõY[Xô\úÀö\”õ›[\JHããñ¬à⁄[ô€P⁄[ÿ‹õ€öY] àÿ‹õ€\ôX›[€éà^\Àö‹ö^õ€ù[à⁄[àõ› à⁄[ô[éà¬à⁄⁄XŸP⁄\
+àXô[à^
+
+À	’ö\ÿH1hYZ[XIÀ	’⁄€Hò[Z[I JKàŸ[X›YàY[Xô\íYö\—[\Kà€îŸ[X›Yà
+ HOà€ìY[Xô\ê⁄[ôŸY
+	… Kà
+Kà€€ú›⁄^ôYõﬁ
+⁄Yà Kàããô]KõY[Xô\úÀõX\
+à
+Y[Xô\äHOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJöY⁄à Kà⁄[à⁄⁄XŸP⁄\
+à]ò]\éà^
+à€Y[Xô\ë[[⁄öJY[Xô\ãôŸ[ô\ãY[Xô\ãòYŸQ‹õ›\
+Kà
+KàXô[à^
+Y[Xô\ãõò[YJKàŸ[X›YàY[Xô\íYOHY[Xô\ãöYà€îŸ[X›Yà
+ HOà€ìY[Xô\ê⁄[ôŸY
+Y[Xô\ãöY
+Kà
+Kà
+Kà
+KàKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+KàKàÿ\ô
+à€€‹éà€€‹úÀù⁄]Kù⁄]ò[Y\ [NàéM
+Kà⁄\Nàõ›[ôYôX›[ô€Põ‹ô\äàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äåäKà⁄YNà€€ú›õ‹ô\î⁄YJ€€‹éà€€‹äôôMYYôX JKà
+Kà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäNMãNLäKà⁄[à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬àõ› à⁄[ô[éà¬à⁄^ôYõﬁ
+à⁄YàLLãàZY⁄àLLãà⁄[à›X⁄ à[Y€õY[ùà[Y€õY[ùòŸ[ù\ãà⁄[ô[éà¬à⁄^ôYõﬁô^[ô
+à⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹äàò[YNàX›]ôKö\—[\Bà»ààZŸ[à»X›]ôKõ[ô›à›õ⁄ŸU⁄YàLãàòX⁄Ÿ‹õ›[ô€€‹éà€€ú›€€‹äôôLYNX Kà›õ⁄ŸPÿ\à›õ⁄ŸPÿ\úõ›[ôà
+Kà
+Kà^
+à	…ZŸ[ã…ÿX›]ôKõ[ô›Wâ›
+À	›òZ\›ZWöqhYŸ\ùIÀ	€YYX⁄[ô\◊ùZŸ[â _IÀà^[Y€éà^[Y€ãòŸ[ù\ãà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMãàZY⁄àKåKàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+KàKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+⁄YàMäKà^[ôY
+à⁄[à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬àö[Yù]€äà›[Nàö[Yù]€ãú›[Qúõ€JàZ[ö[][T⁄^ôNà€€ú›⁄^ôKôúõ€RZY⁄
+M
+KàY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX à‹ö^õ€ù[àMãà
+Kà
+Kà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàô[Z[ô\îõ›]TYŸJà]Nà]Kà€ê⁄[ôŸYà€ê⁄[ôŸYà
+Kà
+Kà
+Kà⁄[àõ› àXZ[ê^\–[Y€õY[ùàXZ[ê^\–[Y€õY[ùòŸ[ù\ãà⁄[ô[éà¬à^
+à
+À	‘õŸ]Hö\›\…À	‘⁄›»[	 Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+⁄Yà
+Kà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄‹õ›[ôY
+KàKà
+Kà
+KàKà
+Kà
+KàKà
+KàKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàÿ\ô
+à€€‹éà€€‹úÀù⁄]Kù⁄]ò[Y\ [NàéMäKà⁄\Nàõ›[ôYôX›[ô€Põ‹ô\äàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äåäKà⁄YNà€€ú›õ‹ô\î⁄YJ€€‹éà€€‹äôôMYYôX JKà
+Kà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX à‹ö^õ€ù[àNàô\ùXÿ[àãà
+Kà⁄[à€€[[äà⁄[ô[éà¬àYà
+X›]ôKö\—[\JBàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ô\ùXÿ[àN
+Kà⁄[à^
+à
+àÀà	ÒhX[ôY[à›\[ù[›1l»òZ\›1l»±%‹òKâÀà	”õ»YYX⁄[ô\»ÿ⁄Y[YŸ^KâÀà
+Kà
+Kà
+KàããòX›]ôKùZŸJ
+KõX\
+
+äH¬àö[ò[\’ZŸ[àHãùZŸ[ë]\Àò€€ùZ[ú Ÿ^JN¬àô]\õà€€[[äà⁄[ô[éà¬à\›[Jà€€ù[ùY[ôŒàYŸR[úŸ]Àûô\õÀàXY[ôŒà€€ùZ[ô\äà⁄YàMKàZY⁄àMKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éàŸ‹ŸT›]\–€€‹äãõ›À\’ZŸ[äKà⁄\Nàõﬁ⁄\Kò⁄\ò€Kà
+Kà
+Kà]Nàõ› à⁄[ô[éà¬à⁄^ôYõﬁ
+à⁄YàÃãà⁄[à^
+àãù[YKà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàNàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒLà€€‹éàò]ûKà
+Kà
+Kà
+Kà^[ôY
+à⁄[à^
+àãù]Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMãàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éàò]ûKà
+Kà
+Kà
+KàKà
+KàòZ[[ôŒàX€€êù]€äà€€\à\’ZŸ[Çà»
+àÀà	‘qoû[q%›HÿZ\ôZqhYŸ\ù1!IÀà	”X\ö»\»õ›ZŸ[âÀà
+Bàà
+àÀà	‘qoû[q%›HÿZ\qhYŸ\ù1!IÀà	”X\ö»\»ZŸ[âÀà
+Kà€îô\‹ŸYà
+
+H¬àYà
+\’ZŸ[äH¬à[ô—‹ŸUZŸ[ä]Kãõ› N¬àH[ŸH¬àX\ö—‹ŸUZŸ[ä]Kãõ› N¬àBà€ê⁄[ôŸY
+
+N¬àKàX€€éàX€€äà\’ZŸ[Çà»X€€úÀò⁄X⁄◊ÿ⁄\ò€BààX€€úÀúòY[◊ÿù]€ó›[ò⁄X⁄ŸYà€€‹éà\’ZŸ[Çà»‹ôY[Çàà€€ú›€€‹äôçÿéòLJKà⁄^ôNàÕà
+Kà
+Kà
+KàYà
+àOHX›]ôKùZŸJ
+Kõ\›
+Bà€€ú›]öY\äZY⁄àK€€‹éà€€‹äôôLôNX JKàKà
+N¬àJKàKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàYà
+ô^\⁄[ùY[ùOHù[
+Hããñ¬àÿ\ô
+à€€‹éà€€ú›€€‹äôôNçŸå Kà⁄[à\›[JàXY[ôŒà€€ú›⁄\ò€P]ò]\äàòX⁄Ÿ‹õ›[ô€€‹éà€€‹úÀù⁄]Kà⁄[àX€€äX€€úÀõYYXÿ[‹Ÿ\ùöXŸ\◊€›][ôY€€‹éà‹ôY[äKà
+Kà]Nà^
+à
+À	–\ù[ZX]\⁄X\»ö^ö]\…À	”ô^\⁄[ùY[ù	 Kà›[Nà€€ú›^›[Jàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+Kà›Xù]Nà^
+à	…€ô^\⁄[ùY[ùô]_H	€ô^\⁄[ùY[ùù[Y_H8†(à	€ô^\⁄[ùY[ùù]_IÀà
+KàòZ[[ôŒà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄
+Kà€ï\à
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOà\⁄[ùY[ùY]‹äà]Nà]Kà\⁄[ùY[ùàô^\⁄[ùY[ùà€ê⁄[ôŸYà€ê⁄[ôŸYà
+Kà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+KàKàYà
+›‘›ÿ⁄”YYÀö\”õ›[\JHããñ¬à€YYX⁄[ôT›]\–ÿ\ô
+à€€ù^àÀàYYX⁄[ô\Œà›‘›ÿ⁄”YYÀàX€€éàX€€úÀùÿ\õö[ô◊ÿ[Xô\ó‹õ›[ôYà€€‹éà€€ú›€€‹äôôôéYåX KàòX⁄Ÿ‹õ›[ôà€€ú›€€‹äôôôôåŸäKà]Nà
+À	”Xqoò\»òZ\›1l»Z›]\…À	”›»YYX⁄[ôH›ÿ⁄… Kà€ï\à
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàÿXö[ô]YŸJ]Nà]K€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+Kà€ìYYX⁄[ôU\à
+YYX⁄[ôJHOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôTYŸJà]Nà]KàYYàYYX⁄[ôKà€ê⁄[ôŸYà€ê⁄[ôŸYà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+KàKàYà
+^\ö[ô”YYÀö\”õ›[\JHããñ¬à€YYX⁄[ôT›]\–ÿ\ô
+à€€ù^àÀàYYX⁄[ô\Œà^\ö[ô”YYÀàX€€éàX€€úÀô]ô[ùÿù\ﬁW€›][ôYà€€‹éà€€ú›€€‹äôôMLŒLÕJKàòX⁄Ÿ‹õ›[ôà€€ú›€€‹äôôôôNYN
+Kà]Nà
+àÀà	…Ÿ^\ö[ô”YYÀõ[ô›H	Ÿ^\ö[ô”YYÀõ[ô›OHH»	›òZ\›\»‹ôZ]ZHòZY‹…»à	›òZ\›ZH‹ôZ]ZHòZY‹…ﬂHÿ[[›IÀà	…Ÿ^\ö[ô”YYÀõ[ô›HYYX⁄[ô\»^\ôH€€€âÀà
+Kà^\ûNàùYKàõ›Œàõ›Àà€ï\à
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOà^\ö[ô”YYX⁄[ô\‘YŸJà]Nà]KàYYX⁄[ô\Œà^\ö[ô”YYÀàõ›Œàõ›Àà€ê⁄[ôŸYà€ê⁄[ôŸYà
+Kà
+Kà
+Kà€ìYYX⁄[ôU\à
+YYX⁄[ôJHOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôTYŸJà]Nà]KàYYàYYX⁄[ôKà€ê⁄[ôŸYà€ê⁄[ôŸYà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+KàKàõ› à⁄[ô[éà¬à^[ôY
+à⁄[àö[Yù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàÿÿ[îYŸJ]Nà]K€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀòÿ[Y\òWÿ[
+KàXô[à^
+
+À	”ù\⁄Ÿ[ù[›HòZ\›1!IÀ	‘ÿÿ[àYYX⁄[ôI JKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+⁄YàL
+Kà^[ôY
+à⁄[àö[Yù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàﬁ[\€\‘YŸJ]Nà]K€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀöX[ÿ[ô‹ÿYô]JKàXô[à^
+
+À	”X[àõŸÿIÀ	“HôY[[ùŸ[	 JKà
+Kà
+KàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàŸò[Z[T›]\–ÿ\ô
+À]K€ê⁄[ôŸY
+KàKà
+KàKà
+N¬àBüBÇê€€‹àŸ‹ŸT›]\–€€‹äô[Z[ô\àô[Z[ô\ã]U[YHõ›Àõ€€\’ZŸ[äH¬àYà
+\’ZŸ[äHô]\õà‹ôY[é¬àö[ò[YHHô[Z[ô\ë]U[YJô[Z[ô\ãõ› N¬àYà
+YHOHù[	âàYYKö\–Yù\äõ› JHô]\õà€€ú›€€‹äôôYåŸLÕäN¬àô]\õà€€ú›€€‹äôôôòçåôJN¬üBÇî›ö[ô»›Ÿ^SXô[
+ùZ[€€ù^€€ù^]U[YH]JH¬àYà
+ÿÿ[^ò][€úÀõÿÿ[SŸä€€ù^
+Kõ[ô›XYŸP€ŸHOH	Ÿ[â H¬àô]\õà]Qõ‹õX]
+	—QQQKSSSH	 Kôõ‹õX]
+]JN¬àBà€€ú›ŸYZŸ^\»H¬à	‹\õXYY[ö\…Àà	ÿ[ùòYY[ö\…Àà	›ôq#ZXYY[ö\…Àà	⁄Ÿ]ö\ùYY[ö\…Àà	‹[ö›YY[ö\…Àà	ÒhYqh]YY[ö\…Àà	‹ŸZ€XYY[ö\…ÀàN¬à€€ú›[€ù»H¬à	‹ÿ]\⁄[…Àà	›ò\ÿ\ö[…Àà	⁄€›õ…Àà	ÿò[[ô1oö[…Àà	ŸŸY›qo±%‹…Àà	ÿö\±oô[[…Àà	€Y\‹…Àà	‹ùY‹±jÒ#Z[…Àà	‹ùY‹Ò%⁄õ…Àà	‹‹[[…Àà	€\‹öq#Z[…Àà	Ÿ‹ù[Ÿ1oö[…ÀàN¬àô]\õà	ÒhX[ôY[ã	›ŸYZŸ^\÷Ÿ]KùŸYZŸ^HHW_K	€[€ù÷Ÿ]Kõ[€ùHW_H	Ÿ]Kô^_HâŒ¬üBÇï⁄YŸ]€YYX⁄[ôT›]\–ÿ\ô
+¬àô\]Z\ôYùZ[€€ù^€€ù^àô\]Z\ôY\›YYàYYX⁄[ô\Ààô\]Z\ôYX€€ë]HX€€ãàô\]Z\ôY€€‹à€€‹ãàô\]Z\ôY€€‹àòX⁄Ÿ‹õ›[ôàô\]Z\ôY›ö[ô»]Kàõ€€^\ûHHò[ŸKà]U[YO»õ›Ààõ⁄Yÿ[òX⁄œ»€ï\àò[YP⁄[ôŸYYYè»€ìYYX⁄[ôU\üJHOà[ö’Ÿ[
+à€ï\à€ï\àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKà⁄[à€€ùZ[ô\äàY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ‹ö^õ€ù[àMô\ùXÿ[àLäKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éàòX⁄Ÿ‹õ›[ôàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äM
+Kà
+Kà⁄[à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬àõ› à⁄[ô[éà¬àX€€äX€€ã€€‹éà€€‹äKà€€ú›⁄^ôYõﬁ
+⁄YàLäKà^[ôY
+à⁄[à^
+à]Kà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùŒ
+Kà
+Kà
+KàYà
+€ï\OHù[
+HX€€äX€€úÀò⁄]úõ€ó‹öY⁄‹õ›[ôY€€‹éà€€‹äKàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+KàããõYYX⁄[ô\ÀùZŸJ
+KõX\
+
+YYX⁄[ôJH¬àö[ò[^\»H^\ûBà»^\’[ù[YYX⁄[ôQ^\ûJYYX⁄[ôKô^\ûKõ›»JBààù[¬àö[ò[]Z[H^\ûBà»Ÿ^\ûQ]Z[
+€€ù^YYX⁄[ôKô^\ûK^\ Bàà
+à€€ù^à	€Z€»	‹]X[ù]SXô[
+YYX⁄[ôKú›ÿ⁄ _HõùâÀà	…‹]X[ù]SXô[
+YYX⁄[ôKú›ÿ⁄ _Hô[XZ[ö[ô…Àà
+N¬àô]\õà[ö’Ÿ[
+à€ï\à€ìYYX⁄[ôU\OHù[»ù[à
+
+HOà€ìYYX⁄[ôU\
+YYX⁄[ôJKàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äL
+Kà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäÕããäKà⁄[àõ› à⁄[ô[éà¬à^[ôY
+à⁄[à^
+à	…€YYX⁄[ôKõò[Y_H	€YYX⁄[ôKú›ô[ô›H8†%	]Z[	Àà›[Nà^›[Jàõ€ù⁄^ôNàLÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éà^\ûH	âà
+^\»œ»
+Hà»€€ú›€€‹äôòéLXÃX Bààò]ûKà
+Kà
+Kà
+KàYà
+€ìYYX⁄[ôU\OHù[
+Bà€€ú›X€€äX€€úÀõ‹[ó⁄[ó€ô]◊‹õ›[ôY⁄^ôNàMäKàKà
+Kà
+Kà
+N¬àJKàKà
+Kà
+KäN¬Çî›ö[ô»Ÿ^\ûQ]Z[
+ùZ[€€ù^€€ù^›ö[ô»^\ûK[ù»^\ H¬àYà
+^\»OHù[
+Hô]\õà^\ûN¬àYà
+^\»
+H¬àô]\õà
+€€ù^	Ÿÿ[[⁄ö[X\»\⁄XòZYÒ%…À	Ÿ^\ôY	 N¬àBàYà
+^\»OH
+H¬àô]\õà
+€€ù^	Ÿÿ[[⁄òHZ⁄H1hZX[ôY[âÀ	Ÿ^\ô\»Ÿ^I N¬àBàô]\õà
+€€ù^	€Z€»	^\»âÀ	…^\»^\»Yù	 N¬üBÇï⁄YŸ]Ÿò[Z[T›]\–ÿ\ô
+àùZ[€€ù^€€ù^à\]H]Kàõ⁄Yÿ[òX⁄»€ê⁄[ôŸYäHOà[ö’Ÿ[
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKà€ï\à
+
+HOàò]öYÿ]‹ãú\⁄
+à€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOàò[Z[TYŸJ]Nà]K€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+Kà⁄[à€€ùZ[ô\äàZY⁄àãàY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäML
+KàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éà€€ú›€€‹äôôLôçôåJKù⁄]ò[Y\ [NàéMäKàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äMäKà
+Kà⁄[àõ› à⁄[ô[éà¬à€€ú›X€€äX€€úÀô‹õ›\◊‹õ›[ôY€€‹éà‹ôY[ã⁄^ôNàÃJKà€€ú›⁄^ôYõﬁ
+⁄YàL
+Kà^[ôY
+à⁄[à^
+à
+à€€ù^à	ÒhZ[[‹»ò\öqlŒà	Ÿ]KõY[Xô\úÀõ[ô›IÀà	—ò[Z[HY[Xô\úŒà	Ÿ]KõY[Xô\úÀõ[ô›IÀà
+Kà›[Nà€€ú›^›[Jà€€‹éàò]ûKàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒàõ€ù⁄^ôNàMãà
+Kà
+Kà
+Kà⁄^ôYõﬁ
+à⁄YàLLãàZY⁄àLãà⁄[à›X⁄ à⁄[ô[éà¬àõ‹à
+ò\àHH»H]KõY[Xô\úÀùZŸJ Kõ[ô›»J  Bà‹⁄][€ôY
+àYùàH
+àÕà⁄[à—ò[Z[P]ò]\äàY[Xô\éà]KõY[Xô\ú÷⁄WKàò[òX⁄“[ô^àKà
+Kà
+KàYà
+]KõY[Xô\úÀö\—[\JBàõ‹à
+ò\àHH»HŒ»J  Bà‹⁄][€ôY
+àYùàH
+àÕà⁄[à—ò[Z[P]ò]\äò[òX⁄“[ô^àJKà
+KàKà
+Kà
+Kà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄‹õ›[ôY€€‹éà‹ôY[äKàKà
+Kà
+KäN¬Çò€\‹»—ò[Z[P]ò]\à^[ô»›][\‹’⁄YŸ]¬àö[ò[Y[Xô\è»Y[Xô\é¬àö[ò[[ùò[òX⁄“[ô^¬à€€ú›—ò[Z[P]ò]\ä›\ÀõY[Xô\ãô\]Z\ôY\Àôò[òX⁄“[ô^JN¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+H¬àö[ò[[XYŸT]HY[Xô\èÀö[XYŸT]œ»	…Œ¬àö[ò[òXŸHHY[Xô\àOHù[à»…¸'‰j	À	¸'‰jIÀ	¸'‰iâ◊VŸò[òX⁄“[ô^	H◊Bàà€Y[Xô\ë[[⁄öJY[Xô\àKôŸ[ô\ãY[Xô\àKòYŸQ‹õ›\
+N¬àô]\õà€€ùZ[ô\äà⁄YààZY⁄ààX€‹ò][€éàõﬁX€‹ò][€äà⁄\Nàõﬁ⁄\Kò⁄\ò€Kà€€‹éà€€ú›€€‹äôôôåôòäKàõ‹ô\éàõ‹ô\ãò[
+€€‹éà€€‹úÀù⁄]K⁄YàäKà
+Kà[Y€õY[ùà[Y€õY[ùòŸ[ù\ãà€\ôZ]ö[‹éà€\ò[ùP[X\Àà⁄[à[XYŸT]ö\”õ›[\Bà»[XYŸKôö[Jàö[J[XYŸT]
+Kà⁄YààZY⁄ààö]àõﬁö]ò€›ô\ãà\úõ‹êùZ[\éà
+À◊À◊◊ HOÇà^
+òXŸK›[Nà€€ú›^›[Jõ€ù⁄^ôNàç JKà
+Bàà^
+òXŸK›[Nà€€ú›^›[Jõ€ù⁄^ôNàç JKà
+N¬àBüBÇî›ö[ô»€Y[Xô\ë[[⁄öJ›ö[ô»Ÿ[ô\ã›ö[ô»YŸQ‹õ›\
+HOÇà›⁄]⁄
+
+Ÿ[ô\ãYŸQ‹õ›\
+JH¬à
+	Ÿô[X[IÀ	ÿ⁄[	 HOà	¸'‰i…Àà
+	€X[IÀ	ÿ⁄[	 HOà	¸'‰iâÀà
+À	ÿ⁄[	 HOà	¸'È‰âÀà
+	Ÿô[X[IÀ HOà	¸'‰jIÀà
+	€X[IÀ HOà	¸'‰j	Àà»Oà	¸'È‰IÀàN¬Çò€\‹»^\ö[ô”YYX⁄[ô\‘YŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[\›YYàYYX⁄[ô\Œ¬àö[ò[]U[YHõ›Œ¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›^\ö[ô”YYX⁄[ô\‘YŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\ÀõYYX⁄[ô\Ààô\]Z\ôY\Àõõ›Ààô\]Z\ôY\Àõ€ê⁄[ôŸYàJN¬Çà›ô\úöYBà›]O^\ö[ô”YYX⁄[ô\‘YŸOà‹ôX]T›]J
+HOà—^\ö[ô”YYX⁄[ô\‘YŸT›]J
+N¬üBÇò€\‹»—^\ö[ô”YYX⁄[ô\‘YŸT›]H^[ô»›]O^\ö[ô”YYX⁄[ô\‘YŸOà¬à›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+H¬àö[ò[YYX⁄[ô\»H⁄YŸ]õYYX⁄[ô\Àù⁄\ôJ
+YYX⁄[ôJH¬àö[ò[›[^\›»H⁄YŸ]ô]KõYYÀò[ûJà
+][JHOà][KöYOHYYX⁄[ôKöYà
+N¬àô]\õà›[^\›»	âÇàYYX⁄[ôSôYY—^\ûP][ù[€äYYX⁄[ôKô^\ûK⁄YŸ]õõ› N¬àJKù”\›
+
+N¬àô]\õàÿÿYôõ€
+à\ò\éà\ò\äà]Nà^
+à
+€€ù^	–ô\⁄XòZY⁄X[ù\»òZ\›ZIÀ	—^\ö[ô»YYX⁄[ô\… Kà
+Kà
+KàõŸNà\›öY]ÀúŸ\\ò]Y
+àY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà][P€›[ùàYYX⁄[ô\Àõ[ô›àŸ\\ò]‹êùZ[\éà
+À◊ HOà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kà][PùZ[\éà
+€€ù^[ô^
+H¬àö[ò[YYX⁄[ôHHYYX⁄[ô\÷⁄[ô^N¬àö[ò[^\»H^\’[ù[YYX⁄[ôQ^\ûJYYX⁄[ôKô^\ûK⁄YŸ]õõ› N¬àô]\õàÿ\ô
+à⁄[à\›[JàXY[ôŒà€€ú›⁄\ò€P]ò]\äàòX⁄Ÿ‹õ›[ô€€‹éà€€‹äôôôôNYN
+Kà⁄[àX€€äàX€€úÀô]ô[ùÿù\ﬁW€›][ôYà€€‹éà€€‹äôôMLŒLÕJKà
+Kà
+Kà]Nà^
+à	…€YYX⁄[ôKõò[Y_H	€YYX⁄[ôKú›ô[ô›IÀà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùŒ
+Kà
+Kà›Xù]Nà^
+àŸ^\ûQ]Z[
+€€ù^YYX⁄[ôKô^\ûK^\ Kà›[Nà^›[Jà€€‹éà
+^\»œ»
+Hà»€€ú›€€‹äôòéLXÃX Bàà€€ú›€€‹äôòÕåéé
+Kàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà
+Kà
+KàòZ[[ôŒà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄‹õ›[ôY
+Kà€ï\à
+
+H\ﬁ[ò»¬à]ÿZ]ò]öYÿ]‹ãú\⁄
+à€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôTYŸJà]Nà⁄YŸ]ô]KàYYàYYX⁄[ôKà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà
+Kà
+Kà
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HﬂJN¬àKà
+Kà
+N¬àKà
+Kà
+N¬àBüBÇî›ö[ô»›⁄ \]Hô[Z[ô\àã›ö[ô»YJH¬àYà
+ãõY[Xô\íYö\—[\JHô]\õàYN¬àô]\õàõY[Xô\ú¬àù⁄\ôJ
+
+HOàöYOHãõY[Xô\íY
+BàõX\
+
+
+HOàõò[YJBàôö\ú›‹ìù[œ¬àYN¬üBÇò€\‹»ÿXö[ô]YŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›ÿXö[ô]YŸJ‹›\\ãöŸ^Kô\]Z\ôY\Àô]Kô\]Z\ôY\Àõ€ê⁄[ôŸYJN¬Çà›ô\úöYBà›]OÿXö[ô]YŸOà‹ôX]T›]J
+HOà–ÿXö[ô]YŸT›]J
+N¬üBÇò€\‹»–ÿXö[ô]YŸT›]H^[ô»›]OÿXö[ô]YŸOà¬à›ö[ô»Ÿ[X›Yÿ]Y€‹ûHH	…Œ¬à›ö[ô»€‹ù‹ô\àH	€ò[YIŒ¬àö[ò[ŸX\ò⁄H^Y][ô–€€ùõ€\ä
+N¬Çà›ô\úöYBàõ⁄Y\‹‹ŸJ
+H¬àŸX\ò⁄ô\‹‹ŸJ
+N¬à›\\ãô\‹‹ŸJ
+N¬àBÇàù]\ôOõ⁄Yàÿ⁄€‹ŸPYY]Ÿ
+ùZ[€€ù^€€ù^
+H\ﬁ[ò»¬àö[ò[Y]ŸH]ÿZ]⁄›”[Ÿ[õ›€T⁄Y]›ö[ôœäà€€ù^à€€ù^à⁄›—òY“[ôNàùYKàùZ[\éà
+⁄Y]€€ù^
+HOàÿYôP\ôXJà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäNNN
+Kà⁄[à€€[[äàXZ[ê^\‘⁄^ôNàXZ[ê^\‘⁄^ôKõZ[ãà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›ô]⁄à⁄[ô[éà¬à^
+à
+à⁄Y]€€ù^à	“ÿZ\õ‹ö]HöY1%›HòZ\›1!O…Àà	“›»€›[[›HZŸH»Y]…Àà
+Kà›[Nà€€ú›^›[Jà€€‹éàò]ûKàõ€ù⁄^ôNàåãàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàö[Yù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+⁄Y]€€ù^	ÿÿ[Y\òI KàX€€éà€€ú›X€€äX€€úÀòÿ[Y\òWÿ[€›][ôY
+KàXô[à^
+à
+à⁄Y]€€ù^à	—õ›Ÿ‹òYù[›H\òòHù\⁄ÿZ]]IÀà	‘›Ÿ‹ò\‹àÿÿ[âÀà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kà›][ôYù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+⁄Y]€€ù^	€X[ùX[	 KàX€€éà€€ú›X€€äX€€úÀôY]€õ›W€›][ôY
+KàXô[à^
+
+⁄Y]€€ù^	Ò+ùô\›Hò[öÿIÀ	—[ù\àX[ùX[I JKà
+KàKà
+Kà
+Kà
+Kà
+N¬àYà
+[[›[ùYY]ŸOHù[
+Hô]\õé¬àYà
+Y]ŸOH	€X[ùX[	 H¬à]ÿZ]ò]öYÿ]‹ãú\⁄
+à€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàYYX⁄[ôQY]‹ä]Nà⁄YŸ]ô]K€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+Kà
+Kà
+N¬àH[ŸH¬à]ÿZ]ò]öYÿ]‹ãú\⁄
+à€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOàÿÿ[îYŸJà]Nà⁄YŸ]ô]Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà‹[êÿ[Y\òR[[YYX][NàùYKà
+Kà
+Kà
+N¬àBàYà
+[›[ùY
+HŸ]›]J
+
+HﬂJN¬àBÇà›ô\úöYBà⁄YŸ]ùZ[
+ H¬àö[ò[ÿ]Y€‹öY\»Bà⁄YŸ]ô]KõYY¬àô^[ô
+
+YYX⁄[ôJHOà‹‹]ÿ]Y€‹öY\ YYX⁄[ôKòÿ]Y€‹ûJJBàù‘Ÿ]
+
+Bàù”\›
+
+Bàãú€‹ù
+
+N¬àö[ò[X›]ôPÿ]Y€‹ûHHÿ]Y€‹öY\Àò€€ùZ[ú Ÿ[X›Yÿ]Y€‹ûJBà»Ÿ[X›Yÿ]Y€‹ûBàà	…Œ¬àö[ò[]Y\ûHHŸX\ò⁄ù^ùö[J
+Kù”›Ÿ\êÿ\ŸJ
+N¬àö[ò[YYX⁄[ô\»Bà
+X›]ôPÿ]Y€‹ûKö\—[\Bà»⁄YŸ]ô]KõYY¬àà⁄YŸ]ô]KõYY¬àù⁄\ôJà
+YYX⁄[ôJHOÇà‹‹]ÿ]Y€‹öY\ YYX⁄[ôKòÿ]Y€‹ûJBàò€€ùZ[ú X›]ôPÿ]Y€‹ûJKà
+Bàù”\›
+
+JBàù⁄\ôJà
+YYX⁄[ôJHOÇà]Y\ûKö\—[\Hà	…€YYX⁄[ôKõò[Y_H	€YYX⁄[ôKú›Xú›[òŸ_H	€YYX⁄[ôKú\ú‹Ÿ_H	€YYX⁄[ôKòò\ò€Ÿ_I¬àù”›Ÿ\êÿ\ŸJ
+Bàò€€ùZ[ú ]Y\ûJKà
+Bàù”\›
+
+Bàãú€‹ù
+à
+KäHOà›⁄]⁄
+€‹ù‹ô\äH¬à	Ÿ^\ûI»OàKô^\ûKò€€\\ôU ãô^\ûJKà	‹›ÿ⁄…»OàKú›ÿ⁄Àò€€\\ôU ãú›ÿ⁄ Kà»OàKõò[YKù”›Ÿ\êÿ\ŸJ
+Kò€€\\ôU ãõò[YKù”›Ÿ\êÿ\ŸJ
+JKàKà
+N¬àô]\õà€€‹ôYõﬁ
+à€€‹éà€€ú›€€‹äôôçôòôòJKà⁄[à\›öY] àY[ôŒàYŸR[úŸ]Àôúõ€SêäàNàNàNàYYXT]Y\ûKúY[ô”Ÿä Kòõ›€H
+»Õãà
+Kà⁄[ô[éà¬àõ› à⁄[ô[éà¬à^[ôY
+à⁄[à]J
+À	”X[õ»òZ\›[±%€1%…À	”^HYYX⁄[ôHÿXö[ô]	 JKà
+Kà€€ú›⁄^ôYõﬁ
+⁄YàLäKàX€€êù]€ãôö[Y
+à€îô\‹ŸYà
+
+HOàÿ⁄€‹ŸPYY]Ÿ
+ Kà€€\à
+À	‘öY1%›HòZ\›1!IÀ	–YYYX⁄[ôI Kà›[NàX€€êù]€ãú›[Qúõ€JàòX⁄Ÿ‹õ›[ô€€‹éà‹ôY[ãàõ‹ôY‹õ›[ô€€‹éà€€‹úÀù⁄]KàZ[ö[][T⁄^ôNà€€ú›⁄^ôJLãLäKà
+KàX€€éà€€ú›X€€äX€€úÀòY‹õ›[ôY⁄^ôNàÃ
+Kà
+KàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àMäKà^öY[
+à€€ùõ€\éàŸX\ò⁄à€ê⁄[ôŸYà
+ HOàŸ]›]J
+
+HﬂJKàX€‹ò][€éà[ú]X€‹ò][€äàXô[^à
+À	“YqhZ€›HòZ\›…À	‘ŸX\ò⁄YYX⁄[ô\… KàôYö^X€€éà€€ú›X€€äX€€úÀúŸX\ò⁄
+Kà›Yôö^X€€éàŸX\ò⁄ù^ö\—[\Bà»ù[ààX€€êù]€äà€îô\‹ŸYà
+
+H¬àŸX\ò⁄ò€X\ä
+N¬àŸ]›]J
+
+HﬂJN¬àKàX€€éà€€ú›X€€äX€€úÀò€X\äKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàõ‹›€êù]€ëõ‹õQöY[›ö[ôœäà[ö]X[ò[YNà€‹ù‹ô\ãàX€‹ò][€éà[ú]X€‹ò][€äàXô[^à
+À	‘öZ⁄X]ö[X\…À	‘€‹ùûI Kà
+Kà][\Œà¬àõ‹›€ìY[ùR][Jàò[YNà	€ò[YIÀà⁄[à^
+
+À	‘Yÿ[]òY[ö[q!IÀ	”ò[YI JKà
+Kàõ‹›€ìY[ùR][Jàò[YNà	Ÿ^\ûIÀà⁄[à^
+
+À	‘Yÿ[ÿ[[⁄ö[q!IÀ	—^\ûI JKà
+Kàõ‹›€ìY[ùR][Jàò[YNà	‹›ÿ⁄…Àà⁄[à^
+
+À	‘Yÿ[Z›]1+…À	‘›ÿ⁄… JKà
+KàKà€ê⁄[ôŸYà
+ò[YJHOàŸ]›]J
+
+HOà€‹ù‹ô\àHò[YHJKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàYà
+ÿ]Y€‹öY\Àö\”õ›[\JHããñ¬à^
+à
+À	—ö[ù[›HYÿ[ÿ]Y€‹öZ±!IÀ	—ö[\àûHÿ]Y€‹ûI Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMãàZY⁄àKåçKàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éàò]ûKàX€‹ò][€éà^X€‹ò][€ãõõ€ôKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà⁄[ô€P⁄[ÿ‹õ€öY] àÿ‹õ€\ôX›[€éà^\Àö‹ö^õ€ù[à⁄[àõ› à⁄[ô[éà¬à⁄⁄XŸP⁄\
+àXô[à^
+
+À	’ö\⁄IÀ	–[	 JKàŸ[X›YàX›]ôPÿ]Y€‹ûKö\—[\Kà€îŸ[X›Yà
+ HOàŸ]›]J
+
+HOàŸ[X›Yÿ]Y€‹ûHH	… Kà
+Kà€€ú›⁄^ôYõﬁ
+⁄Yà
+Kàããòÿ]Y€‹öY\ÀõX\
+à
+ÿ]Y€‹ûJHOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJöY⁄à
+Kà⁄[à⁄⁄XŸP⁄\
+àXô[à^
+ÿ]Y€‹ûJKàŸ[X›YàX›]ôPÿ]Y€‹ûHOHÿ]Y€‹ûKà€îŸ[X›Yà
+ HOÇàŸ]›]J
+
+HOàŸ[X›Yÿ]Y€‹ûHHÿ]Y€‹ûJKà
+Kà
+Kà
+KàKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+à
+À	‘ò\›Nà	€YYX⁄[ô\Àõ[ô›IÀ	—õ›[ôà	€YYX⁄[ô\Àõ[ô›I Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMàZY⁄àKåçKà€€‹éà€€‹äôçLççMÃäKàX€‹ò][€éà^X€‹ò][€ãõõ€ôKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+KàKàYà
+YYX⁄[ô\Àö\—[\JBàÿ\ô
+à^
+à
+àÀà	Òh[⁄ôHÿ]Y€‹öZõ⁄ôHòZ\›1l»±%‹òKâÀà	’\ôH\ôHõ»YYX⁄[ô\»[à\»ÿ]Y€‹ûKâÀà
+Kà
+Kà
+KàããõYYX⁄[ô\ÀõX\
+
+JH¬àö[ò[^\»H^\’[ù[YYX⁄[ôQ^\ûJKô^\ûK]U[YKõõ› 
+JN¬àö[ò[^\ûP€€‹àH^\»OHù[	âà^\»à»€€ú›€€‹äôòéLXÃX Bàà^\»OHù[	âà^\»H¬à»€€ú›€€‹äôôMÕÃäBàà‹ôY[é¬àô]\õàÿ\ô
+à€\ôZ]ö[‹éà€\ò[ùP[X\Àà⁄[à[ö’Ÿ[
+à€ï\à
+
+H\ﬁ[ò»¬à]ÿZ]ò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôTYŸJà]Nà⁄YŸ]ô]KàYYàKà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà
+Kà
+Kà
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HﬂJN¬àKà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àò[
+M
+Kà⁄[àõ› à‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à€YYX⁄[ôR[XYŸJK⁄^ôNàÃäKà€€ú›⁄^ôYõﬁ
+⁄YàM
+Kà^[ôY
+à⁄[à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à^
+à	…€Kõò[Y_H	€Kú›ô[ô›IÀùö[J
+Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éàò]ûKà
+Kà
+KàYà
+Kú›Xú›[òŸKö\”õ›[\JHããñ¬à€€ú›⁄^ôYõﬁ
+ZY⁄à Kà^
+Kú›Xú›[òŸJKàKà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà‹ò\
+à‹X⁄[ôŒàÀàù[î‹X⁄[ôŒàãà⁄[ô[éà¬à€YYX⁄[ôT[
+àX€€úÀö[ùô[ù‹ûWÃó€›][ôYà
+àÀà	…‹]X[ù]SXô[
+Kú›ÿ⁄ _HõùâÀà	…‹]X[ù]SXô[
+Kú›ÿ⁄ _HYù	Àà
+Kà‹ôY[ãà
+KàYà
+Kô^\ûKö\”õ›[\JBà€YYX⁄[ôT[
+àX€€úÀô]ô[ù€›][ôYàŸ^\ûQ]Z[
+ÀKô^\ûK^\ Kà^\ûP€€‹ãà
+KàYà
+Kúô\ÿ‹ö\[€äBà€YYX⁄[ôT[
+àX€€úÀúôXŸZ\€€ô◊€›][ôYà
+À	‘ôXŸ\[ö\…À	‘ô\ÿ‹ö\[€â Kàò]ûKà
+KàKà
+KàKà
+Kà
+Kà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄‹õ›[ôY
+KàKà
+Kà
+Kà
+Kà
+N¬àJKàKà
+Kà
+N¬àBüBÇï⁄YŸ]€YYX⁄[ôR[XYŸJYYYYX⁄[ôKŸ›XõH⁄^ôHHMüJH¬àö[ò[ö[HHYYX⁄[ôKö[XYŸT]ö\—[\H»ù[àö[JYYX⁄[ôKö[XYŸT]
+N¬àYà
+ö[HOHù[	âàö[Kô^\›‘ﬁ[ò 
+JH¬àô]\õà€\îôX›
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äM
+Kà⁄[à[XYŸKôö[Jàö[Kà⁄Yà⁄^ôKàZY⁄à⁄^ôKàö]àõﬁö]ò€›ô\ãà\úõ‹êùZ[\éà
+À◊À◊◊ HOà€YYX⁄[ôTXŸZ€\ä⁄^ôJKà
+Kà
+N¬àBàô]\õà€YYX⁄[ôTXŸZ€\ä⁄^ôJN¬üBÇï⁄YŸ]€YYX⁄[ôTXŸZ€\ä›XõH⁄^ôJHOà€€ùZ[ô\äà⁄Yà⁄^ôKàZY⁄à⁄^ôKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éàZ[ùàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äM
+Kà
+Kà⁄[à€€ú›X€€äX€€úÀõYYXÿ][€ó‹õ›[ôY€€‹éà‹ôY[ã⁄^ôNàÃJKäN¬Çï⁄YŸ]€YYX⁄[ôT[
+X€€ë]HX€€ã›ö[ô»Xô[€€‹à€€‹äHOà€€ùZ[ô\äàY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ‹ö^õ€ù[àKô\ùXÿ[àJKàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éà€€‹ãù⁄]ò[Y\ [NàåL
+Kàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äNNJKà
+Kà⁄[àõ› àXZ[ê^\‘⁄^ôNàXZ[ê^\‘⁄^ôKõZ[ãà⁄[ô[éà¬àX€€äX€€ã⁄^ôNàMK€€‹éà€€‹äKà€€ú›⁄^ôYõﬁ
+⁄YàJKà^
+àXô[à›[Nà^›[Jà€€‹éà€€‹ãàõ€ù⁄^ôNàLãàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà
+Kà
+KàKà
+KäN¬Çò€\‹»‹õ›[ô[ô‘ŸX\ò⁄⁄YŸ]^[ô»›]Yù[⁄YŸ]¬àö[ò[›ö[ô»[¬à€€ú›‹õ›[ô[ô‘ŸX\ò⁄⁄YŸ]
+‹›\\ãöŸ^Kô\]Z\ôY\Àö[JN¬à›]O‹õ›[ô[ô‘ŸX\ò⁄⁄YŸ]à‹ôX]T›]J
+HOà—‹õ›[ô[ô‘ŸX\ò⁄⁄YŸ]›]J
+N¬üBÇò€\‹»—‹õ›[ô[ô‘ŸX\ò⁄⁄YŸ]›]H^[ô»›]O‹õ›[ô[ô‘ŸX\ò⁄⁄YŸ]à¬à]Hö[ò[ŸXïöY]–€€ùõ€\à€€ùõ€\é¬à›ô\úöYBàõ⁄Y[ö]›]J
+H¬à›\\ãö[ö]›]J
+N¬à€€ùõ€\àHŸXïöY]–€€ùõ€\ä
+BàãúŸ]ò]òTÿ‹ö\[ŸJò]òTÿ‹ö\[ŸKù[úô\›öX›Y
+BàãúŸ]ò]öYÿ][€ë[Yÿ]Jàò]öYÿ][€ë[Yÿ]Jà€ìò]öYÿ][€îô\]Y\›à
+ô\]Y\›
+H¬àYà
+ô\]Y\›ö\”XZ[ëúò[YH	âàô\]Y\›ù\õOH	ÿXõ›]òõ[ö… H¬à][ò⁄\õ
+\öKú\úŸJô\]Y\›ù\õ
+K[ŸNà][ò⁄[ŸKô^\õò[\Xÿ][€äN¬àô]\õàò]öYÿ][€ëX⁄\⁄[€ãúô]ô[ù¬àBàô]\õàò]öYÿ][€ëX⁄\⁄[€ãõò]öYÿ]N¬àKà
+Kà
+BàãõÿY[›ö[ô ⁄YŸ]ö[
+N¬àBà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+HOà⁄^ôYõﬁ
+àZY⁄àLÃà⁄[à€\îôX›
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äM
+Kà⁄[àŸXïöY]’⁄YŸ]
+€€ùõ€\éà€€ùõ€\äKà
+Kà
+N¬üBÇò€\‹»YYX⁄[ôPZTYŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[YYYYX⁄[ôN¬àö[ò[›ö[ô»[ö]X[]Y\›[€é¬à€€ú›YYX⁄[ôPZTYŸJ‹›\\ãöŸ^Kô\]Z\ôY\Àô]Kô\]Z\ôY\ÀõYYX⁄[ôK\Àö[ö]X[]Y\›[€àH	…ﬂJN¬à›]OYYX⁄[ôPZTYŸOà‹ôX]T›]J
+HOà”YYX⁄[ôPZTYŸT›]J
+N¬üBÇò€\‹»”YYX⁄[ôPZTYŸT›]H^[ô»›]OYYX⁄[ôPZTYŸOà¬àö[ò[]Y\›[€àH^Y][ô–€€ùõ€\ä
+N¬àYYX⁄[ôPZP[ú›Ÿ\è»[ú›Ÿ\é¬àõ€€ù\ﬁHHò[ŸN¬à›ö[ô»\úõ‹àH	…Œ¬Çà›ô\úöYBàõ⁄Y[ö]›]J
+H¬à›\\ãö[ö]›]J
+N¬àYà
+⁄YŸ]ö[ö]X[]Y\›[€ãö\”õ›[\JH¬à⁄YŸ]–ö[ô[ôÀö[ú›[òŸKòY‹›úò[YPÿ[òX⁄ 
+ HOà\⁄ ⁄YŸ]ö[ö]X[]Y\›[€äJN¬àBàBÇà›ô\úöYBàõ⁄Y\‹‹ŸJ
+H¬à]Y\›[€ãô\‹‹ŸJ
+N¬à›\\ãô\‹‹ŸJ
+N¬àBÇàù]\ôOõ⁄Yà\⁄ ‘›ö[ôœ»›YŸŸ\›YJH\ﬁ[ò»¬àö[ò[ò[YHH
+›YŸŸ\›Yœ»]Y\›[€ãù^
+Kùö[J
+N¬àYà
+ò[YKö\—[\Hù\ﬁJHô]\õé¬à]Y\›[€ãù^Hò[YN¬àŸ]›]J
+
+H»ù\ﬁHHùYN»\úõ‹àH	…Œ»JN¬àûH¬àö[ò[ô\›[H]ÿZ]ZSYYX⁄[ôPYö\€‹îŸ\ùöXŸKò\⁄ àYYX⁄[ôNà⁄YŸ]õYYX⁄[ôKà]Y\›[€éàò[YKà
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HOà[ú›Ÿ\àHô\›[
+N¬àHÿ]⁄
+ H¬àYà
+[›[ùY
+H¬àŸ]›]J
+
+HOà\úõ‹àH
+à€€ù^à	–RH]ÿZﬁ[[»ÿ]]Hô\]ûZ€Àà]Z‹ö[ö⁄]H[ù\õô]»ûqhq+»\àò[ôZ⁄]H\àÿ\ù1!KâÀà	–€›[õ›Ÿ][àRH[ú›Ÿ\ãà⁄X⁄»H€€õôX›[€à[ôûHYÿZ[ãâÀà
+JN¬àBàHö[ò[H¬àYà
+[›[ùY
+HŸ]›]J
+
+HOàù\ﬁHHò[ŸJN¬àBàBÇà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+HOàÿÿYôõ€
+à\ò\éà\ò\ä]Nà^
+
+€€ù^	–RH\YHòZ\›1!IÀ	”YYX⁄[ôHRI JJKàõŸNà\›öY] àY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à^
+	…›⁄YŸ]õYYX⁄[ôKõò[Y_H	›⁄YŸ]õYYX⁄[ôKú›ô[ô›IÀùö[J
+Kà›[Nà€€ú›^›[Jõ€ù⁄^ôNàçõ€ùŸZY⁄àõ€ùŸZY⁄ùŒ
+JKà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+
+€€ù^à	“€]\⁄⁄]H\ò\›ZKàRHZ‹ö[òHXò\ù[±&H[ù\õô]»[ôõ‹õXX⁄Z±!H\àõŸ»1hX[[ö]\ÀâÀà	–\⁄»ò]\ò[KàRH⁄X⁄‹»›\úô[ùŸXà[ôõ‹õX][€à[ô⁄›‹»€›\òŸ\Àâ JKà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKà‹ò\
+‹X⁄[ôŒà⁄[ô[éà¬àX›[€ê⁄\
+Xô[à^
+
+€€ù^	“ÿ[H⁄⁄\ù\œ…À	’⁄]\»]õ‹è… JKà€îô\‹ŸYà
+
+HOà\⁄ 	“ÿ[H⁄⁄\ù\»1hZ\»òZ\›\»\àÒ!H›ò\òöX]\⁄XH\YH±+»1oö[õ›O… JKàX›[€ê⁄\
+Xô[à^
+
+€€ù^	Ò+ú‹1%⁄ö[XZIÀ	’ÿ\õö[ô‹… JKà€îô\‹ŸYà
+
+HOà\⁄ 	“€⁄⁄YH›ò\òöX]\⁄H1+‹‹1%⁄ö[XZK€€ùòZ[ôZÿX⁄Zõ‹»\àÒ!]ôZZ€‹œ… JKàX›[€ê⁄\
+Xô[à^
+
+€€ù^	“ÿZ\ò\ù⁄ò[X\œ…À	“›»\»]\ŸY… JKà€îô\‹ŸYà
+
+HOà\⁄ 	‘XZqhZ⁄[öÀÿZ\1hZ\»òZ\›\»\ò\›ZHò\ù⁄ò[X\ÀôZ›\ô[X\»ﬁ±%‹Àâ JKàJKà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKà^öY[
+à€€ùõ€\éà]Y\›[€ãàZ[ì[ô\ŒàãàX^[ô\ŒàKà^[ú]X›[€éà^[ú]X›[€ãô€ôKàX€‹ò][€éà[ú]X€‹ò][€äàXô[^à
+€€ù^	“€]\⁄[X\»\YHòZ\›1!IÀ	‘]Y\›[€àXõ›]HYYX⁄[ôI Kàõ‹ô\éà€€ú››][ôR[ú]õ‹ô\ä
+Kà
+Kà€î›XõZ]Yà
+ HOà\⁄ 
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàö[Yù]€ãöX€€ä€îô\‹ŸYàù\ﬁH»ù[à\⁄ÀàX€€éà€€ú›X€€äX€€úÀò]]◊ÿ]Ÿ\€€YJKXô[à^
+
+€€ù^	“€]\›HRIÀ	–\⁄»RI JJKàYà
+ù\ﬁJH€€ú›Y[ô Y[ôŒàYŸR[úŸ]Àõ€õJ‹àLäK⁄[à[ôX\îõŸ‹ô\‹“[ôXÿ]‹ä
+JKàYà
+\úõ‹ãö\”õ›[\JHY[ô Y[ôŒà€€ú›YŸR[úŸ]Àõ€õJ‹àLäKà⁄[à^
+\úõ‹ã›[Nà€€ú›^›[J€€‹éà€€‹úÀúôY
+JJKàYà
+[ú›Ÿ\π€ø}∂âûÀk∫wµÁ\ô[Y\ôŸ[òﬁSò[YHH›õ÷ŒKù^ùö[J
+N¬àô[Y\ôŸ[òﬁT€ôHH›õ÷ŒWKù^ùö[J
+N¬àõõ›\»H›õ÷ÃLKù^ùö[J
+N¬à⁄YŸ]õ€ê⁄[ôŸY
+
+N¬àÿÿYôõ€Y\‹Ÿ[ôŸ\ãõŸä Kú⁄›‘€òX⁄–ò\äà€òX⁄–ò\äà€€ù[ùà^
+
+À	‘õŸö[\»qh\ÿ]Y€›\…À	‘õŸö[Hÿ]ôY	 JKà
+Kà
+N¬àKà⁄[à^
+
+À	“qh\ÿ]Y€›HõŸö[1+…À	‘ÿ]ôHõŸö[I JKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àN
+Kà^
+à
+À	‘›ôZZÿ]H\à[€Y[û\…À	“X[[ô]I Kà›[Nà€€ú›^›[Jõ€ù⁄^ôNàåõ€ùŸZY⁄àõ€ùŸZY⁄òõ€
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà‹õŸö[U€€[JàÀàX€€úÀö\›‹ûKà	’ò\ù⁄ö[[»\›‹öZòIÀà	—‹ŸH\›‹ûIÀà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOà‹ŸR\›‹ûTYŸJà]Nà⁄YŸ]ô]Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà
+Kà
+Kà
+Kà
+Kà‹õŸö[U€€[JàÀàX€€úÀú⁄‹[ô◊ÿÿ\ù€›][ôYà	‘\ö⁄[öql»Ò!\òqhX\…Àà	‘⁄‹[ô»\›	Àà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOà⁄‹[ô‘YŸJà]Nà⁄YŸ]ô]Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà
+Kà
+Kà
+Kà
+Kà‹õŸö[U€€[JàÀàX€€úÀõYYXÿ[⁄[ôõ‹õX][€ó€›][ôYà	‘ÿ[ùò]ZÿHﬁY]⁄ùZIÀà	—ÿ›‹à›[[X\ûIÀà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàÿ›‹î›[[X\ûTYŸJ]Nà⁄YŸ]ô]JKà
+Kà
+Kà
+Kà‹õŸö[U€€[JàÀàX€€úÀô[Y\ôŸ[òﬁW€›][ôYà	“‹ö][±%»[ôõ‹õXX⁄ZòIÀà	—[Y\ôŸ[òﬁH[ôõ‹õX][€âÀà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOà[Y\ôŸ[òﬁR[ôõ‘YŸJ]Nà⁄YŸ]ô]JKà
+Kà
+Kà
+Kà‹õŸö[U€€[JàÀàX€€úÀòòX⁄›\€›][ôYà	–]ÿ\ô⁄[±%»€‹ZòIÀà	–òX⁄›\[ôô\›‹ôIÀà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOà]Uò[úŸô\îYŸJà]Nà⁄YŸ]ô]Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà
+Kà
+Kà
+Kà
+Kàÿ\ô
+à⁄[à›⁄]⁄\›[JàŸX€€ô\ûNà€€ú›⁄\ò€P]ò]\äàòX⁄Ÿ‹õ›[ô€€‹éàZ[ùà⁄[àX€€äX€€úÀò]]◊ÿ]Ÿ\€€YW‹õ›[ôY€€‹éà‹ôY[äKà
+Kàò[YNà⁄YŸ]ô]KòZP€€úŸ[ù‹ò[ùYà]Nà^
+à
+À	—ö\ôXò\ŸHRH»Ÿ[Z[öIÀ	—ö\ôXò\ŸHRH»Ÿ[Z[öI Kà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ
+Kà
+Kà›Xù]Nà^
+
+Àà	’öY[ò\»ô[ôò\»ZY[X\»òZ\›1l»€‹ù[1%€\»\à8†'ìX[àõŸÿx†'[ò[^ôZIÀà	”€ôH\õZ\‹⁄[€àõ‹àYYX⁄[ôHÿ\ô»[ôﬁ[\€H[ò[\⁄\… JKà€ê⁄[ôŸYà
+ò[YJH¬àŸ]›]J
+
+H¬à⁄YŸ]ô]KòZP€€úŸ[ù‹ò[ùYHò[YN¬à⁄YŸ]ô]KòZP€€úŸ[ù⁄⁄XŸSXYHHùYN¬àJN¬à⁄YŸ]õ€ê⁄[ôŸY
+
+N¬àKà
+Kà
+Kàÿ\ô
+à⁄[à›⁄]⁄\›[JàŸX€€ô\ûNà€€ú›⁄\ò€P]ò]\äàòX⁄Ÿ‹õ›[ô€€‹éàZ[ùà⁄[àX€€äX€€úÀôö[ôŸ\úö[ù€€‹éà‹ôY[äKà
+Kàò[YNà⁄YŸ]ô]Kúö]òXﬁSÿ⁄Àà]Nà^
+à
+À	‘õŸ‹ò[q%€1%‹»qoúòZ›\…À	–\ÿ⁄… Kà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ
+Kà
+Kà›Xù]Nà^
+à
+àÀà	”ò]Y›H[Yõ€õ»Sã\±h]»]‹]Y1!H\òòHôZY»]qoö[ö[q!IÀà	’\ŸH]öXŸHSãö[ôŸ\úö[ù‹àòXŸH]][ùXÿ][€âÀà
+Kà
+Kà€ê⁄[ôŸYà
+ò[YJH¬àŸ]›]J
+
+HOà⁄YŸ]ô]Kúö]òXﬁSÿ⁄»Hò[YJN¬à⁄YŸ]õ€ê⁄[ôŸY
+
+N¬àKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àN
+Kà^
+à
+À	“ÿ[òIÀ	”[ô›XYŸI Kà›[Nà€€ú›^›[Jõ€ù⁄^ôNàåõ€ùŸZY⁄àõ€ùŸZY⁄òõ€
+Kà
+KàòY[—‹õ›\›ö[ôœäà‹õ›\ò[YNà⁄YŸ]ô]Kõ[ô›XYŸKà€ê⁄[ôŸYà
+äH¬àŸ]›]J
+
+HOà⁄YŸ]ô]Kõ[ô›XYŸHHàJN¬à⁄YŸ]õ€ê⁄[ôŸY
+
+N¬àKà⁄[à€€[[äà⁄[ô[éà¬àòY[”\›[Jàò[YNà	‹ﬁ\›[IÀà]Nà^
+
+À	‘Yÿ[[Yõ€±!IÀ	’\ŸH€ôH[ô›XYŸI JKà
+Kà€€ú›òY[”\›[Jò[YNà	€	À]Nà^
+	”Y]]öql… JKà€€ú›òY[”\›[Jò[YNà	Ÿ[âÀ]Nà^
+	—[ô€\⁄	 JKàKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàÿ\ô
+à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à^
+à
+À	–\YHõŸ‹ò[q!IÀ	–Xõ›]	 Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàåàõ€ùŸZY⁄àõ€ùŸZY⁄òõ€à
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà€€ú›^
+	”YYPõﬁååNå	 Kà^
+à
+àÀà	ÒhZ[[‹»òZ\›[±%€1%‹»\àòZ\›1l»ö[Z[ö[ql»õŸ‹ò[XKâÀà	—ò[Z[HYYX⁄[ôHÿXö[ô][ôYYXÿ][€àô[Z[ô\à\âÀà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+	…›
+À	“Òj‹±%⁄ò\…À	–‹ôX]‹â _Nà[ôö]\»‹ùY[ú⁄ÿ\… Kà^
+	…›
+À	‘õ⁄ôZ›\…À	‘õ⁄ôX›	 _NàYYPõﬁ	 Kà^
+à
+àÀà	‘õŸ‹ò[XHô\ZŸZq#ZXHﬁY]⁄õ»€€ú›[X⁄Zõ‹»\àZ›[›1%‹»\[[ÀâÀà	’H\Ÿ\»õ›ô\XŸHYYXÿ[YöXŸH‹àHX⁄ÿYŸHXYõ]âÀà
+Kà
+KàKà
+Kà
+KàKà
+Kà
+N¬àBüBÇï⁄YŸ]öY[
+àùZ[€€ù^Àà^Y][ô–€€ùõ€\à€€ùõ€\ãà›ö[ô»à›ö[ô»[ã¬à[ù[ô\»HKàõ€€ù[Xô\àHò[ŸKüJHOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJõ›€NàLäKà⁄[à^öY[
+à€€ùõ€\éà€€ùõ€\ãàX^[ô\Œà[ô\ÀàŸ^Xõÿ\ô\Nàù[Xô\à»^[ú]\Kõù[Xô\ààù[àX€‹ò][€éà[ú]X€‹ò][€äXô[^à
+À[äJKà
+KäN¬Çï⁄YŸ]]QöY[
+àùZ[€€ù^Àà^Y][ô–€€ùõ€\à€€ùõ€\ãà›ö[ô»à›ö[ô»[ã¬àõ€€[€ù€õHHò[ŸKüJHOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJõ›€NàLäKà⁄[à^öY[
+à€€ùõ€\éà€€ùõ€\ãàŸ^Xõÿ\ô\Nà^[ú]\Kõù[Xô\ãà[ú]õ‹õX]\úŒà—]Q\⁄õ‹õX]\ä[€ù€õNà[€ù€õJWKàX^[ô›à[€ù€õH»»àLàX€‹ò][€éà[ú]X€‹ò][€äàXô[^à
+À[äKà[ù^à[€ù€õH»	÷VVVKSSI»à	÷VVVKSSKQ	Àà€›[ù\ï^à	…ÀàôYö^X€€éà€€ú›X€€äX€€úÀòÿ[[ô\ó€[€ù€›][ôY
+Kà
+Kà
+KäN¬Çòõ€€›ò[Y]J›ö[ô»ò[YKÿõ€€[€ù€õHHò[Ÿ_JH¬àö[ò[]\õàH[€ù€õBà»ôY—^
+â◊óÕKJÃKNW_VÃLóJI	 BààôY—^
+â◊óÕKJÃKNW_VÃLóJKJÃLóW÷ÃWJI	 N¬àYà
+\]\õãö\”X]⁄
+ò[YJJHô]\õàò[ŸN¬àYà
+[€ù€õJHô]\õàùYN¬àö[ò[\ù»Hò[YKú‹]
+	ÀI KõX\
+[ùú\úŸJKù”\›
+
+N¬àö[ò[\úŸYH]U[YJ\ù÷ÃK\ù÷ÃWK\ù÷ÃóJN¬àô]\õà\úŸYûYX\àOH\ù÷ÃH	âÇà\úŸYõ[€ùOH\ù÷ÃWH	âÇà\úŸYô^HOH\ù÷ÃóN¬üBÇò€\‹»ÿÿ[êÿ\\ôTô\›[¬àö[ò[›ö[ô»^¬àö[ò[›ö[ô»[XYŸT]¬à€€ú›ÿÿ[êÿ\\ôTô\›[
+\Àù^\Àö[XYŸT]
+N¬üBÇò€\‹»ÿÿ[îYŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬àö[ò[õ€€‹[êÿ[Y\òR[[YYX][N¬à€€ú›ÿÿ[îYŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\Àõ€ê⁄[ôŸYà\Àõ‹[êÿ[Y\òR[[YYX][HHò[ŸKàJN¬à›]Oÿÿ[îYŸOà‹ôX]T›]J
+HOà‘ÿÿ[îYŸJ
+N¬üBÇò€\‹»‘ÿÿ[îYŸH^[ô»›]Oÿÿ[îYŸOà¬à›ö[ô»^H	…Œ¬à›ö[ô»[XYŸT]H	…Œ¬àõ€€ù\ﬁHHò[ŸN¬àõ€€ùö›ù\ﬁHHò[ŸN¬àõ€€ùö›⁄X⁄ŸYHò[ŸN¬à›ö[ô»ùö›\úõ‹àH	…Œ¬àùö›YYX⁄[ôO»ùö›X]⁄¬à\›ùö›YYX⁄[ôOàùö›X]⁄\»H◊N¬Çà›ô\úöYBàõ⁄Y[ö]›]J
+H¬à›\\ãö[ö]›]J
+N¬àYà
+⁄YŸ]õ‹[êÿ[Y\òR[[YYX][JH¬à⁄YŸ]–ö[ô[ôÀö[ú›[òŸKòY‹›úò[YPÿ[òX⁄ 
+ H¬àYà
+[›[ùY
+H‹[êÿ[Y\òJ
+N¬àJN¬àBàBÇàù]\ôOõ⁄Yà€€⁄›\ùö›
+›ö[ô»ôX€Ÿ€ö^ôY^
+H\ﬁ[ò»¬àö[ò[]Y\ûHHŸ›Y\‹‘ôY⁄\›ûSò[YJôX€Ÿ€ö^ôY^
+N¬àYà
+]Y\ûKö\—[\JHô]\õé¬àŸ]›]J
+
+H¬àùö›ù\ﬁHHùYN¬àùö›⁄X⁄ŸYHò[ŸN¬àùö›\úõ‹àH	…Œ¬àùö›X]⁄Hù[¬àùö›X]⁄\»H◊N¬àJN¬àûH¬àò\àX]⁄\»Hùö›YYX⁄[ôOñ◊N¬àö[ò[ÿ[ôY]\»H¬à]Y\ûKà‹ôY⁄\›ûU]Pÿ\ŸJ]Y\ûJKàYà
+]Y\ûKò€€ùZ[ú 	»	 JH]Y\ûKú‹]
+	»	 Kôö\ú›àYà
+]Y\ûKò€€ùZ[ú 	»	 JH‹ôY⁄\›ûU]Pÿ\ŸJ]Y\ûKú‹]
+	»	 Kôö\ú›
+KàN¬àõ‹à
+ö[ò[ÿ[ôY]H[àÿ[ôY]\ H¬àX]⁄\»H]ÿZ]ùö›Ÿ\ùöXŸKúŸX\ò⁄
+ÿ[ôY]JN¬àYà
+X]⁄\Àö\”õ›[\JHúôXZŒ¬àBàö[ò[X]⁄Hùö›Ÿ\ùöXŸKòô\›X]⁄
+àX]⁄\ÀàŸ›Y\‹‘›ô[ô›
+ôX€Ÿ€ö^ôY^
+Kà
+N¬àYà
+[›[ùY
+BàŸ]›]J
+
+H¬àùö›X]⁄\»HX]⁄\Œ¬àùö›X]⁄HX]⁄¬àJN¬àHÿ]⁄
+\úõ‹äH¬àYà
+[›[ùY
+BàŸ]›]J
+
+H¬àùö›X]⁄Hù[¬àùö›\úõ‹àH	…\úõ‹âŒ¬àJN¬àHö[ò[H¬àYà
+[›[ùY
+H¬àŸ]›]J
+
+H¬àùö›ù\ﬁHHò[ŸN¬àùö›⁄X⁄ŸYHùYN¬àJN¬àBàBàBÇàù]\ôOõ⁄Yàÿ⁄€‹ŸUùö›ò\öX[ù
+
+H\ﬁ[ò»¬àö[ò[Ÿ[X›YH]ÿZ]⁄›”[Ÿ[õ›€T⁄Y]ùö›YYX⁄[ôOäà€€ù^à€€ù^à\‘ÿ‹õ€€€ùõ€YàùYKàùZ[\éà
+⁄Y]€€ù^
+HOàÿYôP\ôXJà⁄[àúòX›[€ò[T⁄^ôYõﬁ
+àZY⁄òX›‹éàçŒà⁄[à€€[[äà⁄[ô[éà¬àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[à^
+à
+à⁄Y]€€ù^à	‘\⁄\ö[ö⁄]HZ‹€1l»òZ\›»ò\öX[ù1!IÀà	–⁄€‹ŸHH^X›YYX⁄[ôHò\öX[ù	Àà
+Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàåKàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà
+Kà
+Kà
+Kà^[ôY
+à⁄[à\›öY]ÀúŸ\\ò]Y
+à][P€›[ùàùö›X]⁄\Àõ[ô›àŸ\\ò]‹êùZ[\éà
+À◊ HOà€€ú›]öY\äZY⁄àJKà][PùZ[\éà
+À[ô^
+H¬àö[ò[][HHùö›X]⁄\÷⁄[ô^N¬àô]\õà\›[JàXY[ôŒàX€€äàY[ùXÿ[
+][Kùö›X]⁄
+Bà»X€€úÀúòY[◊ÿù]€óÿ⁄X⁄ŸYààX€€úÀúòY[◊ÿù]€ó€Ÿôãà€€‹éà‹ôY[ãà
+Kà]Nà^
+	…⁄][Kõò[Y_H	⁄][Kú›ô[ô›I Kà›Xù]Nà^
+à	…⁄][Kô‹ÿYŸQõ‹õ_Wâ⁄][KúX⁄ÿYŸQ\ÿ‹ö\[€üIÀà
+Kà\’ôYS[ôNàùYKà€ï\à
+
+HOàò]öYÿ]‹ãú‹
+⁄Y]€€ù^][JKà
+N¬àKà
+Kà
+KàKà
+Kà
+Kà
+Kà
+N¬àYà
+Ÿ[X›YOHù[	âà[›[ùY
+HŸ]›]J
+
+HOàùö›X]⁄HŸ[X›Y
+N¬àBÇàù]\ôOõ⁄Yàÿ‹ä[XYŸT€›\òŸH‹ò H\ﬁ[ò»¬àYà
+ù\ﬁJHô]\õé¬àŸ]›]J
+
+HOàù\ﬁHHùYJN¬à^ôX€Ÿ€ö^ô\è»é¬àûH¬àö[ò[àH]ÿZ][XYŸTX⁄Ÿ\ä
+KúX⁄“[XYŸJ€›\òŸNà‹òÀ[XYŸT]X[]NàL
+N¬àYà
+àOHù[[[›[ùY
+Hô]\õé¬àö[ò[\ôX›‹ûHH]ÿZ]Ÿ]\Xÿ][€ëÿ›[Y[ù—\ôX›‹ûJ
+N¬àö[ò[ÿ]ôYH]ÿZ]ö[Jãú]
+Bàò€‹J	…Ÿ\ôX›‹ûKú]K‹ÿÿ[ó…€ô]“Y
+
+_Köú… N¬ààH^ôX€Ÿ€ö^ô\äÿ‹ö\à^ôX€Ÿ€ö][€îÿ‹ö\õ][äN¬àö[ò[›]H]ÿZ]ãúõÿŸ\‹“[XYŸJ[ú][XYŸKôúõ€Qö[T]
+ÿ]ôYú]
+JN¬àYà
+[›[ùY
+H¬àŸ]›]J
+
+H¬à^H›]ù^¬à[XYŸT]Hÿ]ôYú]¬àJN¬à]ÿZ]€€⁄›\ùö›
+›]ù^
+N¬àBàHÿ]⁄
+ H¬àYà
+[›[ùY
+BàÿÿYôõ€Y\‹Ÿ[ôŸ\ãõŸä€€ù^
+Kú⁄›‘€òX⁄–ò\äà€òX⁄–ò\äà€€ù[ùà^
+à
+€€ù^	”ô\]ûZ€»ù\⁄ÿZ]]KâÀ	–€›[õ›ÿÿ[ãâ Kà
+Kà
+Kà
+N¬àHö[ò[H¬àYà
+[›[ùY
+HŸ]›]J
+
+HOàù\ﬁHHò[ŸJN¬à]ÿZ]èÀò€‹ŸJ
+N¬àBàBÇàù]\ôOõ⁄Yà‹[êÿ[Y\òJ
+H\ﬁ[ò»¬àö[ò[ô\›[H]ÿZ]ò]öYÿ]‹ãú\⁄ÿÿ[êÿ\\ôTô\›[äà€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàÿ[Y\òPÿ\\ôTYŸJ]Nà⁄YŸ]ô]K€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+Kà
+Kà
+N¬àYà
+ô\›[OHù[	âà[›[ùY
+H¬àŸ]›]J
+
+H¬à^Hô\›[ù^¬à[XYŸT]Hô\›[ö[XYŸT]¬àJN¬à]ÿZ]€€⁄›\ùö›
+ô\›[ù^
+N¬àBàBÇà›ô\úöYBà⁄YŸ]ùZ[
+ HOàÿÿYôõ€
+à\ò\éà\ò\ä]Nà^
+
+À	‘⁄Ÿ[ù[›IÀ	‘ÿÿ[â JJKàõŸNà\›öY] àY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬àö[Yù]€ãöX€€äà€îô\‹ŸYàù\ﬁH»ù[à‹[êÿ[Y\òKàX€€éà€€ú›X€€äX€€úÀòÿ[Y\òWÿ[
+KàXô[à^
+
+À	—õ›Ÿ‹òYù[›IÀ	’ZŸH›… JKà
+Kà›][ôYù]€ãöX€€äà€îô\‹ŸYàù\ﬁH»ù[à
+
+HOàÿ‹ä[XYŸT€›\òŸKôÿ[\ûJKàX€€éà€€ú›X€€äX€€úÀú›◊€Xúò\ûJKàXô[à^
+
+À	‘\⁄\ö[ö›Hù[›ò]ZÒ!IÀ	–⁄€‹ŸH›… JKà
+Kà›][ôYù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàò\ò€ŸTYŸJ]Nà⁄YŸ]ô]K€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀú\óÿ€ŸW‹ÿÿ[õô\äKàXô[à^
+
+À	‘⁄Ÿ[ù[›H€Ÿ1!IÀ	‘ÿÿ[à€ŸI JKà
+KàYà
+ù\ﬁJH€€ú›Ÿ[ù\ä⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹ä
+JKàYà
+^ö\”õ›[\JHããñ¬àYà
+[XYŸT]ö\”õ›[\JBà€\îôX›
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äN
+Kà⁄[à[XYŸKôö[Jàö[J[XYŸT]
+KàZY⁄àNàö]àõﬁö]ò€›ô\ãà\úõ‹êùZ[\éà
+€€ù^\úõ‹ã›X⁄’òXŸJHOÇà€€ú›⁄^ôYõﬁú⁄ö[ö 
+Kà
+Kà
+Kàÿ\ô
+à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à^
+à
+À	–]qoö[ö[[»ô^ù[]\…À	‘ôX€Ÿ€ö][€àô\›[	 Kà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùŒ
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+à	…◊Ÿ›Y\‹”ò[YJ^
+_Wâ◊Ÿ›Y\‹‘›ô[ô›
+^
+_IÀà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàåàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà
+Kà
+Kà€€ú›]öY\ä
+Kà^
+à
+àÀà	—[€Y[û\»ù\⁄ÿZ]]Hù[»Z›[›1%‹ÀàöYqhHqh\ÿ]Y€Ÿ[ZHù[‹»]Z‹ö[ö⁄]KâÀà	—]Hÿ\»ôXYúõ€HHX⁄ÿYŸKà⁄X⁄»]ôYõ‹ôHÿ]ö[ôÀâÀà
+Kà›[Nà€€ú›^›[J€€‹éà€€‹äôçLççMÃäJKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+à	…›
+À	—ÿ[[⁄ö[[»]IÀ	—^\ûI _Nà	”YYX⁄[ôSX]⁄\ãô^\ûJ^
+Hœ»
+À	€ôX]qoö[ùIÀ	€õ›ôX€Ÿ€ö^ôY	 _IÀà
+Kà^[ú⁄[€ï[Jà[TY[ôŒàYŸR[úŸ]Àûô\õÀà]Nà^
+à
+À	’ö\ÿ\»]qoö[ù\»Z‹›\…À	–[ôX€Ÿ€ö^ôY^	 Kà
+Kà⁄[ô[éà‘Ÿ[X›XõU^
+^
+WKà
+KàKà
+Kà
+KàYà
+ùö›ù\ﬁJBàÿ\ô
+àõ› à⁄[ô[éà¬à€€ú›⁄^ôYõﬁ
+à⁄YàçàZY⁄àçà⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹ä›õ⁄ŸU⁄Yà Kà
+Kà€€ú›⁄^ôYõﬁ
+⁄YàLäKà^[ôY
+à⁄[à^
+à
+àÀà	’Z‹ö[ò[XHïí’ôY⁄\›ôx†)âÀà	–⁄X⁄⁄[ô»Hïí’ôY⁄\›\∏†)âÀà
+Kà
+Kà
+KàKà
+Kà
+KàYà
+]ùö›ù\ﬁH	âàùö›X]⁄OHù[
+Bàÿ\ô
+à€€‹éà€€ú›€€‹äôôMYçŸå
+Kà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àò[
+MäKà⁄[à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬àõ› à⁄[ô[éà¬à€€ú›X€€äX€€úÀùô\öYöYY‹õ›[ôY€€‹éà‹ôY[äKà€€ú›⁄^ôYõﬁ
+⁄Yà
+Kà^[ôY
+à⁄[à^
+à
+àÀà	‘ò\›\»ŸöX⁄X[X[YHïí’[€Y[±l»ö[ö⁄[ûZôIÀà	—õ›[ô[àŸôöX⁄X[ïí’]IÀà
+Kà›[Nà€€ú›^›[Jàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà€€‹éà‹ôY[ãà
+Kà
+Kà
+KàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+à	…›ùö›X]⁄Kõò[Y_H	›ùö›X]⁄Kú›ô[ô›IÀà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàNKàõ€ùŸZY⁄àõ€ùŸZY⁄ùŒà
+Kà
+Kà^
+ùö›X]⁄Kú›Xú›[òŸJKà^
+à	…›ùö›X]⁄Kô‹ÿYŸQõ‹õ_H8†(à	›ùö›X]⁄KúX⁄ÿYŸQ\ÿ‹ö\[€üIÀà
+Kà^
+à	…›
+À	’YZ⁄[X\…À	‘›\I _Nà	›ùö›X]⁄Kú›\T›]\ﬂIÀà
+Kà^
+à	…›
+À	‘ôY⁄\›òX⁄Zõ‹»úãâÀ	‘ôY⁄\›ò][€àõÀâ _Nà	›ùö›X]⁄KúôY⁄\›ò][€ìù[Xô\üIÀà
+KàYà
+ùö›X]⁄\Àõ[ô›àJBà[Y€äà[Y€õY[ùà[Y€õY[ùòŸ[ù\ìYùà⁄[à^ù]€ãöX€€äà€îô\‹ŸYàÿ⁄€‹ŸUùö›ò\öX[ùàX€€éà€€ú›X€€äX€€úÀú›ÿ\⁄‹ö^äKàXô[à^
+à
+àÀà	“ŸZ\›Hò\öX[ù1!H
+	›ùö›X]⁄\Àõ[ô›JIÀà	–⁄[ôŸHò\öX[ù
+	›ùö›X]⁄\Àõ[ô›JIÀà
+Kà
+Kà
+Kà
+KàKà
+Kà
+Kà
+KàYà
+]ùö›ù\ﬁH	âàùö›⁄X⁄ŸY	âàùö›X]⁄OHù[
+Bàÿ\ô
+à€€‹éà€€ú›€€‹äôôôôç Kà⁄[à\›[JàXY[ôŒàX€€äàùö›\úõ‹ãö\—[\Bà»X€€úÀö[ôõ◊€›][ôBààX€€úÀò€›Y€Ÿôó€›][ôYà€€‹éà€€ú›€€‹äôòôÃå
+Kà
+Kà]Nà^
+àùö›\úõ‹ãö\—[\Bà»
+àÀà	’ïí’ôY⁄\›ôH]]€X]qhZÿZHô\]ö\ù[ùIÀà	”õ›]]€X]Xÿ[H€€ôö\õYY[àïí’	Àà
+Bàà
+àÀà	”ô\]ûZ€»ö\⁄Zù[ô›HöYHïí’	Àà	–€›[õ›€€õôX›»ïí’	Àà
+Kà
+Kà›Xù]Nà^
+àùö›\úõ‹ãö\—[\Bà»
+àÀà	‘]Z‹ö[ö⁄]Hù\⁄ÿZ]]1!H]òY[ö[q!H\òòH1+›ô\⁄⁄]H[€Y[ö\»ò[ö⁄[ö]H±jŸKâÀà	–⁄X⁄»HôX€Ÿ€ö^ôYò[YH‹à[ù\àH]Z[»X[ùX[KâÀà
+Bàà
+àÀà	‘]Z‹ö[ö⁄]H[ù\õô]»ûqhq+»\àù\⁄ÿZ]Z⁄]H\àÿ\ù1!Kà[€Y[ö\»Z\]ÿ[]H1+›ô\›Hò[ö⁄[ö]H±jŸKâÀà	–⁄X⁄»[›\à€€õôX›[€à[ôÿÿ[àYÿZ[ãà[›Hÿ[à[€»[ù\àH]Z[»X[ùX[KâÀà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàö[Yù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôQY]‹äà]Nà⁄YŸ]ô]Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà€›\òŸU^à^à[ö]X[[XYŸT]à[XYŸT]àôY⁄\›ûSYYX⁄[ôNàùö›X]⁄à
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀòYÿ⁄\ò€W€›][ôJKàXô[à^
+à
+àÀà	‘]Z‹ö[ùH\àöY1%›H1+»òZ\›[±%€1&IÀà	‘ô]öY]»[ôY»YYX⁄[ôHÿXö[ô]	Àà
+Kà
+Kà
+KàKàKà
+Kà
+N¬üBÇò€\‹»ÿ[Y\òPÿ\\ôTYŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›ÿ[Y\òPÿ\\ôTYŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\Àõ€ê⁄[ôŸYàJN¬à›]Oÿ[Y\òPÿ\\ôTYŸOà‹ôX]T›]J
+HOà–ÿ[Y\òPÿ\\ôTYŸJ
+N¬üBÇò€\‹»–ÿ[Y\òPÿ\\ôTYŸH^[ô»›]Oÿ[Y\òPÿ\\ôTYŸOà¬à›ö[ô»[ŸHH	ÿõﬁ	Œ¬àõ€€ù\ﬁHHò[ŸN¬àÿ[Y\òP€€ùõ€\è»ÿ[Y\òN¬àù]\ôOõ⁄Yè»ÿ[Y\òTôXYN¬Çà›ô\úöYBàõ⁄Y[ö]›]J
+H¬à›\\ãö[ö]›]J
+N¬àÿ[Y\òTôXYHH‹›\ùÿ[Y\òJ
+N¬àBÇàù]\ôOõ⁄Yà‹›\ùÿ[Y\òJ
+H\ﬁ[ò»¬àö[ò[ÿ[Y\ò\»H]ÿZ]]òZ[XõPÿ[Y\ò\ 
+N¬àYà
+ÿ[Y\ò\Àö\—[\JHõ›»›]Q\úõ‹ä	”õ»ÿ[Y\òI N¬àö[ò[òX⁄»Hÿ[Y\ò\Àù⁄\ôJà
+
+HOàõ[ú—\ôX›[€àOHÿ[Y\òS[ú—\ôX›[€ãòòX⁄Àà
+N¬àÿ[Y\òHHÿ[Y\òP€€ùõ€\äàòX⁄Àö\—[\H»ÿ[Y\ò\Àôö\ú›àòX⁄Àôö\ú›àô\€€][€îô\Ÿ]öY⁄à[òXõP]Y[Œàò[ŸKà
+N¬à]ÿZ]ÿ[Y\òHKö[ö]X[^ôJ
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HﬂJN¬àBÇà›ô\úöYBàõ⁄Y\‹‹ŸJ
+H¬àÿ[Y\òOÀô\‹‹ŸJ
+N¬à›\\ãô\‹‹ŸJ
+N¬àBÇàù]\ôOõ⁄Yàÿ\\ôJ
+H\ﬁ[ò»¬àYà
+[ŸHOH	ÿò\ò€ŸI H¬à]ÿZ]ÿ[Y\òOÀô\‹‹ŸJ
+N¬àÿ[Y\òHHù[¬à]ÿZ]ò]öYÿ]‹ãú\⁄
+à€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàò\ò€ŸTYŸJ]Nà⁄YŸ]ô]K€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸY
+Kà
+Kà
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HOàÿ[Y\òTôXYHH‹›\ùÿ[Y\òJ
+JN¬àô]\õé¬àBàö[ò[€€ùõ€\àHÿ[Y\òN¬àYà
+€€ùõ€\àOHù[X€€ùõ€\ãùò[YKö\“[ö]X[^ôY
+Hô]\õé¬àŸ]›]J
+
+HOàù\ﬁHHùYJN¬à^ôX€Ÿ€ö^ô\è»ôX€Ÿ€ö^ô\é¬àûH¬àö[ò[ö[HH]ÿZ]€€ùõ€\ãùZŸTX›\ôJ
+N¬àYà
+[[›[ùY
+Hô]\õé¬àôX€Ÿ€ö^ô\àH^ôX€Ÿ€ö^ô\äÿ‹ö\à^ôX€Ÿ€ö][€îÿ‹ö\õ][äN¬àö[ò[ô\›[H]ÿZ]ôX€Ÿ€ö^ô\ãúõÿŸ\‹“[XYŸJà[ú][XYŸKôúõ€Qö[T]
+ö[Kú]
+Kà
+N¬àö[ò[\ôX›‹ûHH]ÿZ]Ÿ]\Xÿ][€ëÿ›[Y[ù—\ôX›‹ûJ
+N¬àö[ò[ÿ]ôYH]ÿZ]ö[Jö[Kú]
+Bàò€‹J	…Ÿ\ôX›‹ûKú]K‹ÿÿ[ó…€ô]“Y
+
+_Köú… N¬àYà
+[›[ùY
+H¬àò]öYÿ]‹ãú‹
+€€ù^ÿÿ[êÿ\\ôTô\›[
+ô\›[ù^ÿ]ôYú]
+JN¬àBàHÿ]⁄
+ H¬àYà
+[›[ùY
+H¬àÿÿYôõ€Y\‹Ÿ[ôŸ\ãõŸä€€ù^
+Kú⁄›‘€òX⁄–ò\äà€òX⁄–ò\äà€€ù[ùà^
+à
+€€ù^	”ô\]ûZ€»ù\⁄ÿZ]]KâÀ	–€›[õ›ÿÿ[ãâ Kà
+Kà
+Kà
+N¬àBàHö[ò[H¬à]ÿZ]ôX€Ÿ€ö^ô\èÀò€‹ŸJ
+N¬àYà
+[›[ùY
+HŸ]›]J
+
+HOàù\ﬁHHò[ŸJN¬àBàBÇà›ô\úöYBà⁄YŸ]ùZ[
+ùZ[€€ù^€€ù^
+H¬àö[ò[[Ÿ\»H¬à
+	ÿõﬁ	ÀX€€úÀõYYXÿ][€ó€›][ôY	—1%Òoù]1%…À	–õﬁ	 Kà
+	‹ôXŸZ\	ÀX€€úÀúôXŸZ\€€ô◊€›][ôY	Ò#Z⁄\…À	‘ôXŸZ\	 Kà
+	ÿò\ò€ŸIÀX€€úÀú\óÿ€ŸW‹ÿÿ[õô\ã	–ú±j⁄Òh[ö[ö\»€Ÿ\…À	–ò\ò€ŸI Kà
+	Ÿÿ›[Y[ù	ÀX€€úÀô\ÿ‹ö\[€ó€›][ôY	—⁄›[Y[ù\…À	—ÿ›[Y[ù	 KàN¬àô]\õàÿÿYôõ€
+àòX⁄Ÿ‹õ›[ô€€‹éà€€ú›€€‹äôåMÃåLYäKà\ò\éà\ò\äàõ‹ôY‹õ›[ô€€‹éà€€‹úÀù⁄]KàòX⁄Ÿ‹õ›[ô€€‹éà€€‹úÀùò[ú‹\ô[ùà]Nà^
+
+€€ù^	—õ›Ÿ‹òYù[›IÀ	’ZŸH›… JKà
+KàõŸNàÿYôP\ôXJà‹àò[ŸKà⁄[à€€[[äà⁄[ô[éà¬àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àôúõ€SêäçLãçN
+Kà⁄[à^
+à[ŸHOH	ÿò\ò€ŸI¬à»
+à€€ù^à	‘›[Y⁄][⁄⁄]H€Ÿ1!H±%€Y[ZôIÀà	–[Y€àH€ŸH[àHúò[YIÀà
+Bàà
+à€€ù^à	‘›][[ö⁄]HÿöôZ›1!H1+»±%€Y[1+…Àà	—ö]HÿöôX›[ú⁄YHHúò[YIÀà
+Kà›[Nà€€ú›^›[Jà€€‹éà€€‹úÀù⁄]Kàõ€ù⁄^ôNàNàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà
+Kà
+Kà
+Kà^[ôY
+à⁄[àù]\ôPùZ[\èõ⁄Yäàù]\ôNàÿ[Y\òTôXYKàùZ[\éà
+€€ù^€ò\⁄›
+H¬àYà
+€ò\⁄›ö\—\úõ‹äH¬àô]\õàŸ[ù\äà⁄[à^
+à
+à€€ù^à	“ÿ[Y\òHô\\⁄YZ⁄X[XKà]Z‹ö[ö⁄]HZY[q!KâÀà	–ÿ[Y\òH[ò]òZ[XõKà⁄X⁄»\õZ\‹⁄[€ãâÀà
+Kà^[Y€éà^[Y€ãòŸ[ù\ãà›[Nà€€ú›^›[J€€‹éà€€‹úÀù⁄]JKà
+Kà
+N¬àBàYà
+€ò\⁄›ò€€õôX›[€î›]HOH€€õôX›[€î›]Kô€ôHàÿ[Y\òHOHù[
+H¬àô]\õà€€ú›Ÿ[ù\ä⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹ä
+JN¬àBàô]\õà€€ùZ[ô\äàX\ô⁄[éà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ‹ö^õ€ù[àåäKàX€‹ò][€éàõﬁX€‹ò][€äàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äçäKàõ‹ô\éàõ‹ô\ãò[
+€€‹éà€€‹úÀù⁄]MÃ⁄YàäKà
+Kà⁄[à€\îôX›
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äç
+Kà⁄[à›X⁄ àö]à›X⁄—ö]ô^[ôà⁄[ô[éà¬àÿ[Y\òTô]öY] ÿ[Y\òHJKàŸ[ù\äà⁄[àX€€äà[ŸHOH	ÿò\ò€ŸI¬à»X€€úÀú\óÿ€ŸWÃó‹õ›[ôYààX€€úÀòŸ[ù\óŸõÿ›\◊‹›õ€ôÀà⁄^ôNàLMKà€€‹éà€€‹úÀù⁄]MÃà
+Kà
+KàKà
+Kà
+Kà
+N¬àKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àN
+Kà⁄^ôYõﬁ
+àZY⁄àãà⁄[à\›öY] àÿ‹õ€\ôX›[€éà^\Àö‹ö^õ€ù[àY[ôŒà€€ú›YŸR[úŸ]Àúﬁ[[Y]öX ‹ö^õ€ù[àL
+Kà⁄[ô[éà[Ÿ\ÀõX\
+
+][JH¬àö[ò[Ÿ[X›YH[ŸHOH][KâN¬àô]\õà[ö’Ÿ[
+à€ï\à
+
+HOàŸ]›]J
+
+HOà[ŸHH][KâJKà⁄[à⁄^ôYõﬁ
+à⁄YàMà⁄[à€€[[äà⁄[ô[éà¬àX€€äà][Kâãà€€‹éàŸ[X›Yà»€€ú›€€‹äôçYYLòôäBàà€€‹úÀù⁄]MÃà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àJKà^
+à
+€€ù^][KâÀ][Kâ
+Kà^[Y€éà^[Y€ãòŸ[ù\ãà›[Nà^›[Jà€€‹éàŸ[X›Yà»€€ú›€€‹äôçYYLòôäBàà€€‹úÀù⁄]MÃàõ€ù⁄^ôNàLãàõ€ùŸZY⁄àŸ[X›Yà»õ€ùŸZY⁄ùŒààõ€ùŸZY⁄ùÕLà
+Kà
+KàKà
+Kà
+Kà
+N¬àJKù”\›
+
+Kà
+Kà
+KàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJõ›€NàN
+Kà⁄[à[ö’Ÿ[
+à€ï\àù\ﬁH»ù[àÿ\\ôKà›\›€Põ‹ô\éà€€ú›⁄\ò€Põ‹ô\ä
+Kà⁄[à€€ùZ[ô\äà⁄YàÃàZY⁄àÃàX€‹ò][€éàõﬁX€‹ò][€äà⁄\Nàõﬁ⁄\Kò⁄\ò€Kà€€‹éàù\ﬁH»€€‹úÀô‹ô^Hà€€‹úÀù⁄]Kàõ‹ô\éàõ‹ô\ãò[
+à€€‹éà€€ú›€€‹äôçYYLòôäKà⁄YàKà
+Kà
+Kà⁄[àù\ﬁBà»€€ú›Y[ô àY[ôŒàYŸR[úŸ]Àò[
+N
+Kà⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹ä
+Kà
+BààX€€äà[ŸHOH	ÿò\ò€ŸI¬à»X€€úÀú\óÿ€ŸW‹ÿÿ[õô\ÇààX€€úÀòÿ[Y\òWÿ[à€€‹éàò]ûKà
+Kà
+Kà
+Kà
+KàKà
+Kà
+Kà
+N¬àBüBÇò€\‹»ò\ò€ŸTYŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›ò\ò€ŸTYŸJ‹›\\ãöŸ^Kô\]Z\ôY\Àô]Kô\]Z\ôY\Àõ€ê⁄[ôŸYJN¬à›]Oò\ò€ŸTYŸOà‹ôX]T›]J
+HOà–ò\ò€ŸTYŸJ
+N¬üBÇò€\‹»–ò\ò€ŸTYŸH^[ô»›]Oò\ò€ŸTYŸOà¬àõ€€€ôHHò[ŸN¬à›ô\úöYBà⁄YŸ]ùZ[
+ HOàÿÿYôõ€
+à\ò\éà\ò\ä]Nà^
+
+À	“€Ÿ»⁄Ÿ[ò]ö[X\…À	–€ŸHÿÿ[õô\â JJKàõŸNà[ÿö[Tÿÿ[õô\äà€ë]X›à
+
+H¬àYà
+€ôH[[›[ùY
+Hô]\õé¬àö[ò[àHòò\ò€Ÿ\Àôö\ú›‹ìù[Àúò]’ò[YN¬àYà
+àOHù[
+Hô]\õé¬à€ôHHùYN¬àò]öYÿ]‹ãú\⁄ô\XŸ[Y[ù
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôQY]‹äà]Nà⁄YŸ]ô]Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà€›\òŸU^àãà
+Kà
+Kà
+N¬àKà
+Kà
+N¬üBÇò€\‹»ﬁ[\€\‘YŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›ﬁ[\€\‘YŸJ‹›\\ãöŸ^Kô\]Z\ôY\Àô]Kô\]Z\ôY\Àõ€ê⁄[ôŸYJN¬à›ô\úöYBà›]Oﬁ[\€\‘YŸOà‹ôX]T›]J
+HOà‘ﬁ[\€\‘YŸT›]J
+N¬üBÇò€\‹»‘ﬁ[\€\‘YŸT›]H^[ô»›]Oﬁ[\€\‘YŸOà¬à›ö[ô»Y[Xô\íYH	…Œ¬àö[ò[›\›€Tﬁ[\€HH^Y][ô–€€ùõ€\ä
+N¬Çà›ô\úöYBàõ⁄Y\‹‹ŸJ
+H¬à›\›€Tﬁ[\€Kô\‹‹ŸJ
+N¬à›\\ãô\‹‹ŸJ
+N¬àBÇà›ô\úöYBà⁄YŸ]ùZ[
+ H¬àö[ò[ÿ]»H
+›ö[ôÀ›ö[ôÀX€€ë]K€€‹äOñ¬à
+	‘⁄ÿ]\€X\…À	‘Z[âÀX€€úÀöX[[ô◊‹õ›[ôY€€ú›€€‹äôôMLŒLÕJJKà
+à	“ÿ\±hq#ZX]ö[X\…Àà	—ô]ô\âÀàX€€úÀù\õ[‹›]‹õ›[ôYà€€ú›€€‹äôôMLŒLÕJKà
+Kà
+	‘\±hX[[X\…À	–€€	ÀX€€úÀú⁄X⁄◊€›][ôY‹ôY[äKà
+à	‘[õ»õÿõ[[‹…Àà	‘›€XX⁄õÿõ[\…ÀàX€€úÀöX[ÿ[ô‹ÿYô]W‹õ›[ôYà‹ôY[ãà
+Kà
+	–[\ô⁄ZòIÀ	–[\ôﬁIÀX€€úÀòZ\ó‹õ›[ôYò]ûJKà
+à	’öY\öX]ö[X\»»qoö⁄Y]1%⁄ö[X\…Àà	—X\úöXH»€€ú›\][€âÀàX€€úÀùÿ◊‹õ›[ôYàò]ûKà
+Kà
+	”Ÿ‹»õÿõ[[‹…À	‘⁄⁄[àõÿõ[\…ÀX€€úÀùÿ]\óŸõ‹€›][ôYò]ûJKà
+	—ÿ[õ‹»›òZY⁄[X\…À	—^ûö[ô\‹…ÀX€€úÀúﬁ[ò◊‹õÿõ[W€›][ôYò]ûJKàN¬àô]\õàÿÿYôõ€
+à\ò\éà\ò\ä]Nà^
+
+À	”X[àõŸÿIÀ	‘ﬁ[\€\… JJKàõŸNà\›öY] àY[ôŒàYŸR[úŸ]Àôúõ€SêäàNàNàNàYYXT]Y\ûKúY[ô”Ÿä Kòõ›€H
+»Ããà
+Kà⁄[ô[éà¬à]J
+À	“ÿ\»XöX]\⁄XZHò\ô⁄[òO…À	’⁄]õ›\ú»[›H[‹›… JKà^
+à
+àÀà	’ôY\»ôYXY€õﬁù[⁄òKà]õ⁄ö[ô›\»\à›\±%⁄ò[±#Z]\»⁄[\€]\»\öH1+›ô\ù[ùHYYZÿ\ÀâÀà	’\»›ZYHŸ\»õ›XY€õ‹ŸKà\ôŸ[ù‹à€‹úŸ[ö[ô»ﬁ[\€\»ô\]Z\ôHYYXÿ[\‹Ÿ\‹€Y[ùâÀà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àMäKàYà
+⁄YŸ]ô]KõY[Xô\úÀö\”õ›[\JHããñ¬à^
+à
+À	“ÿ[H\⁄\ôZqhZÒ%»⁄[\€XZO…À	’⁄»\»ﬁ[\€\œ… Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMãàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éàò]ûKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà⁄[ô€P⁄[ÿ‹õ€öY] àÿ‹õ€\ôX›[€éà^\Àö‹ö^õ€ù[à⁄[àõ› à⁄[ô[éà⁄YŸ]ô]KõY[Xô\ú¬àõX\
+à
+Y[Xô\äHOàY[ô àY[ôŒà€€ú›YŸR[úŸ]Àõ€õJöY⁄à
+Kà⁄[à⁄⁄XŸP⁄\
+à]ò]\éà^
+à€Y[Xô\ë[[⁄öJY[Xô\ãôŸ[ô\ãY[Xô\ãòYŸQ‹õ›\
+Kà
+KàXô[à^
+Y[Xô\ãõò[YJKàŸ[X›YàY[Xô\íYOHY[Xô\ãöYà€îŸ[X›Yà
+ HOÇàŸ]›]J
+
+HOàY[Xô\íYHY[Xô\ãöY
+Kà
+Kà
+Kà
+Bàù”\›
+
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+KàKàããòÿ]ÀõX\
+à
+
+HOàÿ\ô
+à⁄[à\›[JàXY[ôŒà⁄\ò€P]ò]\äàòX⁄Ÿ‹õ›[ô€€‹éàâù⁄]ò[Y\ [NàåLJKà⁄[àX€€äâÀ€€‹éàâ
+Kà
+Kà]Nà^
+à
+ÀâKâäKà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ
+Kà
+KàòZ[[ôŒà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄
+Kà€ï\à
+
+HOà€‹[ï⁄^ò\ô
+ÀâJKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^öY[
+à€€ùõ€\éà›\›€Tﬁ[\€Kà€ê⁄[ôŸYà
+ HOàŸ]›]J
+
+HﬂJKàZ[ì[ô\ŒàãàX^[ô\ŒààX€‹ò][€éà[ú]X€‹ò][€äàXô[^à
+àÀà	–\òqh^]H⁄]\»⁄[\€]\…Àà	—\ÿ‹öXôH›\àﬁ[\€\…Àà
+Kà[ù^à
+àÀà	‘ûãã⁄[òKZ⁄[òH\à›òZY‹›Hÿ[òx†)âÀà	—õ‹à^[\NàŸXZ€ô\‹Àò]\ŸXH[ô^ûö[ô\‹¯†)âÀà
+KàôYö^X€€éà€€ú›X€€äX€€úÀò]]◊ÿ]Ÿ\€€YW€›][ôY
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàö[Yù]€ãöX€€äà€îô\‹ŸYà›\›€Tﬁ[\€Kù^ùö[J
+Kö\—[\Bà»ù[àà
+
+HOà€‹[ï⁄^ò\ô
+àÀà	“⁄]H⁄[\€XZIÀà›\›€Tﬁ[\€Kù^ùö[J
+Kà
+KàX€€éà€€ú›X€€äX€€úÀò\úõ›◊Ÿõ‹ùÿ\ô‹õ›[ôY
+KàXô[à^
+
+À	’1&\›IÀ	–€€ù[ùYI JKà
+KàKà
+Kà
+N¬àBÇàù]\ôOõ⁄Yà€‹[ï⁄^ò\ô
+àùZ[€€ù^€€ù^à›ö[ô»ÿ]Y€‹ûK¬à›ö[ô»]Z[»H	…ÀàJH\ﬁ[ò»¬àYà
+⁄YŸ]ô]KõY[Xô\úÀö\”õ›[\H	âàY[Xô\íYö\—[\JH¬àÿÿYôõ€Y\‹Ÿ[ôŸ\ãõŸä€€ù^
+Kú⁄›‘€òX⁄–ò\äà€òX⁄–ò\äà€€ù[ùà^
+à
+à€€ù^à	‘\õZX]\⁄XH\⁄\ö[ö⁄]H1hYZ[[‹»ò\±+ÀâÀà	–⁄€‹ŸHHò[Z[HY[Xô\àö\ú›âÀà
+Kà
+Kà
+Kà
+N¬àô]\õé¬àBà]ÿZ]ò]öYÿ]‹ãú\⁄
+à€€ù^àX]\öX[YŸTõ›]JàùZ[\éà
+ HOàﬁ[\€U⁄^ò\ôYŸJà]Nà⁄YŸ]ô]KàY[Xô\íYàY[Xô\íYàÿ]Y€‹ûNàÿ]Y€‹ûKà[ö]X[]Z[Œà]Z[Àà\ôX›^[ò[\⁄\Œà]Z[Àö\”õ›[\Kà€ê⁄[ôŸYà⁄YŸ]õ€ê⁄[ôŸYà
+Kà
+Kà
+N¬àBüBÇò€\‹»ﬁ[\€U⁄^ò\ôYŸH^[ô»›]Yù[⁄YŸ]¬àö[ò[\]H]N¬àö[ò[›ö[ô»Y[Xô\íY¬àö[ò[›ö[ô»ÿ]Y€‹ûN¬àö[ò[›ö[ô»[ö]X[]Z[Œ¬àö[ò[õ€€\ôX›^[ò[\⁄\Œ¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›ﬁ[\€U⁄^ò\ôYŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\ÀõY[Xô\íYàô\]Z\ôY\Àòÿ]Y€‹ûKà\Àö[ö]X[]Z[»H	…Àà\Àô\ôX›^[ò[\⁄\»Hò[ŸKàô\]Z\ôY\Àõ€ê⁄[ôŸYàJN¬à›ô\úöYBà›]Oﬁ[\€U⁄^ò\ôYŸOà‹ôX]T›]J
+HOà‘ﬁ[\€U⁄^ò\ôYŸT›]J
+N¬üBÇò€\‹»‘ﬁ[\€U⁄^ò\ôYŸT›]H^[ô»›]Oﬁ[\€U⁄^ò\ôYŸOà¬à[ù›\H¬à›ö[ô»ÿÿ][€àH	…Œ¬à›ö[ô»Ÿ]ô\ö]HH	›öY][ö\…Œ¬à›ö[ô»Z[ï\HH	…Œ¬à›ö[ô»\ò][€àH	…Œ¬àõ€€ô]ô\àHò[ŸN¬àõ€€Y⁄ô]ô\àHò[ŸN¬àõ€€õ€Z][ô»Hò[ŸN¬àõ€€\ú⁄\›[ùõ€Z][ô»Hò[ŸN¬àõ€€õ€ŸHò[ŸN¬àõ€€úôX][ô‘õÿõ[HHò[ŸN¬àõ€€òZ[ù[ô”‹ê€€ôù\⁄[€àHò[ŸN¬àõ€€ò\⁄Hò[ŸN¬àõ€€›Ÿ[[ô»Hò[ŸN¬àõ€€ÿ[õõ›ö[ö»Hò[ŸN¬àõ€€ô]\õ€Ÿ⁄X—YöX⁄]Hò[ŸN¬à]Hõ€€ZP€€úŸ[ù¬àö[ò[Ÿ]›ö[ôœàŸ[X›Yﬁ[\€\»HﬂN¬àù]\ôO›ö[ôœœè»ZP\‹Ÿ\‹€Y[ù¬Çà›ô\úöYBàõ⁄Y[ö]›]J
+H¬à›\\ãö[ö]›]J
+N¬àZP€€úŸ[ùH⁄YŸ]ô]KòZP€€úŸ[ù‹ò[ùY¬àYà
+⁄YŸ]ô\ôX›^[ò[\⁄\ H¬à›\Hé¬à\ò][€àH	€ô[ù\õŸ]IŒ¬àŸ[X›Yﬁ[\€\ÀòY
+	”Z\›ò\»⁄[\€ql»\òqh^[X\… N¬àö[ò[]Z[»H⁄YŸ]ö[ö]X[]Z[Àù”›Ÿ\êÿ\ŸJ
+N¬àúôX][ô‘õÿõ[HH]Z[Àò€€ùZ[ú 	‹›[ö›H›±%‹[›I Hà]Z[Àò€€ùZ[ú 	Ÿ\›[	 H]Z[Àò€€ùZ[ú 	€ôZ›±%‹I N¬àõ€ŸH]Z[Àò€€ùZ[ú 	⁄‹ò]Zâ N¬àòZ[ù[ô”‹ê€€ôù\⁄[€àH]Z[Àò€€ùZ[ú 	ÿ[	 Hà]Z[Àò€€ùZ[ú 	‹›[ZqhI H]Z[Àò€€ùZ[ú 	‹Ò![[€â N¬à›Ÿ[[ô»H
+]Z[Àò€€ùZ[ú 	›ôZY	 H]Z[Àò€€ùZ[ú 	€1j‹	 JH	âÇà
+]Z[Àò€€ùZ[ú 	›[â H]Z[Àò€€ùZ[ú 	‹][â JN¬àÿ[õõ›ö[ö»H]Z[Àò€€ùZ[ú 	€ôYÿ[]HŸ\ùI Hà]Z[Àò€€ùZ[ú 	€ôZqh[ZZÿ]H⁄ﬁ\… N¬àô]\õ€Ÿ⁄X—YöX⁄]H]Z[Àò€€ùZ[ú 	‹›[ö›Hÿ[±%›I Hà]Z[Àò€€ùZ[ú 	‹\ò[I H]Z[Àò€€ùZ[ú 	€ô]ò[]I N¬àZP\‹Ÿ\‹€Y[ùHZP€€úŸ[ù»‹ô\]Y\›ZP\‹Ÿ\‹€Y[ù
+
+Hàù[¬àBàBÇà\››ö[ôœàŸ]ÿÿ][€ú»Oà›⁄]⁄
+⁄YŸ]òÿ]Y€‹ûJH¬à	‘[õ»õÿõ[[‹…»Oà¬à	’ö\±h]][±%⁄ôH[õ»[ZôIÀà	—qhZ[±%⁄ôIÀà	“ÿZ\±%⁄ôIÀà	–\][±%⁄ôH[ZôIÀà	’ö\Ò!H[±!IÀà	‘›[ö›H\ÿZﬁ]IÀàKà	‘⁄ÿ]\€X\…»Oà¬à	—ÿ[òIÀà	—Ÿ\ö€1%…Àà	“‹±j›[±%…Àà	‘[ò\…Àà	”ùYÿ\òIÀà	‘Ò![ò\öXZH»ò][Y[û\…Àà	“⁄]HöY]IÀàKà	”Ÿ‹»õÿõ[[‹…»Oà¬à	—ÿ[òH»ôZY\…Àà	“‹±j›[±%»»Y[][…Àà	‘[ò\…Àà	”ùYÿ\òIÀà	‘ò[ö€‹…Àà	“€⁄õ‹…Àà	“Ÿ[[‹»Òj€õ»öY]‹…ÀàKà»Oà€€ú›◊KàN¬Çàõ€€Ÿ]\Ÿ\–õŸSX\OÇà⁄YŸ]òÿ]Y€‹ûHOH	‘⁄ÿ]\€X\…»à⁄YŸ]òÿ]Y€‹ûHOH	‘[õ»õÿõ[[‹…»à⁄YŸ]òÿ]Y€‹ûHOH	”Ÿ‹»õÿõ[[‹…Œ¬Çà›ö[ô»Ÿ]õŸSX\\‹Ÿ]¬àö[ò[Y[Xô\àH⁄YŸ]ô]KõY[Xô\ú¬àù⁄\ôJ
+][JHOà][KöYOH⁄YŸ]õY[Xô\íY
+Bàôö\ú›‹ìù[¬àö[ò[⁄[HY[Xô\èÀòYŸQ‹õ›\OH	ÿ⁄[	Œ¬àö[ò[ô[X[HHY[Xô\èÀôŸ[ô\àOH	Ÿô[X[IŒ¬àYà
+⁄[
+H¬àô]\õàô[X[Bà»	ÿ\‹Ÿ]À⁄[XYŸ\ÀÿõŸW€X\Àÿ⁄[Ÿô[X[Kúô…¬àà	ÿ\‹Ÿ]À⁄[XYŸ\ÀÿõŸW€X\Àÿ⁄[€X[Kúô…Œ¬àBàô]\õàô[X[Bà»	ÿ\‹Ÿ]À⁄[XYŸ\ÀÿõŸW€X\ÀÿY[Ÿô[X[Kúô…¬àà	ÿ\‹Ÿ]À⁄[XYŸ\ÀÿõŸW€X\ÀÿY[€X[Kúô…Œ¬àBÇà\››ö[ôœàŸ]ﬁ[\€S‹[€ú»Oà›⁄]⁄
+⁄YŸ]òÿ]Y€‹ûJH¬à	‘\±hX[[X\…»Oà¬à	‘€ŸÿIÀà	’qoô›[Hõ‹⁄\…Àà	—Ÿ\ö€1%‹»⁄ÿ]\€X\…Àà	“€‹›[\…Àà	’qoö⁄[Z[X\…Àà	–ô[ôò\»⁄[ù[X\…ÀàKà	“ÿ\±hq#ZX]ö[X\…»Oà¬à	“Z⁄HŒ0¨…Àà	ÃŒ8†$ÃŒH0¨…Àà	ÃŒH0¨»\à]Y⁄X]IÀà	Òh[‹±%›\…Àà	‘òZÿZ]]ö[X\…Àà	‘⁄[ù[X\…ÀàKà	–[\ô⁄ZòI»Oà¬à	‘€ŸÿH»1#ZX]Y[\…Àà	–Z⁄ql»öYqo±%⁄ö[X\…Àà	”Ÿ‹»±%‹ö[X\…Àà	”öYqo±%⁄ö[X\…Àà	’ôZY»\à1j‹1l»[ö[X\…Àà	‘›[ö›H›±%‹[›IÀàKà	’öY\öX]ö[X\»»qoö⁄Y]1%⁄ö[X\…»Oà¬à	’öY\öX]ö[X\…Àà	’qoö⁄Y]1%⁄ö[X\…Àà	‘[õ»1j›[X\…Àà	‘[õ»‹^õXZIÀà	‘Z⁄[ö[X\…Àà	’±%€Z[X\…ÀàKà	—ÿ[õ‹»›òZY⁄[X\…»Oà¬à	‘›Zÿ\⁄H\[öÿIÀà	‘⁄[ù[X\»»\[Z[X\…Àà	‘\⁄X]\›û\õ‹»›]öZ⁄[X\…Àà	‘Z⁄[ö[X\…Àà	—ÿ[õ‹»⁄ÿ]\€X\…Àà	Òj±oö[X\»]\ﬁ\ŸIÀàKà»Oà…“⁄]\»⁄[\€X\…◊KàN¬Çàõ€€Ÿ][ôŸ\õ›\»OÇàŸ]ô\ö]HOH	€XòZH›\ù\…»àõ€ŸàúôX][ô‘õÿõ[HàòZ[ù[ô”‹ê€€ôù\⁄[€ààô]\õ€Ÿ⁄X—YöX⁄]à\ú⁄\›[ùõ€Z][ô»àÿ[õõ›ö[ö»àY⁄ô]ô\àà
+⁄YŸ]òÿ]Y€‹ûHOH	–[\ô⁄ZòI»	âà›Ÿ[[ô Hà
+⁄YŸ]òÿ]Y€‹ûHOH	‘[õ»õÿõ[[‹…»	âÇàÿÿ][€àOH	—qhZ[±%⁄ôI»	âÇàô]ô\à	âÇàõ€Z][ô N¬Çà›ô\úöYBà⁄YŸ]ùZ[
+ HOàÿÿYôõ€
+à\ò\éà\ò\äà]Nà^
+à›\OHà»⁄YŸ]òÿ]Y€‹ûBàà
+À	‘⁄[\€ql»1+›ô\ù[ö[X\…À	‘ﬁ[\€H\‹Ÿ\‹€Y[ù	 Kà
+Kà
+KàõŸNàÿYôP\ôXJà‹àò[ŸKà⁄[à[ö[X]Y›⁄]⁄\äà\ò][€éà€€ú›\ò][€äZ[\ŸX€€ôŒàåå
+Kà⁄[à›\OHà»Ÿö\ú››\
+ Bàà›\OHBà»‹]Y\›[€ú‘›\
+ Bàà‹ô\›[›\
+ Kà
+Kà
+Kà
+N¬Çà⁄YŸ]Ÿö\ú››\
+ùZ[€€ù^ HOÇà\Ÿ\–õŸSX\»€ÿÿ][€î›\
+ Hà‹ﬁ[\€T›\
+ N¬Çà⁄YŸ]€ÿÿ][€î›\
+ùZ[€€ù^ HOà\›öY] àŸ^Nà€€ú›ò[YRŸ^J	€ÿÿ][€â KàY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à]Jà
+àÀà⁄YŸ]òÿ]Y€‹ûHOH	‘[õ»õÿõ[[‹…¬à»	“›\ö[⁄ôH[õ»öY]⁄ôHò]q#ZX]Hõÿõ[q!O…¬àà	“›\ö[⁄ôHöY]⁄ôHò]q#ZX]Hõÿõ[q!O…Àà⁄YŸ]òÿ]Y€‹ûHOH	‘[õ»õÿõ[[‹…¬à»	’⁄\ôH[àHXô€Y[à\»Hõÿõ[O…¬àà	’⁄\ôH»[›HôY[Hõÿõ[O…Àà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàŸ[ù\äà⁄[à€€ùZ[ô\äà⁄YàåLàZY⁄àçÃàX€‹ò][€éàõﬁX€‹ò][€äà€€‹éà€€ú›€€‹äôôåôòôé
+Kàõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\äÃ
+Kàõ‹ô\éàõ‹ô\ãò[
+€€‹éà€€ú›€€‹äôôŸXôMJJKà
+Kà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àò[
+ Kà⁄[àõŸSX\öY] à\‹Ÿ]àõŸSX\\‹Ÿ]àÿÿ][€éàÿÿ][€ãà\úõ‹ìXô[à
+àÀà	“Òj€õ»òZ^ô»ô\]ûZ€»1+⁄Ÿ[IÀà	–õŸH[XYŸH€›[õ›ôHÿYY	Àà
+Kà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàããõÿÿ][€úÀõX\
+à
+][JHOàÿ\ô
+à€€‹éàÿÿ][€àOH][H»Z[ùà€€‹úÀù⁄]Kà⁄[à\›[JàXY[ôŒàX€€äàÿÿ][€àOH][Bà»X€€úÀò⁄X⁄◊ÿ⁄\ò€BààX€€úÀúòY[◊ÿù]€ó›[ò⁄X⁄ŸYà€€‹éà‹ôY[ãà
+Kà]Nà^
+][JKà€ï\à
+
+HOàŸ]›]J
+
+HOàÿÿ][€àH][JKà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàö[Yù]€äà€îô\‹ŸYàÿÿ][€ãö\—[\H»ù[à
+
+HOàŸ]›]J
+
+HOà›\HJKà⁄[à^
+
+À	’1&\›IÀ	–€€ù[ùYI JKà
+KàKà
+N¬Çà⁄YŸ]‹ﬁ[\€T›\
+ùZ[€€ù^ HOà\›öY] àŸ^Nà€€ú›ò[YRŸ^J	‹ﬁ[\€\… KàY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à]J
+À	“Ò!Hò]q#ZX]O…À	’⁄]\ôH[›H^\öY[ò⁄[ôœ… JKà€€ú›⁄^ôYõﬁ
+ZY⁄àäKà^
+à
+àÀà	—ÿ[]H\⁄\ö[ö›HŸ[\»⁄[\€]\ÀâÀà	÷[›Hÿ[àŸ[X›[‹ôH[à€ôHﬁ[\€KâÀà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàããúﬁ[\€S‹[€úÀõX\
+
+][JH¬àö[ò[Ÿ[X›YHŸ[X›Yﬁ[\€\Àò€€ùZ[ú ][JN¬àô]\õàÿ\ô
+à€€‹éàŸ[X›Y»Z[ùà€€‹úÀù⁄]Kà⁄[à⁄X⁄ÿõﬁ\›[Jàò[YNàŸ[X›YàX›]ôP€€‹éà‹ôY[ãàŸX€€ô\ûNàX€€ä‹ﬁ[\€RX€€ä][JK€€‹éàŸ[X›Y»‹ôY[ààò]ûJKà]Nà^
+][JKà€ê⁄[ôŸYà
+ HOàŸ]›]J
+
+H¬àŸ[X›Yà»Ÿ[X›Yﬁ[\€\Àúô[[›ôJ][JBààŸ[X›Yﬁ[\€\ÀòY
+][JN¬àYà
+][HOH	ÃŒH0¨»\à]Y⁄X]I BàY⁄ô]ô\àHŸ[X›Yﬁ[\€\Àò€€ùZ[ú ][JN¬àYà
+][HOH	‘›[ö›H›±%‹[›I BàúôX][ô‘õÿõ[HHŸ[X›Yﬁ[\€\Àò€€ùZ[ú ][JN¬àYà
+][HOH	’ôZY»\à1j‹1l»[ö[X\… Bà›Ÿ[[ô»HŸ[X›Yﬁ[\€\Àò€€ùZ[ú ][JN¬àYà
+][HOH	’±%€Z[X\… Hõ€Z][ô»HŸ[X›Yﬁ[\€\Àò€€ùZ[ú ][JN¬àJKà
+Kà
+N¬àJKà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàö[Yù]€äà€îô\‹ŸYàŸ[X›Yﬁ[\€\Àö\—[\Bà»ù[àà
+
+HOàŸ]›]J
+
+HOà›\HJKà⁄[à^
+
+À	’1&\›IÀ	–€€ù[ùYI JKà
+KàKà
+N¬ÇàX€€ë]H‹ﬁ[\€RX€€ä›ö[ô»][JH¬àYà
+][Kò€€ùZ[ú 	“€‹›[	 H][Kò€€ùZ[ú 	—Ÿ\ö€	 JBàô]\õàX€€úÀúôX€‹ô›õ⁄XŸW€›ô\ó€›][ôY¬àYà
+][Kò€€ùZ[ú 	€õ‹… H][Kò€€ùZ[ú 	‘€ŸÿI JBàô]\õàX€€úÀòZ\ó‹õ›[ôY¬àYà
+][Kò€€ùZ[ú 	ÃŒI H][Kò€€ùZ[ú 	ÃŒ	 H][Kò€€ùZ[ú 	Òh[‹â JBàô]\õàX€€úÀù\õ[‹›]‹õ›[ôY¬àYà
+][Kò€€ùZ[ú 	”Ÿ‹… H][Kò€€ùZ[ú 	”öYqoâ JBàô]\õàX€€úÀùÿ]\óŸõ‹€›][ôY¬àYà
+][Kò€€ùZ[ú 	’öY\öI H][Kò€€ùZ[ú 	’qoö⁄Y]	 JBàô]\õàX€€úÀùÿ◊‹õ›[ôY¬àYà
+][Kò€€ùZ[ú 	’±%€I H][Kò€€ùZ[ú 	‘Z⁄[â JBàô]\õàX€€úÀú⁄X⁄◊€›][ôY¬àYà
+][Kò€€ùZ[ú 	⁄›±%‹[›I H][Kò€€ùZ[ú 	›[ö[X\… JBàô]\õàX€€úÀùÿ\õö[ô◊ÿ[Xô\ó‹õ›[ôY¬àô]\õàX€€úÀöX[ÿ[ô‹ÿYô]W€›][ôY¬àBÇà⁄YŸ]‹]Y\›[€ú‘›\
+ùZ[€€ù^ HOà\›öY] àŸ^Nà€€ú›ò[YRŸ^J	‹]Y\›[€ú… KàY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à]J
+À	‘\[€ZH€]\⁄[XZIÀ	–Y][€ò[]Y\›[€ú… JKàYà
+⁄YŸ]ö[ö]X[]Z[Àö\”õ›[\JHããñ¬à€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kàÿ\ô
+^
+⁄YŸ]ö[ö]X[]Z[ JKàKà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàÿ⁄⁄XŸJàÀà
+À	“€⁄‹»⁄[\€ql»›\ù[X\œ…À	“›»Ÿ]ô\ôH\ôHHﬁ[\€\œ… Kà…€[ô›ò\…À	›öY][ö\…À	‹›\ù\…À	€XòZH›\ù\…◊KàŸ]ô\ö]Kà
+äHOàŸ]ô\ö]HHãà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàÿ⁄⁄XŸJàÀà
+À	“⁄YZ»ZZ€»ZH1&\⁄X\⁄O…À	“›»€ô»\»\»\›Y… Kà…⁄Ÿ[X\»ò[[ô\…À	ÃHY[±!IÀ	Ã∏†$Ã»Y[ò\…À	⁄[⁄X]I◊Kà\ò][€ãà
+äHOà\ò][€àHãà
+KàYà
+⁄YŸ]òÿ]Y€‹ûHOH	‘⁄ÿ]\€X\…»à⁄YŸ]òÿ]Y€‹ûHOH	‘[õ»õÿõ[[‹… Hããñ¬à€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàÿ⁄⁄XŸJàÀà
+À	“€⁄‹»⁄ÿ]\€X\œ…À	’⁄]\»HZ[àZŸO… Kà…‹‹^õZ[ö\…À	ŸY⁄[òIÀ	€X]Y1oöXIÀ	ÿqh]ù\…◊KàZ[ï\Kà
+äHOàZ[ï\HHãà
+KàKà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàããóÿÿ]Y€‹ûT]Y\›[€ú  Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kàö[Yù]€äà€îô\‹ŸYà\ò][€ãö\—[\Bà»ù[àà
+
+H¬àŸ]›]J
+
+H¬à›\Hé¬àZP\‹Ÿ\‹€Y[ùHZP€€úŸ[ù»‹ô\]Y\›ZP\‹Ÿ\‹€Y[ù
+
+Hàù[¬àJN¬àKà⁄[à^
+
+À	–]Z›Hÿ]Y›[[»]Z‹±!IÀ	‘ù[àÿYô]H⁄X⁄… JKà
+KàKà
+N¬Çàù]\ôO›ö[ôœœà‹ô\]Y\›ZP\‹Ÿ\‹€Y[ù
+
+H¬àö[ò[Y[Xô\àH⁄YŸ]ô]KõY[Xô\ú¬àù⁄\ôJ
+][JHOà][KöYOH⁄YŸ]õY[Xô\íY
+Bàôö\ú›‹ìù[¬à[ù»YŸN¬àö[ò[ö\ùH]U[YKùûT\úŸJY[Xô\èÀòö\ù]Hœ»	… N¬àYà
+ö\ùOHù[
+H¬àö[ò[õ›»H]U[YKõõ› 
+N¬àYŸHHõ›ÀûYX\àHö\ùûYX\é¬àYà
+õ›Àõ[€ùö\ùõ[€ùà
+õ›Àõ[€ùOHö\ùõ[€ù	âàõ›Àô^Hö\ùô^JJH¬àYŸKKN¬àBàBàö[ò[[Y⁄XõSYYX⁄[ô\»H⁄YŸ]ô]KõYYÀù⁄\ôJà
+YYX⁄[ôJHOÇàYYX⁄[ôKõY[Xô\íYÀö\—[\HàYYX⁄[ôKõY[Xô\íYÀò€€ùZ[ú ⁄YŸ]õY[Xô\íY
+Kà
+N¬àô]\õàZTﬁ[\€TŸ\ùöXŸKò\‹Ÿ\‹ àÿ]Y€‹ûNà⁄YŸ]òÿ]Y€‹ûKàÿÿ][€éàÿÿ][€ãàﬁ[\€\ŒàŸ[X›Yﬁ[\€\Àù”\›
+
+KàŸ]ô\ö]NàŸ]ô\ö]Kà\ò][€éà\ò][€ãà]Z[Œà⁄YŸ]ö[ö]X[]Z[ÀàÿYô]P[ú›Ÿ\úŒà¬à	⁄Y⁄ô]ô\âŒàY⁄ô]ô\ãà	›õ€Z][ô…Œàõ€Z][ôÀà	‹\ú⁄\›[ùõ€Z][ô…Œà\ú⁄\›[ùõ€Z][ôÀà	ÿõ€Ÿ	Œàõ€Ÿà	ÿúôX][ô‘õÿõ[IŒàúôX][ô‘õÿõ[Kà	ŸòZ[ù[ô”‹ê€€ôù\⁄[€âŒàòZ[ù[ô”‹ê€€ôù\⁄[€ãà	‹›Ÿ[[ô…Œà›Ÿ[[ôÀà	ÿÿ[õõ›ö[ö…Œàÿ[õõ›ö[öÀà	€ô]\õ€Ÿ⁄X—YöX⁄]	Œàô]\õ€Ÿ⁄X—YöX⁄]àKà]Y[ùà›ö[ôÀÿöôX›œû¬à	ÿYŸQ‹õ›\	ŒàY[Xô\èÀòYŸQ‹õ›\œ»	…Àà	ÿYŸVYX\ú…ŒàYŸKà	›ŸZY⁄Ÿ…ŒàY[Xô\èÀùŸZY⁄œ»	…Àà	ÿ[\ô⁄Y\…ŒàY[Xô\èÀò[\ô⁄Y\»œ»	…Àà	ÿ€€ô][€ú…ŒàY[Xô\èÀò€€ô][€ú»œ»	…Àà	⁄[ù€\ò[ùYYX⁄[ô\…ŒàY[Xô\èÀö[ù€\ò[ùYYX⁄[ô\»œ»	…ÀàKàÿXö[ô]YYX⁄[ô\Œà[Y⁄XõSYYX⁄[ô\ÀõX\
+
+YYX⁄[ôJH¬àö[ò[›ZY[òŸHHY[Xô\àOHù[à»ù[ààÿ[›[]Q‹ŸQ›ZY[òŸJYYX⁄[ôKY[Xô\äN¬àô]\õà›ö[ôÀÿöôX›œû¬à	€ò[YIŒàYYX⁄[ôKõò[YKà	‹›Xú›[òŸIŒàYYX⁄[ôKú›Xú›[òŸKà	‹›ô[ô›	ŒàYYX⁄[ôKú›ô[ô›à	Ÿõ‹õIŒàYYX⁄[ôKô‹ÿYŸQõ‹õKà	ÿÿ]Y€‹ûIŒàYYX⁄[ôKòÿ]Y€‹ûKà	‹\ú‹ŸIŒàYYX⁄[ôKú\ú‹ŸKà	‹ô\ÿ‹ö\[€âŒàYYX⁄[ôKúô\ÿ‹ö\[€ãà	€ŸôöX⁄X[\ŸU^	ŒàYYX⁄[ôKô‹ÿYŸKà	›ÿ\õö[ô‹…ŒàYYX⁄[ôKùÿ\õö[ô‹Àà	⁄[ù\òX›[€ú…ŒàYYX⁄[ôKö[ù\òX›[€úÀà	Ÿ^\ôY	ŒÇà
+^\’[ù[YYX⁄[ôQ^\ûJYYX⁄[ôKô^\ûK]U[YKõõ› 
+JHœ»
+Hàà	‹›ÿ⁄…ŒàYYX⁄[ôKú›ÿ⁄Àà	›ô\öYöYY‹ŸIŒà›ZY[òŸHOHù[à»ù[àà›ö[ôÀÿöôX›œû¬à	Ÿ‹ŸSY…Œà›ZY[òŸKô‹ŸSYÀà	›õ€[YS[	Œà›ZY[òŸKùõ€[YS[à	›[ö]…Œà›ZY[òŸKù[ö]Àà	‹€›\òŸIŒà›ZY[òŸKú€›\òŸKàKàN¬àJKù”\›
+
+Kà
+N¬àBÇà⁄YŸ]ÿZPÿ\ô
+ùZ[€€ù^ H¬àYà
+XZP€€úŸ[ù
+H¬àô]\õàÿ\ô
+à^
+à
+àÀà	–RH[ò[^±%»ô]ûZŸ]H8†$»›ôZZÿ]‹»[€Y[û\»ôZqh\⁄ql‹›KâÀà	–RH[ò[\⁄\»ÿ\»õ›ù[à8†%õ»X[]Hÿ\»Ÿ[ùâÀà
+Kà
+Kà
+N¬àBàYà
+PZTﬁ[\€TŸ\ùöXŸKö\–€€ôöY›\ôY
+H¬àô]\õàÿ\ô
+àõ› à⁄[ô[éà¬à€€ú›X€€äX€€úÀò]]◊ÿ]Ÿ\€€YW‹õ›[ôY€€‹éà‹ôY[äKà€€ú›⁄^ôYõﬁ
+⁄YàL
+Kà^[ôY
+à⁄[à^
+à
+àÀà	–RH[ò[^±%»\ù[Òh]KàöHù\»Z›]ù[›HöZù[ô›\»ÿ]YÒl»8†'ëö\ôXò\Ÿx†'Ÿ\ùö\Ò!KâÀà	–RH[ò[\⁄\»\»ôXYH[ô⁄[X›]ò]HYù\à€€õôX›[ô»HŸX›\ôHö\ôXò\ŸHŸ\ùöXŸKâÀà
+Kà
+Kà
+KàKà
+Kà
+N¬àBàô]\õàù]\ôPùZ[\è›ö[ôœœäàù]\ôNàZP\‹Ÿ\‹€Y[ùàùZ[\éà
+€€ù^€ò\⁄›
+H¬àYà
+€ò\⁄›ò€€õôX›[€î›]HOH€€õôX›[€î›]KùÿZ][ô H¬àô]\õàÿ\ô
+à€€ú›õ› à⁄[ô[éà¬à⁄^ôYõﬁ
+à⁄YàåãàZY⁄àåãà⁄[à⁄\ò›[\îõŸ‹ô\‹“[ôXÿ]‹ä›õ⁄ŸU⁄YàãçJKà
+Kà⁄^ôYõﬁ
+⁄YàLäKà^[ôY
+⁄[à^
+	–RH[ò[^ù[⁄òH]ZZ›1!H[ôõ‹õXX⁄Z±!x†)â JKàKà
+Kà
+N¬àBàYà
+€ò\⁄›ô]HOHù[
+Hô]\õà€€ú›⁄^ôYõﬁú⁄ö[ö 
+N¬àô]\õàÿ\ô
+à€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à€€ú›õ› à⁄[ô[éà¬àX€€äX€€úÀò]]◊ÿ]Ÿ\€€YW‹õ›[ôY€€‹éà‹ôY[äKà⁄^ôYõﬁ
+⁄Yà
+Kà^
+à	–RHXZqhZ⁄[ö[X\…Àà›[Nà^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ€€‹éàò]ûJKà
+KàKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà^
+€ò\⁄›ô]HJKà€€ú›⁄^ôYõﬁ
+ZY⁄àäKà^
+à
+àÀà	’ZH±%‹òHXY€õﬁ±%»\àﬁY[[»\⁄ﬁ\ö[X\ÀâÀà	’\»\»õ›HXY€õ‹⁄\»‹àôX]Y[ùô\ÿ‹ö\[€ãâÀà
+Kà›[Nà€€ú›^›[Jõ€ù⁄^ôNàLã€€‹éà€€‹äôçLççMÃäJKà
+KàKà
+Kà
+N¬àKà
+N¬àBÇà\›⁄YŸ]àÿÿ]Y€‹ûT]Y\›[€ú ùZ[€€ù^ HOà›⁄]⁄
+⁄YŸ]òÿ]Y€‹ûJH¬à	‘\±hX[[X\…»Oà¬àﬁY\”õ àÀà
+À	–\à\òH[\\ò]1j‹òO…À	—»[›H]ôHHô]ô\è… Kàô]ô\ãà
+äHOàô]ô\àHãà
+KàYà
+ô]ô\äBàﬁY\”õ àÀà
+À	–\à[\\ò]1j‹òHŒH0¨»\à]ZÒh]\€±%œ…À	“\»]Œp¨»‹àY⁄\è… KàY⁄ô]ô\ãà
+äHOàY⁄ô]ô\àHãà
+KàﬁY\”õ àÀà
+àÀà	–\à›[ö›H›±%‹[›H\òòHò]q#ZX]H\›[1+œ…Àà	—YôöX›[HúôX][ô»‹à⁄‹ùô\‹»ŸàúôX]…Àà
+KàúôX][ô‘õÿõ[Kà
+äHOàúôX][ô‘õÿõ[HHãà
+KàKà	“ÿ\±hq#ZX]ö[X\…»Oà¬àﬁY\”õ àÀà
+À	–\à[\\ò]1j‹òHŒH0¨»\à]ZÒh]\€±%œ…À	“\»]Œp¨»‹àY⁄\è… KàY⁄ô]ô\ãà
+äHOàY⁄ô]ô\àHãà
+KàﬁY\”õ àÀà
+À	–\à\òHôq+‹ò\›\»±%‹ö[X\œ…À	“\»\ôH[à[ù\›X[ò\⁄… Kàò\⁄à
+äHOàò\⁄Hãà
+KàﬁY\”õ àÀà
+À	–\à›[ö›H›±%‹[›O…À	—YôöX›[HúôX][ôœ… KàúôX][ô‘õÿõ[Kà
+äHOàúôX][ô‘õÿõ[HHãà
+KàﬁY\”õ àÀà
+À	–\à[›]H\òòH\ÿ]H›[Zqhq&O…À	—òZ[ù[ô»‹à€€ôù\⁄[€è… KàòZ[ù[ô”‹ê€€ôù\⁄[€ãà
+äHOàòZ[ù[ô”‹ê€€ôù\⁄[€àHãà
+KàKà	–[\ô⁄ZòI»Oà¬àﬁY\”õ àÀà
+àÀà	–\à[ú›HôZY\À1j‹‹»\òòHYqoù]ö\œ…Àà	‘›Ÿ[[ô»ŸàHòXŸK\»‹à€ô›YO…Àà
+Kà›Ÿ[[ôÀà
+äHOà›Ÿ[[ô»Hãà
+KàﬁY\”õ àÀà
+àÀà	–\à›[ö›H›±%‹[›H\òòHû]O…Àà	—YôöX›[HúôX][ô»‹à›ÿ[›⁄[ôœ…Àà
+KàúôX][ô‘õÿõ[Kà
+äHOàúôX][ô‘õÿõ[HHãà
+KàﬁY\”õ àÀà
+À	–\à±%‹ö[X\»‹ôZ]ZH[ùO…À	“\»Hò\⁄‹ôXY[ô»]ZX⁄€O… Kàò\⁄à
+äHOàò\⁄Hãà
+KàKà	’öY\öX]ö[X\»»qoö⁄Y]1%⁄ö[X\…»Oà¬àﬁY\”õ àÀà
+À	–\àZ⁄[òH\òòHô[ZX]O…À	”ò]\ŸXH‹àõ€Z][ôœ… Kàõ€Z][ôÀà
+äHOàõ€Z][ô»Hãà
+KàYà
+õ€Z][ô BàﬁY\”õ àÀà
+À	–\à±%€Z[X\»ÿ\ù⁄ò\⁄O…À	“\»õ€Z][ô»\ú⁄\›[ù… Kà\ú⁄\›[ùõ€Z][ôÀà
+äHOà\ú⁄\›[ùõ€Z][ô»Hãà
+KàﬁY\”õ àÀà
+àÀà	–\àô\]ûZ‹›HŸ\ùH\òòHqh[ZZﬁ]H⁄ﬁ\Ò#Zqlœ…Àà	’[òXõH»ö[ö»‹àŸY\õZY»›€è…Àà
+Kàÿ[õõ›ö[öÀà
+äHOàÿ[õõ›ö[ö»Hãà
+KàﬁY\”õ àÀà
+àÀà	–\àqh[X]‹ŸH\›X±%⁄õ›H‹ò]Zõœ…Àà	“]ôH[›Hõ›XŸYõ€Ÿ[à›€€…Àà
+Kàõ€Ÿà
+äHOàõ€ŸHãà
+KàKà	‘[õ»õÿõ[[‹…»Oà¬àﬁY\”õ àÀà
+À	–\à\òH[\\ò]1j‹òO…À	—»[›H]ôHHô]ô\è… Kàô]ô\ãà
+äHOàô]ô\àHãà
+KàﬁY\”õ àÀà
+À	–\àZ⁄[òH\òòHô[ZX]O…À	”ò]\ŸXH‹àõ€Z][ôœ… Kàõ€Z][ôÀà
+äHOàõ€Z][ô»Hãà
+KàYà
+õ€Z][ô BàﬁY\”õ àÀà
+àÀà	–\à±%€Z[X\»ÿ\ù⁄ò\⁄H\àô\]ûZ‹›HŸ\ùO…Àà	‘\ú⁄\›[ùõ€Z][ô»‹à[òXõH»ö[öœ…Àà
+Kà\ú⁄\›[ùõ€Z][ôÀà
+äHOà\ú⁄\›[ùõ€Z][ô»Hãà
+KàﬁY\”õ àÀà
+À	–\à\›X±%⁄õ›H‹ò]Zõœ…À	“]ôH[›Hõ›XŸYõ€Ÿ… Kàõ€Ÿà
+äHOàõ€ŸHãà
+KàKà	”Ÿ‹»õÿõ[[‹…»Oà¬àﬁY\”õ àÀà
+àÀà	–\à±%‹ö[X\»\òòH\ò]Y[X\»‹ôZ]ZH[ùO…Àà	“\»Hò\⁄‹àôYô\‹»‹ôXY[ô»]ZX⁄€O…Àà
+Kàò\⁄à
+äHOàò\⁄Hãà
+KàﬁY\”õ àÀà
+À	–\à[ú›HôZY\»\òòH1j‹‹œ…À	‘›Ÿ[[ô»ŸàHòXŸH‹à\œ… Kà›Ÿ[[ôÀà
+äHOà›Ÿ[[ô»Hãà
+KàﬁY\”õ àÀà
+À	–\à›[ö›H›±%‹[›O…À	—YôöX›[HúôX][ôœ… KàúôX][ô‘õÿõ[Kà
+äHOàúôX][ô‘õÿõ[HHãà
+KàﬁY\”õ àÀà
+À	–\à\òH[\\ò]1j‹òO…À	—»[›H]ôHHô]ô\è… Kàô]ô\ãà
+äHOàô]ô\àHãà
+KàKà	—ÿ[õ‹»›òZY⁄[X\…»Oà¬àﬁY\”õ àÀà
+À	–\à[›]H\òòH\ÿ]H›[Zqhq&O…À	—òZ[ù[ô»‹à€€ôù\⁄[€è… KàòZ[ù[ô”‹ê€€ôù\⁄[€ãà
+äHOàòZ[ù[ô”‹ê€€ôù\⁄[€àHãà
+KàﬁY\”õ àÀà
+àÀà	–\à›[ö›Hÿ[±%›KX]]H\òòHò[]Hÿ[1j€ô\œ…Àà	—YôöX›[H‹XZ⁄[ôÀŸYZ[ô»‹à€€ùõ€[ô»H[Xè…Àà
+Kàô]\õ€Ÿ⁄X—YöX⁄]à
+äHOàô]\õ€Ÿ⁄X—YöX⁄]Hãà
+KàﬁY\”õ àÀà
+À	–\àZ⁄[òH\òòHô[ZX]O…À	”ò]\ŸXH‹àõ€Z][ôœ… Kàõ€Z][ôÀà
+äHOàõ€Z][ô»Hãà
+KàKà»Oà¬àﬁY\”õ àÀà
+À	–\à\òH[\\ò]1j‹òO…À	—»[›H]ôHHô]ô\è… Kàô]ô\ãà
+äHOàô]ô\àHãà
+KàﬁY\”õ àÀà
+À	–\à\›X±%⁄õ›H‹ò]Zõœ…À	“]ôH[›Hõ›XŸYõ€Ÿ… Kàõ€Ÿà
+äHOàõ€ŸHãà
+KàﬁY\”õ àÀà
+À	–\à›[ö›H›±%‹[›O…À	—YôöX›[HúôX][ôœ… KàúôX][ô‘õÿõ[Kà
+äHOàúôX][ô‘õÿõ[HHãà
+KàﬁY\”õ àÀà
+À	–\à[›]H\òòH\ÿ]H›[Zqhq&O…À	—òZ[ù[ô»‹à€€ôù\⁄[€è… KàòZ[ù[ô”‹ê€€ôù\⁄[€ãà
+äHOàòZ[ù[ô”‹ê€€ôù\⁄[€àHãà
+KàKàN¬Çà⁄YŸ]ÿ⁄⁄XŸJàùZ[€€ù^Àà›ö[ô»Xô[à\››ö[ôœàò[Y\Àà›ö[ô»Ÿ[X›Yàò[YP⁄[ôŸY›ö[ôœà€îŸ[X›à
+HOà€€[[äà‹õ‹‹–^\–[Y€õY[ùà‹õ‹‹–^\–[Y€õY[ùú›\ùà⁄[ô[éà¬à^
+àXô[à›[Nà€€ú›^›[Jàõ€ù⁄^ôNàMãàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éàò]ûKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à Kà‹ò\
+à‹X⁄[ôŒàÀàù[î‹X⁄[ôŒàÀà⁄[ô[éàò[Y\¬àõX\
+à
+ò[YJHOà⁄⁄XŸP⁄\
+àXô[à^
+ò[YJKàŸ[X›YàŸ[X›YOHò[YKà€îŸ[X›Yà
+ HOàŸ]›]J
+
+HOà€îŸ[X›
+ò[YJJKà
+Kà
+Bàù”\›
+
+Kà
+KàKà
+N¬Çà⁄YŸ]ﬁY\”õ àùZ[€€ù^Àà›ö[ô»Xô[àõ€€ò[YKàò[YP⁄[ôŸYõ€€à€ê⁄[ôŸYà
+HOà›⁄]⁄\›[Jà€€ù[ùY[ôŒàYŸR[úŸ]Àûô\õÀà]Nà^
+Xô[
+Kàò[YNàò[YKà€ê⁄[ôŸYà
+ô^
+HOàŸ]›]J
+
+HOà€ê⁄[ôŸY
+ô^
+JKà
+N¬Çà⁄YŸ]‹ô\›[›\
+ùZ[€€ù^ H¬àYà
+[ôŸ\õ›\ Hô]\õàŸ[ôŸ\îô\›[
+ N¬àö[ò[Y[Xô\àH⁄YŸ]ô]KõY[Xô\ú¬àù⁄\ôJ
+
+HOàöYOH⁄YŸ]õY[Xô\íY
+Bàôö\ú›‹ìù[¬àö[ò[[\ôﬁU^Bà	…€Y[Xô\èÀò[\ô⁄Y\»œ»	…ﬂH	¬à	…€Y[Xô\èÀö[ù€\ò[ùYYX⁄[ô\»œ»	…ﬂI¬àù”›Ÿ\êÿ\ŸJ
+N¬àö[ò[X]⁄\»H⁄YŸ]ô]KõYYÀù⁄\ôJ
+YYX⁄[ôJH¬àYà
+YYX⁄[ôKúô\ÿ‹ö\[€àYYX⁄[ôKú›ÿ⁄»H
+Hô]\õàò[ŸN¬àYà
+⁄YŸ]õY[Xô\íYö\”õ›[\H	âÇàYYX⁄[ôKõY[Xô\íYÀö\”õ›[\H	âÇà[YYX⁄[ôKõY[Xô\íYÀò€€ùZ[ú ⁄YŸ]õY[Xô\íY
+JBàô]\õàò[ŸN¬àYà
+W€X]⁄\‘ﬁ[\€Pÿ]Y€‹ûJYYX⁄[ôK⁄YŸ]òÿ]Y€‹ûJJHô]\õàò[ŸN¬àö[ò[^\ûQ^\»H^\’[ù[YYX⁄[ôQ^\ûJàYYX⁄[ôKô^\ûKà]U[YKõõ› 
+Kà
+N¬àYà
+^\ûQ^\»OHù[	âà^\ûQ^\»
+Hô]\õàò[ŸN¬àö[ò[Y[ù]HH	…€YYX⁄[ôKõò[Y_H	€YYX⁄[ôKú›Xú›[òŸ_IÀù”›Ÿ\êÿ\ŸJ
+N¬àö[ò[[\ôﬁU€‹ô»H[\ôﬁU^àú‹]
+ôY—^
+â÷À◊◊J… JBàù⁄\ôJ
+€‹ô
+HOà€‹ôõ[ô›à N¬àô]\õàX[\ôﬁU€‹ôÀò[ûJY[ù]Kò€€ùZ[ú N¬àJKù”\›
+
+N¬àô]\õà\›öY] àŸ^Nà€€ú›ò[YRŸ^J	‹ÿYôI KàY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à€€ú›Ÿ[ù\äà⁄[à⁄\ò€P]ò]\äàòY]\ŒàãàòX⁄Ÿ‹õ›[ô€€‹éàZ[ùà⁄[àX€€äX€€úÀò⁄X⁄◊ÿ⁄\ò€K⁄^ôNàN€€‹éà‹ôY[äKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kà^
+à
+àÀà	‘Yÿ[]ZZ›\»]ÿZﬁ[]\»]õ⁄ö[ôÒl»Òoû[Zql»ô[ù\›]]IÀà	”õ»[ôŸ\à⁄Y€ú»Y[ùYöYYúõ€HH[ú›Ÿ\ú»õ›öYY	Àà
+Kà^[Y€éà^[Y€ãòŸ[ù\ãà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàåKàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éà‹ôY[ãà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàÿ\ô
+à^
+à
+àÀà	’ZH±%‹òHXY€õﬁ±%ÀàôZH±j⁄€1%»õŸÒ%⁄òK⁄[\€XZH›\±%⁄òH\àŸ[XHô\ö[q!H8†$»‹ôZ\⁄]1%‹»1+»ﬁY]⁄±!KâÀà	’\»\»õ›HXY€õ‹⁄\ÀàŸYZ»YYXÿ[ÿ\ôHYàﬁ[\€\»€‹úŸ[à‹à€€òŸ\õà[›KâÀà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+KàÿZPÿ\ô
+ Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kà^
+à
+àÀà	–\€Y[ú»\àô[ôõ⁄ôHòZ\›[±%€1%⁄ôHòY€YNâÀà	—õ›[ô[àH\ú€€ò[[ô⁄\ôYYYX⁄[ôHÿXö[ô]âÀà
+Kà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàNKàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éàò]ûKà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+KàYà
+X]⁄\Àö\—[\JBàÿ\ô
+à^
+à
+àÀà	’[öÿ[ql»\àÿ[[⁄ò[±#Zql»ô\ôXŸ\[öql»òZ\›1l»ô\ò\›KâÀà	”õ»›Z]XõK[ô^\ôYõ€ã\ô\ÿ‹ö\[€àYYX⁄[ô\»õ›[ôâÀà
+Kà
+Kà
+KàããõX]⁄\ÀõX\
+
+YYX⁄[ôJH¬àö[ò[\‘⁄\ôYHYYX⁄[ôKõY[Xô\íYÀö\—[\N¬àö[ò[€›\òŸHH\‘⁄\ôYà»
+À	–ô[ôòHòZ\›[±%€1%…À	‘⁄\ôYYYX⁄[ôHÿXö[ô]	 Bàà
+àÀà	‘ö\⁄⁄\ùH\⁄\ö[ö›[H\€Y[ö]ZIÀà	–\‹⁄Y€ôY»Ÿ[X›Y\ú€€âÀà
+N¬àö[ò[›ZY[òŸHHY[Xô\àOHù[à»ù[ààÿ[›[]Q‹ŸQ›ZY[òŸJYYX⁄[ôKY[Xô\äN¬àö[ò[‹ŸS[ôHH›ZY[òŸHOHù[à»
+àÀà	—ﬁ±%»ô\õŸ€XH8†$»±%‹òH]ö\ù[ù‹»›ùZ›1j‹ö[±%‹»\[[»Z\ﬁZ€1%‹ÀâÀà	—‹ŸHõ›⁄›€à8†%õ»\õ›ôY›ùX›\ôYXYõ]ù[KâÀà
+Bàà	…›
+À	‘Yÿ[]ö\ù[ù1!H\[1+…À	—úõ€H\õ›ôYXYõ]	 _Nà	¬à	…‹]X[ù]SXô[
+›ZY[òŸKô‹ŸSY _HY…¬à	…Ÿ›ZY[òŸKùõ€[YS[OHù[»	…»à	»8†(à	‹]X[ù]SXô[
+›ZY[òŸKùõ€[YS[J_H[	ﬂI¬à	…Ÿ›ZY[òŸKù[ö]»OHù[»	…»à	»8†(à	‹]X[ù]SXô[
+›ZY[òŸKù[ö]»J_HõùâﬂIŒ¬àô]\õàÿ\ô
+à⁄[à\›[JàXY[ôŒÇàYYX⁄[ôKö[XYŸT]ö\”õ›[\H	âÇàö[JYYX⁄[ôKö[XYŸT]
+Kô^\›‘ﬁ[ò 
+Bà»€\îôX›
+àõ‹ô\îòY]\Œàõ‹ô\îòY]\Àò⁄\ò›[\ä
+Kà⁄[à[XYŸKôö[Jàö[JYYX⁄[ôKö[XYŸT]
+Kà⁄YàLãàZY⁄àLãàö]àõﬁö]ò€›ô\ãà
+Kà
+Bàà€€ú›⁄\ò€P]ò]\äàòX⁄Ÿ‹õ›[ô€€‹éàZ[ùà⁄[àX€€äX€€úÀõYYXÿ][€ã€€‹éà‹ôY[äKà
+Kà]Nà^
+à	…€YYX⁄[ôKõò[Y_H	€YYX⁄[ôKú›ô[ô›IÀà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ
+Kà
+Kà›Xù]Nà^
+à	…€›\òŸH8†(à	€YYX⁄[ôKú›Xú›[òŸ_Wâ¬à	…◊€X]⁄ôX\€€äÀ⁄YŸ]òÿ]Y€‹ûJ_Wâ‹ŸS[ôWâ¬à	…›
+À	’\ö]IÀ	“[à›ÿ⁄… _Nà	‹]X[ù]SXô[
+YYX⁄[ôKú›ÿ⁄ _IÀà
+Kà\’ôYS[ôNàò[ŸKàòZ[[ôŒà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄
+Kà€ï\à
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOàYYX⁄[ôPZTYŸJà]Nà⁄YŸ]ô]KàYYX⁄[ôNàYYX⁄[ôKà[ö]X[]Y\›[€éÇà	”X[õ»⁄[\€XZNà	›⁄YŸ]ö[ö]X[]Z[Àö\—[\H»⁄YŸ]òÿ]Y€‹ûHà⁄YŸ]ö[ö]X[]Z[ﬂKà	¬à	‘XZqhZ⁄[öÀ€Ÿ1%€1hZ\»òZ\›\»ÿ[1%›1l»Z›KÿZ\±+»ò\ù›HYÿ[€‹ù[1%⁄ôH]ö\ù[ù1!H[ôõ‹õXX⁄Z±!K	¬à	Ò+»Ò!H]‹ôZ\H1%€Y\Ò+»\àÿYHõ»ô]ò\ù›Kà\€Y[ú»[qoöX]\»‹ù\1%Œà	€Y[Xô\èÀòYŸQ‹õ›\œ»	€ô[ù\õŸ]IﬂK	¬à	‹›õ‹ö\Œà	€Y[Xô\èÀùŸZY⁄œ»	€ô[ù\õŸ]\…ﬂK[\ô⁄Zõ‹Œà	€Y[Xô\èÀò[\ô⁄Y\»œ»	€ô[ù\õŸ]‹…ﬂK	¬à	€Y€‹Œà	€Y[Xô\èÀò€€ô][€ú»œ»	€ô[ù\õŸ]‹…ﬂKàôZ›\ö»ô\]ö\ù[ù‹»ﬁ±%‹ÀâÀà
+Kà
+Kà
+Kà
+Kà
+N¬àJKà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kà›][ôYù]€ãöX€€äà€îô\‹ŸYà
+
+HOàò]öYÿ]‹ãú‹
+ KàX€€éà€€ú›X€€äX€€úÀúô\›\ùÿ[
+KàXô[à^
+
+À	‘òY1%›HqhHò]Zõ…À	‘›\ùYÿZ[â JKà
+KàKà
+N¬àBÇà⁄YŸ]Ÿ[ôŸ\îô\›[
+ùZ[€€ù^ H¬àö[ò[⁄Y€ú»H›ö[ôœñ¬àYà
+Ÿ]ô\ö]HOH	€XòZH›\ù\… Bà
+À	”XòZH›\±j‹»⁄[\€XZIÀ	’ô\ûHŸ]ô\ôHﬁ[\€\… KàYà
+Y⁄ô]ô\äBà
+àÀà	’[\\ò]1j‹òHŒH0¨»\à]ZÒh]\€±%…Àà	’[\\ò]\ôHŸàŒp¨»‹àY⁄\âÀà
+KàYà
+\ú⁄\›[ùõ€Z][ô Bà
+àÀà	”ù[€][ö\»±%€Z[X\»\òòHô\]ûZ‹›HŸ\ùIÀà	‘\ú⁄\›[ùõ€Z][ô»‹à[òXõH»ö[ö…Àà
+KàYà
+ÿ[õõ›ö[ö Bà
+àÀà	”ô\]ûZ‹›HŸ\ùH\òòHqh[ZZﬁ]H⁄ﬁ\Ò#Zql…Àà	’[òXõH»ö[ö»‹àŸY\õZY»›€âÀà
+KàYà
+õ€Ÿ
+H
+À	‘\›X±%›\»‹ò]Zò\…À	–õ€Ÿô\‹ùY	 KàYà
+úôX][ô‘õÿõ[JH
+À	‘›[ö›H›±%‹[›IÀ	—YôöX›[HúôX][ô… KàYà
+›Ÿ[[ô Bà
+àÀà	’[ú›HôZY\À1j‹‹»\òòHYqoù]ö\…Àà	‘›Ÿ[[ô»ŸàHòXŸK\»‹à€ô›YIÀà
+KàYà
+òZ[ù[ô”‹ê€€ôù\⁄[€äBà
+À	–[[X\»\òòH›[ZqhZ[X\…À	—òZ[ù[ô»‹à€€ôù\⁄[€â KàYà
+ô]\õ€Ÿ⁄X—YöX⁄]
+Bà
+àÀà	“ÿ[õ‹ÀôYÒ%⁄ö[[»\òòHÿ[1j€öql»ò[[[»›]öZ⁄[X\…Àà	‘‹YX⁄ö\⁄[€à‹à[Xà€€ùõ€õÿõ[IÀà
+KàYà
+⁄YŸ]òÿ]Y€‹ûHOH	‘[õ»õÿõ[[‹…»	âÇàÿÿ][€àOH	—qhZ[±%⁄ôI»	âÇàô]ô\à	âÇàõ€Z][ô Bà
+àÀà	‘[õ»⁄ÿ]\€X\»qhZ[±%⁄ôH›H[\\ò]1j‹òH\à±%€Z[]IÀà	‘öY⁄\⁄YYXô€Z[ò[Z[à⁄]ô]ô\à[ôõ€Z][ô…Àà
+KàN¬àô]\õà\›öY] àŸ^Nà€€ú›ò[YRŸ^J	Ÿ[ôŸ\â KàY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à€€ú›Ÿ[ù\äà⁄[à⁄\ò€P]ò]\äàòY]\ŒàãàòX⁄Ÿ‹õ›[ô€€‹éà€€‹äôôôôMŸM Kà⁄[àX€€äX€€úÀùÿ\õö[ô◊‹õ›[ôY⁄^ôNàM€€‹éà€€‹úÀúôY
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àM
+Kà^
+à
+À	—ÿ[[ZH]õ⁄ö[ô⁄HÒoû[ZXZIÀ	‘‹‹⁄XõH[ôŸ\à⁄Y€ú… Kà^[Y€éà^[Y€ãòŸ[ù\ãà›[Nà€€ú›^›[Jàõ€ù⁄^ôNàåÀàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éà€€‹úÀúôYà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àLäKàããú⁄Y€úÀõX\
+à
+⁄Y€äHOà\›[JàXY[ôŒà€€ú›X€€äX€€úÀò⁄\ò€K⁄^ôNàL€€‹éà€€‹úÀúôY
+Kà]Nà^
+⁄Y€äKà
+Kà
+Kàÿ\ô
+à€€‹éà€€ú›€€‹äôôôôMŸM Kà⁄[àY[ô àY[ôŒà€€ú›YŸR[úŸ]Àò[
+MäKà⁄[à^
+à
+àÀà	‘ôZ€€Y[ô[⁄ò[XHôY[⁄X[ù‹ôZ\\»1+»ﬁY]⁄±!H\òòH⁄›Xö[‹»Yÿ[õ‹»⁄ﬁ\öqlÀàôZHﬁ[H‹±%‹€q%»ﬁ]ûXôZH8†$»⁄ÿ[Xö[ö⁄]HLLãâÀà	‘ŸYZ»\ôŸ[ùYYXÿ[\‹Ÿ\‹€Y[ùàÿ[[Y\ôŸ[òﬁHŸ\ùöXŸ\»Yà\ôH\»[à[[YYX]HôX]»YôKâÀà
+Kà^[Y€éà^[Y€ãòŸ[ù\ãà›[Nà€€ú›^›[Jàõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃà€€‹éà€€‹äôòLÃMÃM Kà
+Kà
+Kà
+Kà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄àL
+Kàö[Yù]€ãöX€€äà›[Nàö[Yù]€ãú›[Qúõ€JòX⁄Ÿ‹õ›[ô€€‹éà€€‹úÀúôY
+Kà€îô\‹ŸYà
+
+HOà€\õÿ\ôúŸ]]J€€ú›€\õÿ\ô]J^à	ÃLLâ JBàù[äà
+ HOàÿÿYôõ€Y\‹Ÿ[ôŸ\ãõŸä Kú⁄›‘€òX⁄–ò\äà€òX⁄–ò\äà€€ù[ùà^
+à
+À	”ù[Y\ö\»LLàùZ€‹Zù[›\ÀâÀ	ÃLLà€‹YYâ Kà
+Kà
+Kà
+Kà
+KàX€€éà€€ú›X€€äX€€úÀô[Y\ôŸ[òﬁW€›][ôY
+KàXô[à^
+
+À	“€‹Zù[›Hù[Y\±+»LLâÀ	–€‹H[Y\ôŸ[òﬁHù[Xô\â JKà
+Kà€€ú›⁄^ôYõﬁ
+ZY⁄à
+Kà›][ôYù]€äà€îô\‹ŸYà
+
+HOàŸ]›]J
+
+HOà›\HJKà⁄[à^
+
+À	‘]Z‹€[ùH]ÿZﬁ[]\…À	‘ô]öY]»[ú›Ÿ\ú… JKà
+KàKà
+N¬àBüBÇî›ö[ô»€X]⁄ôX\€€äùZ[€€ù^À›ö[ô»ÿ]Y€‹ûJHOà›⁄]⁄
+ÿ]Y€‹ûJH¬à	‘⁄ÿ]\€X\…»Oà
+àÀà	—ÿ[H±j›H›\⁄Z±&\»›H\⁄\ö[ö›H⁄ÿ]\€[»⁄[\€]KâÀà	”X^Hô[]H»HŸ[X›YZ[àﬁ[\€KâÀà
+Kà	“ÿ\±hq#ZX]ö[X\…»Oà
+àÀà	‘\⁄⁄\ù\»›\⁄Zù\⁄H›Hÿ\±hq#ZX]ö[]KâÀà	“]»\ú‹ŸHô[]\»»ô]ô\ãâÀà
+Kà	‘\±hX[[X\…»Oà
+àÀà	‘\⁄⁄\ù\»›\⁄Zù\⁄H›H\±hX[[[»⁄[\€XZ\ÀâÀà	“]»\ú‹ŸHô[]\»»€€ﬁ[\€\ÀâÀà
+Kà	‘[õ»õÿõ[[‹…»	’öY\öX]ö[X\»»qoö⁄Y]1%⁄ö[X\…»Oà
+àÀà	‘\⁄⁄\ù\»›\⁄Zù\⁄H›Hö\±hZ⁄[ö[[»⁄[\€XZ\ÀâÀà	“]»\ú‹ŸHô[]\»»YŸ\›]ôHﬁ[\€\ÀâÀà
+Kà	–[\ô⁄ZòI»Oà
+àÀà	‘\⁄⁄\ù\»›\⁄Zù\⁄H›H[\ô⁄Zõ‹»⁄[\€XZ\ÀâÀà	“]»\ú‹ŸHô[]\»»[\ôﬁHﬁ[\€\ÀâÀà
+Kà»Oà
+àÀà	–]][öÿHòZ\›»€‹ù[1%⁄ôHù\õŸ]1!H\⁄⁄\ù1+ÀâÀà	”X]⁄\»H\ú‹ŸHôX€‹ôY€àHYYX⁄[ôHÿ\ôâÀà
+KüN¬Çò€\‹»X]⁄\‘YŸH^[ô»›][\‹’⁄YŸ]¬àö[ò[\]H]N¬àö[ò[›ö[ô»ÿ]Y€‹ûN¬àö[ò[õ⁄Yÿ[òX⁄»€ê⁄[ôŸY¬à€€ú›X]⁄\‘YŸJ¬à›\\ãöŸ^Kàô\]Z\ôY\Àô]Kàô\]Z\ôY\Àòÿ]Y€‹ûKàô\]Z\ôY\Àõ€ê⁄[ôŸYàJN¬à›ô\úöYBà⁄YŸ]ùZ[
+ H¬àö[ò[HH]KõYY¬àù⁄\ôJ
+
+HOà€X]⁄\‘ﬁ[\€Pÿ]Y€‹ûJÿ]Y€‹ûJH	âà^úô\ÿ‹ö\[€äBàù”\›
+
+N¬àô]\õàÿÿYôõ€
+à\ò\éà\ò\ä]Nà^
+
+À	“Ò!H\ö]O…À	’⁄]»H]ôO… JJKàõŸNà\›öY] àY[ôŒà€€ú›YŸR[úŸ]Àò[
+N
+Kà⁄[ô[éà¬à^
+à
+àÀà	‘õŸ€ZHZ»òZ\›[±%€1%⁄ôH\ÿ[ù\»ô\ôXŸ\[öXZHô\\ò]ZKàZH±%‹òHﬁY[[»\⁄ﬁ\ö[X\ÀâÀà	”€õHõ€ã\ô\ÿ‹ö\[€àYYX⁄[ô\»[à[›\àÿXö[ô]\ôH⁄›€ãà\»\»õ›HôX]Y[ùôX€€[Y[ô][€ãâÀà
+Kà
+KàYà
+Kö\—[\JBàÿ\ô
+à^
+à
+àÀà	’[öÿ[ql»ô\\ò]1l»ô\ò\›KâÀà	”õ»X]⁄[ô»YYX⁄[ô\»õ›[ôâÀà
+Kà
+Kà
+KàããõKõX\
+à
+
+HOàÿ\ô
+à⁄[à\›[Jà]Nà^
+à	…ﬁõò[Y_H	ﬁú›ô[ô›IÀà›[Nà€€ú›^›[Jõ€ùŸZY⁄àõ€ùŸZY⁄ùÕÃ
+Kà
+Kà›Xù]Nà^
+ú\ú‹ŸJKàòZ[[ôŒà€€ú›X€€äX€€úÀò⁄]úõ€ó‹öY⁄‹õ›[ôY
+Kà€ï\à
+
+HOàò]öYÿ]‹ãú\⁄
+àÀàX]\öX[YŸTõ›]JàùZ[\éà
+ HOÇàYYX⁄[ôTYŸJ]Nà]KYYà€ê⁄[ôŸYà€ê⁄[ôŸY
+Kà
+Kà
+Kà
+Kà
+Kà
+KàKà
+Kà
+N¬àBüBÇòõ€€€X]⁄\‘ﬁ[\€Pÿ]Y€‹ûJYYYYX⁄[ôK›ö[ô»ﬁ[\€JH¬àö[ò[ÿ]Y€‹öY\»H‹‹]ÿ]Y€‹öY\ YYX⁄[ôKòÿ]Y€‹ûJBàõX\
+
+
+HOàù”›Ÿ\êÿ\ŸJ
+JBàù‘Ÿ]
+
+N¬àö[ò[^X›YH›⁄]⁄
+ﬁ[\€JH¬à	‘⁄ÿ]\€X\…»	“ÿ\±hq#ZX]ö[X\…»Oà…‹⁄ÿ]\€X\…À	‹⁄ÿ]\€X\»\àÿ\±hq#ZX]ö[X\…ﬂKà	‘\±hX[[X\…»Oà…‹\±hX[[X\…À	⁄›±%‹]ö[[»⁄\›[XIﬂKà	‘[õ»õÿõ[[‹…»à	’öY\öX]ö[X\»»qoö⁄Y]1%⁄ö[X\…»Oà…‹[õ»õÿõ[[‹…À	›ö\±hZ⁄[ö[X\…ﬂKà	–[\ô⁄ZòI»Oà…ÿ[\ô⁄ZòIﬂKà	”Ÿ‹»õÿõ[[‹…»Oà…€ŸIﬂKà	—ÿ[õ‹»›òZY⁄[X\…»Oà…€ô\ù±l»⁄\›[XIÀ	⁄‹ò]Zò\…À	ÒhZ\ô\»\à‹ò]Zõ›ZÿIﬂKà»Oà‹ﬁ[\€Kù”›Ÿ\êÿ\ŸJ
+_KàN¬àô]\õàÿ]Y€‹öY\Àò[ûJ^X›Yò€€ùZ[ú N¬üB

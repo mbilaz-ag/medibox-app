@@ -61,13 +61,17 @@ class Med {
       doseRuleSource,
       atcCode,
       registrationNumber,
-      supplyStatus;
+      supplyStatus,
+      aiUpdatedAt,
+      aiSearchHtml;
   double stock;
   double lowStockThreshold;
   bool prescription;
   bool registryVerified;
   bool doseRuleVerified;
   List<String> memberIds;
+  List<String> aiSourceTitles;
+  List<String> aiSourceUrls;
   List<MedicineStockBatch> batches;
   LeafletRecord? leafletRecord;
   Med({
@@ -109,10 +113,16 @@ class Med {
     this.registrationNumber = '',
     this.supplyStatus = '',
     this.registryVerified = false,
+    this.aiUpdatedAt = '',
+    this.aiSearchHtml = '',
+    List<String>? aiSourceTitles,
+    List<String>? aiSourceUrls,
     this.leafletRecord,
     List<String>? memberIds,
     List<MedicineStockBatch>? batches,
   }) : memberIds = memberIds ?? [],
+       aiSourceTitles = aiSourceTitles ?? [],
+       aiSourceUrls = aiSourceUrls ?? [],
        batches = batches ?? [];
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -154,6 +164,10 @@ class Med {
     'registrationNumber': registrationNumber,
     'supplyStatus': supplyStatus,
     'registryVerified': registryVerified,
+    'aiUpdatedAt': aiUpdatedAt,
+    'aiSearchHtml': aiSearchHtml,
+    'aiSourceTitles': aiSourceTitles,
+    'aiSourceUrls': aiSourceUrls,
     'leafletRecord': leafletRecord?.toJson(),
     'batches': batches.map((batch) => batch.toJson()).toList(),
   };
@@ -197,6 +211,10 @@ class Med {
     registrationNumber: '${j['registrationNumber'] ?? ''}',
     supplyStatus: '${j['supplyStatus'] ?? ''}',
     registryVerified: j['registryVerified'] == true,
+    aiUpdatedAt: '${j['aiUpdatedAt'] ?? ''}',
+    aiSearchHtml: '${j['aiSearchHtml'] ?? ''}',
+    aiSourceTitles: (j['aiSourceTitles'] as List?)?.map((x) => '$x').toList(),
+    aiSourceUrls: (j['aiSourceUrls'] as List?)?.map((x) => '$x').toList(),
     leafletRecord: LeafletRecord.tryRead(j['leafletRecord']),
     batches: (j['batches'] as List?)
         ?.map(
