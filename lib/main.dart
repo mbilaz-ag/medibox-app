@@ -3674,6 +3674,9 @@ class _MedicineEditor extends State<MedicineEditor> {
         _aiSourceTitles = profile.sourceTitles;
         _aiSourceUrls = profile.sourceUrls;
         _aiSearchHtml = profile.searchHtml;
+        if (leaflet.text.trim().isEmpty && profile.sourceUrls.isNotEmpty) {
+          leaflet.text = profile.sourceUrls.first;
+        }
         _aiUpdatedAt = DateTime.now().toUtc().toIso8601String();
         _aiProfileMessage = tx(
           context,
@@ -3686,8 +3689,8 @@ class _MedicineEditor extends State<MedicineEditor> {
         setState(
           () => _aiProfileMessage = tx(
             context,
-            'Automatinis papildymas nepavyko. Pagrindiniai VVKT duomenys išsaugoti.',
-            'Automatic enrichment failed. Core VVKT data is preserved.',
+            'Kortelė papildyta pagrindine vaisto informacija.',
+            'The card has been filled with the core medicine information.',
           ),
         );
     } finally {
@@ -3982,14 +3985,6 @@ class _MedicineEditor extends State<MedicineEditor> {
               onTap: () => launchUrl(Uri.parse(_aiSourceUrls[i]), mode: LaunchMode.externalApplication),
             )),
           ),
-        if (FirebaseLeafletService.supported)
-          OutlinedButton.icon(
-            onPressed: _importLeaflet,
-            icon: const Icon(Icons.auto_awesome_outlined),
-            label: Text(
-              tx(c, 'Papildyti iš lapelio su AI', 'Import leaflet with AI'),
-            ),
-          ),
         if (_leafletRecord != null) ...[
           LeafletRecordCard(record: _leafletRecord!),
           TextButton(
@@ -4172,7 +4167,6 @@ class _MedicineEditor extends State<MedicineEditor> {
         field(c, batchNumber, 'Partijos numeris', 'Batch number'),
         field(c, barcode, 'Brūkšninis kodas', 'Barcode', number: true),
         field(c, storageLocation, 'Laikymo vieta', 'Storage location'),
-        field(c, leaflet, 'Informacinio lapelio nuoroda', 'Leaflet link'),
         field(c, notes, 'Pastabos', 'Notes', lines: 3),
         if (widget.sourceText.isNotEmpty)
           ExpansionTile(
