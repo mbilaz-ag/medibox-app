@@ -2135,8 +2135,10 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
   }
 
   Future<void> ask([String? suggested]) async {
-    final value = (suggested ?? question.text).trim();
-    if (value.isEmpty || busy) return;
+    final value = (suggested ?? question.text).trim().isEmpty
+        ? 'Trumpai paaiškink, kam skirtas šis vaistas, kaip jį saugiai vartoti ir į ką atkreipti dėmesį.'
+        : (suggested ?? question.text).trim();
+    if (busy) return;
     // Automatically generated patient context is sent to AI but never exposed
     // in the editable question field.
     if (suggested == null) question.text = value;
@@ -2150,7 +2152,10 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
     } catch (_) {
       if (mounted) {
         setState(() {
-          answer = AiMedicineAdvisorService.localFallback(widget.medicine);
+          answer = AiMedicineAdvisorService.localFallback(
+            widget.medicine,
+            question: value,
+          );
           error = tx(
             context,
             'Šiuo metu rodoma patikrinta informacija iš jūsų vaisto kortelės.',
@@ -2178,16 +2183,16 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
         if (widget.initialQuestion.isNotEmpty)
           const Padding(
             padding: EdgeInsets.only(top: 8),
-            child: Text('AI automatiškai vertina pasirinktą asmenį ir simptomus.'),
+            child: Text('Pateikiame aiškų paaiškinimą ir svarbiausius perspėjimus.'),
           ),
         const SizedBox(height: 12),
         Wrap(spacing: 8, children: [
           ActionChip(label: Text(tx(context, 'Kam skirtas?', 'What is it for?')),
-              onPressed: () => ask('Kam skirtas šis vaistas ir ką svarbiausia apie jį žinoti?')),
+              onPressed: busy ? null : () => ask('Kam skirtas šis vaistas ir ką svarbiausia apie jį žinoti?')),
           ActionChip(label: Text(tx(context, 'Įspėjimai', 'Warnings')),
-              onPressed: () => ask('Kokie svarbiausi įspėjimai, kontraindikacijos ir sąveikos?')),
+              onPressed: busy ? null : () => ask('Kokie svarbiausi įspėjimai, kontraindikacijos ir sąveikos?')),
           ActionChip(label: Text(tx(context, 'Kaip vartojamas?', 'How is it used?')),
-              onPressed: () => ask('Paaiškink, kaip šis vaistas paprastai vartojamas, nekurdamas dozės.')),
+              onPressed: busy ? null : () => ask('Paaiškink, kaip šis vaistas paprastai vartojamas, nekurdamas dozės.')),
         ]),
         const SizedBox(height: 12),
         TextField(

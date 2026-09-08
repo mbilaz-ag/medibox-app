@@ -20,11 +20,32 @@ class MedicineAiAnswer {
 }
 
 class AiMedicineAdvisorService {
-  static MedicineAiAnswer localFallback(Med medicine) {
+  static MedicineAiAnswer localFallback(Med medicine, {String question = ''}) {
+    final q = question.toLowerCase();
+    final purposeQuestion = q.contains('kam skirtas');
+    final warningQuestion = q.contains('įspėj') ||
+        q.contains('kontraindik') ||
+        q.contains('sąveik');
+    final usageQuestion = q.contains('kaip') || q.contains('vartoj');
     final parts = <String>[
-      if (medicine.purpose.trim().isNotEmpty) 'Kam skirtas: ${medicine.purpose.trim()}',
-      if (medicine.dosage.trim().isNotEmpty) 'Kaip vartoti: ${medicine.dosage.trim()}',
-      if (medicine.warnings.trim().isNotEmpty) 'Svarbu: ${medicine.warnings.trim()}',
+      if (purposeQuestion && medicine.purpose.trim().isNotEmpty)
+        'Kam skirtas: ${medicine.purpose.trim()}'
+      else if (purposeQuestion)
+        'Šioje vaisto kortelėje paskirtis dar nepatvirtinta. Nuskenuokite pakuotę arba lapelį, kad programa galėtų ją užpildyti.',
+      if (usageQuestion && medicine.dosage.trim().isNotEmpty)
+        'Kaip vartoti: ${medicine.dosage.trim()}'
+      else if (usageQuestion)
+        'Šioje vaisto kortelėje vartojimo informacija dar nepatvirtinta. Nevartokite pagal spėjimą – patikrinkite lapelį arba pasitarkite su vaistininku.',
+      if (warningQuestion && medicine.warnings.trim().isNotEmpty)
+        'Svarbu: ${medicine.warnings.trim()}'
+      else if (warningQuestion)
+        'Šioje vaisto kortelėje perspėjimai dar nepatvirtinti. Jei vaistas receptinis ar abejojate, prieš vartojimą pasitarkite su vaistininku ar gydytoju.',
+      if (!purposeQuestion && !usageQuestion && !warningQuestion && medicine.purpose.trim().isNotEmpty)
+        'Kam skirtas: ${medicine.purpose.trim()}',
+      if (!purposeQuestion && !usageQuestion && !warningQuestion && medicine.dosage.trim().isNotEmpty)
+        'Kaip vartoti: ${medicine.dosage.trim()}',
+      if (!purposeQuestion && !usageQuestion && !warningQuestion && medicine.warnings.trim().isNotEmpty)
+        'Svarbu: ${medicine.warnings.trim()}',
       if (medicine.interactions.trim().isNotEmpty) 'Sąveikos: ${medicine.interactions.trim()}',
       'Jei abejojate dėl vartojimo ar būklė blogėja, kreipkitės į vaistininką ar gydytoją.',
     ];
