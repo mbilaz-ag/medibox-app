@@ -519,6 +519,7 @@ class AppData {
   bool privacyLock;
   bool aiConsentGranted;
   bool aiConsentChoiceMade;
+  bool cameraPermissionAsked;
   AppData({
     required this.meds,
     required this.members,
@@ -531,6 +532,7 @@ class AppData {
     this.privacyLock = false,
     this.aiConsentGranted = false,
     this.aiConsentChoiceMade = false,
+    this.cameraPermissionAsked = false,
   }) : shopping = shopping ?? [],
        appointments = appointments ?? [];
 }

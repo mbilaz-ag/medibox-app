@@ -12,6 +12,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'models/models.dart';
@@ -113,7 +114,9 @@ class _App extends State<App> {
             'pakuotės tekstą ir pasirinktus sveikatos duomenis: amžių, svorį, '
             'alergijas, ligas, simptomus bei tinkamus vaistinėlės įrašus? '
             'Vardas nesiunčiamas. Sutikimas išsaugomas ir daugiau nekartojamas. '
-            'Dozės rodomos tik pagal patvirtintas oficialias taisykles.',
+            'Dozės rodomos tik pagal patvirtintas oficialias taisykles. '
+            'Po šio pasirinkimo telefonas iškart paprašys kameros prieigos, '
+            'kad galėtumėte fotografuoti ir atpažinti vaistų pakuotes.',
           ),
           actions: [
             TextButton(
@@ -129,6 +132,11 @@ class _App extends State<App> {
       );
       current.aiConsentChoiceMade = true;
       current.aiConsentGranted = granted == true;
+      await Store.save(current);
+    }
+    if (!current.cameraPermissionAsked) {
+      await Permission.camera.request();
+      current.cameraPermissionAsked = true;
       await Store.save(current);
     }
     if (mounted) setState(() => launchAccepted = true);
