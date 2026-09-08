@@ -29,7 +29,6 @@ import 'services/ai_medicine_advisor_service.dart';
 import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
-import 'widgets/leaflet_import_page.dart';
 import 'services/firebase_leaflet_service.dart';
 
 Future<void> main() async {
@@ -3419,87 +3418,6 @@ class _MedicineEditor extends State<MedicineEditor> {
   late List<String> _aiSourceUrls = [...?widget.medicine?.aiSourceUrls];
   late String _aiSearchHtml = widget.medicine?.aiSearchHtml ?? '';
   late String _aiUpdatedAt = widget.medicine?.aiUpdatedAt ?? '';
-
-  Future<void> _importLeaflet() async {
-    final identity = LeafletIdentity(name.text, strength.text, dosageForm.text);
-    if (!identity.isComplete) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tx(
-              context,
-              'Pirmiausia įrašyk tikslų pavadinimą, stiprumą ir vaisto formą.',
-              'First enter the exact medicine name, strength and form.',
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-    _vvktDebounce?.cancel();
-    final record = await Navigator.push<LeafletRecord>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => LeafletImportPage(
-          identity: identity,
-          initialConsent: widget.data.aiConsentGranted,
-          initialUrl: leaflet.text.trim().isNotEmpty
-              ? leaflet.text
-              : _leafletRecord?.sourceUrl ?? '',
-        ),
-      ),
-    );
-    if (!mounted || record == null) return;
-    // An outstanding registry request may have changed the editor meanwhile.
-    if (!record.identity.matches(
-      LeafletIdentity(name.text, strength.text, dosageForm.text),
-    )) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            tx(
-              context,
-              'Vaisto duomenys pasikeitė. Lapelio ištraukos nepridėtos.',
-              'Medicine details changed. Leaflet extracts were not added.',
-            ),
-          ),
-        ),
-      );
-      return;
-    }
-    var filled = 0;
-    void fillMissing(TextEditingController controller, String key) {
-      final value = record.sections[key]?.trim() ?? '';
-      if (controller.text.trim().isEmpty && value.isNotEmpty) {
-        controller.text = value;
-        filled++;
-      }
-    }
-
-    setState(() {
-      _leafletRecord = record;
-      fillMissing(purpose, 'purpose');
-      fillMissing(dosage, 'usage');
-      fillMissing(warnings, 'warnings');
-      fillMissing(sideEffects, 'sideEffects');
-      fillMissing(interactions, 'interactions');
-      fillMissing(storageLocation, 'storage');
-      if (leaflet.text.trim().isEmpty) leaflet.text = record.sourceUrl;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          tx(
-            context,
-            'AI juodraštis patvirtintas: užpildyta $filled trūkstamų laukų. '
-                'Esami įrašai nepakeisti. Kad išliktų, išsaugok kortelę.',
-            'AI draft approved: $filled missing fields filled. Existing entries were '
-                'not changed. Save the card to keep them.',
-          ),
-        ),
-      ),
-    );
-  }
 
   @override
   void initState() {
