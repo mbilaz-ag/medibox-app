@@ -2137,7 +2137,9 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
   Future<void> ask([String? suggested]) async {
     final value = (suggested ?? question.text).trim();
     if (value.isEmpty || busy) return;
-    question.text = value;
+    // Automatically generated patient context is sent to AI but never exposed
+    // in the editable question field.
+    if (suggested == null) question.text = value;
     setState(() { busy = true; error = ''; });
     try {
       final result = await AiMedicineAdvisorService.ask(
@@ -2145,12 +2147,12 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
         question: value,
       );
       if (mounted) setState(() => answer = result);
-    } catch (_) {
+    } catch (caught) {
       if (mounted) {
         setState(() => error = tx(
           context,
-          'AI atsakymo gauti nepavyko. Patikrinkite interneto ryšį ir bandykite dar kartą.',
-          'Could not get an AI answer. Check the connection and try again.',
+          'AI atsakymo gauti nepavyko. ${FirebaseLeafletService.readableError(caught)}',
+          'Could not get an AI answer. ${FirebaseLeafletService.readableError(caught)}',
         ));
       }
     } finally {
@@ -2170,6 +2172,11 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
         Text(tx(context,
           'Klauskite paprastai. AI tikrina dabartinę interneto informaciją ir rodo šaltinius.',
           'Ask naturally. AI checks current web information and shows sources.')),
+        if (widget.initialQuestion.isNotEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('AI automatiškai vertina pasirinktą asmenį ir simptomus.'),
+          ),
         const SizedBox(height: 12),
         Wrap(spacing: 8, children: [
           ActionChip(label: Text(tx(context, 'Kam skirtas?', 'What is it for?')),
@@ -6805,6 +6812,37 @@ class _ProfilePage extends State<ProfilePage> {
               },
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            child: OutlinedButton.icon(
+              onPressed: !widget.data.aiConsentGranted
+                  ? null
+                  : () async {
+                      ScaffoldMessenger.of(c).showSnackBar(
+                        const SnackBar(content: Text('Tikrinamas ryšys su Gemini…')),
+                      );
+                      final result = await FirebaseLeafletService.testConnection();
+                      if (!c.mounted) return;
+                      await showDialog<void>(
+                        context: c,
+                        builder: (dialogContext) => AlertDialog(
+                          title: Text(result.startsWith('VEIKIA')
+                              ? 'Gemini veikia'
+                              : 'Gemini ryšio klaida'),
+                          content: Text(result),
+                          actions: [
+                            FilledButton(
+                              onPressed: () => Navigator.pop(dialogContext),
+                              child: const Text('Gerai'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+              icon: const Icon(Icons.network_check),
+              label: Text(tx(c, 'Patikrinti AI ryšį', 'Test AI connection')),
+            ),
+          ),
           Card(
             child: SwitchListTile(
               secondary: const CircleAvatar(
@@ -6864,7 +6902,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.18.0'),
+                const Text('MediBox v0.18.1'),
                 Text(
                   tx(
                     c,
@@ -8350,7 +8388,35 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
             ),
           );
         }
-        if (snapshot.data == null) return const SizedBox.shrink();
+        if (snapshot.hasError) {
+          return card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(children: [
+                  Icon(Icons.error_outline, color: Colors.red),
+                  SizedBox(width: 8),
+                  Text('AI analizė nepavyko', style: TextStyle(fontWeight: FontWeight.w800)),
+                ]),
+                const SizedBox(height: 8),
+                Text(FirebaseLeafletService.readableError(snapshot.error!)),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => setState(() => aiAssessment = _requestAiAssessment()),
+                  icon: const Icon(Icons.refresh),
+                  label: Text(tx(c, 'Bandyti dar kartą', 'Try again')),
+                ),
+              ],
+            ),
+          );
+        }
+        if (snapshot.data == null) {
+          return card(Text(tx(
+            c,
+            'Gemini negrąžino rekomendacijos. Bandykite patikslinti simptomus arba patikrinkite AI ryšį nustatymuose.',
+            'Gemini returned no recommendation. Add symptom detail or test AI in settings.',
+          )));
+        }
         return card(
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -8672,7 +8738,11 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
           medicine.memberIds.isNotEmpty &&
           !medicine.memberIds.contains(widget.memberId))
         return false;
-      if (!_matchesSymptomCategory(medicine, widget.category)) return false;
+      if (!_matchesSymptomCategory(
+        medicine,
+        widget.category,
+        details: widget.initialDetails,
+      )) return false;
       final expiryDays = daysUntilMedicineExpiry(
         medicine.expiry,
         DateTime.now(),
@@ -9039,10 +9109,25 @@ class MatchesPage extends StatelessWidget {
   }
 }
 
-bool _matchesSymptomCategory(Med medicine, String symptom) {
+bool _matchesSymptomCategory(Med medicine, String symptom, {String details = ''}) {
   final categories = _splitCategories(medicine.category)
       .map((x) => x.toLowerCase())
       .toSet();
+  final normalizedDetails = details.toLowerCase();
+  final inferred = <String>{};
+  if (RegExp(r'pykin|vėm|viduri|užkiet|pilv|skrand|rėmuo').hasMatch(normalizedDetails)) {
+    inferred.addAll({'pilvo problemos', 'virškinimas'});
+  }
+  if (RegExp(r'skaud|maud|migren|galv').hasMatch(normalizedDetails)) {
+    inferred.addAll({'skausmas', 'skausmas ir karščiavimas', 'nervų sistema'});
+  }
+  if (RegExp(r'karš|temperat|šaltkr').hasMatch(normalizedDetails)) {
+    inferred.addAll({'skausmas', 'skausmas ir karščiavimas', 'peršalimas'});
+  }
+  if (RegExp(r'slog|kos|gerkl|peršal').hasMatch(normalizedDetails)) {
+    inferred.addAll({'peršalimas', 'kvėpavimo sistema'});
+  }
+  if (RegExp(r'alerg|bėrim|niež|čiaud').hasMatch(normalizedDetails)) inferred.add('alergija');
   final expected = switch (symptom) {
     'Skausmas' || 'Karščiavimas' => {'skausmas', 'skausmas ir karščiavimas'},
     'Peršalimas' => {'peršalimas', 'kvėpavimo sistema'},
@@ -9053,5 +9138,7 @@ bool _matchesSymptomCategory(Med medicine, String symptom) {
     'Galvos svaigimas' => {'nervų sistema', 'kraujas', 'širdis ir kraujotaka'},
     _ => {symptom.toLowerCase()},
   };
-  return categories.any(expected.contains);
+  expected.addAll(inferred);
+  final searchable = '${medicine.category} ${medicine.purpose} ${medicine.name} ${medicine.substance}'.toLowerCase();
+  return categories.any(expected.contains) || expected.any(searchable.contains);
 }

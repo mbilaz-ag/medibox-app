@@ -65,6 +65,43 @@ class FirebaseLeafletService {
     }
   }
 
+  static String readableError(Object error) {
+    final raw = error.toString();
+    final lower = raw.toLowerCase();
+    if (lower.contains('app check') ||
+        lower.contains('appcheck') ||
+        lower.contains('attestation')) {
+      return 'APP_CHECK: programėlės parašas arba „Play Integrity“ nepatvirtintas Firebase konsolėje.';
+    }
+    if (lower.contains('permission_denied') || lower.contains('403')) {
+      return 'PERMISSION_DENIED: Firebase AI Logic arba App Check neleidžia užklausos.';
+    }
+    if (lower.contains('resource_exhausted') || lower.contains('429') || lower.contains('quota')) {
+      return 'QUOTA: pasiekta Gemini užklausų arba projekto plano riba.';
+    }
+    if (lower.contains('timeout')) return 'TIMEOUT: Gemini laiku neatsakė.';
+    if (lower.contains('network') || lower.contains('socket')) {
+      return 'NETWORK: nepavyko pasiekti Firebase serverio.';
+    }
+    final compact = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return 'AI_ERROR: ${compact.length > 180 ? compact.substring(0, 180) : compact}';
+  }
+
+  static Future<String> testConnection() async {
+    try {
+      await initialize();
+      final model = FirebaseAI.googleAI().generativeModel(model: modelName);
+      final response = await model
+          .generateContent([Content.text('Atsakyk tik vienu žodžiu: VEIKIA')])
+          .timeout(const Duration(seconds: 25));
+      return response.text?.trim().isNotEmpty == true
+          ? 'VEIKIA: Firebase, App Check ir Gemini atsakė.'
+          : 'EMPTY_RESPONSE: Gemini negrąžino teksto.';
+    } catch (error) {
+      return readableError(error);
+    }
+  }
+
   static Future<LeafletDraft> generate({
     required LeafletIdentity identity,
     required String sourceText,
