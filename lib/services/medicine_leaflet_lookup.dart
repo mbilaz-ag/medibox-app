@@ -60,7 +60,7 @@ class MedicineLeafletLookup {
   static String plainText(String markup) => html.parseFragment(markup
       .replaceAll(RegExp(r'</(?:p|li|tr|h[1-6])>', caseSensitive: false), '\n')
       .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n'))
-      .text.replaceAll(RegExp(r'[ \t\u00a0]+'), ' ')
+      .text!.replaceAll(RegExp(r'[ \t\u00a0]+'), ' ')
       .replaceAll(RegExp(r'\n\s*\n+'), '\n').trim();
 
   Future<RetrievedMedicineLeaflet> find(VvktMedicine medicine) async {
