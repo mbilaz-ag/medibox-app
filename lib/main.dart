@@ -32,6 +32,7 @@ import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
 import 'widgets/leaflet_import_page.dart' show LeafletRecordCard;
 import 'services/firebase_leaflet_service.dart';
+import 'services/cloud_sync_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -223,7 +224,7 @@ class _App extends State<App> {
   final navigatorKey = GlobalKey<NavigatorState>();
 
   Future<void> _finishOpening(AppData current) async {
-    if (!current.permissionsChoiceMade && mounted) {
+    if (current.onboarded && !current.permissionsChoiceMade && mounted) {
       await _showPermissionsCenter(
         navigatorKey.currentContext!,
         current,
@@ -268,6 +269,13 @@ class _App extends State<App> {
       ReminderNotifications.onAction = _handleReminderAction;
       ReminderNotifications.scheduleAll(v);
       if (mounted) setState(() => data = v);
+      CloudSyncService.instance.resume(
+        v,
+        onRemoteApplied: () async {
+          await ReminderNotifications.scheduleAll(v);
+          if (mounted) setState(() {});
+        },
+      );
     });
   }
 
@@ -297,6 +305,7 @@ class _App extends State<App> {
   void changed() {
     if (data != null) {
       Store.save(data!);
+      CloudSyncService.instance.queueUpload(data!);
       ReminderNotifications.scheduleAll(data!);
       setState(() {});
     }
@@ -605,14 +614,63 @@ class OnboardingPage extends StatefulWidget {
 }
 
 class _OnboardingPageState extends State<OnboardingPage> {
-  int step = 1;
-  String choice = 'self';
+  int step = 0;
+  bool busy = false;
+  String error = '';
+  late final name = TextEditingController(text: widget.data.profile.name);
+  late final birth = TextEditingController(text: widget.data.profile.birthDate);
+  late final phone = TextEditingController(text: widget.data.profile.phone);
+  late final email = TextEditingController(text: widget.data.profile.email);
+  late final blood = TextEditingController(text: widget.data.profile.bloodType);
+  late final allergies = TextEditingController(text: widget.data.profile.allergies);
+  late final conditions = TextEditingController(text: widget.data.profile.conditions);
+  late final medications = TextEditingController(text: widget.data.profile.medications);
+  late final emergencyName = TextEditingController(text: widget.data.profile.emergencyName);
+  late final emergencyPhone = TextEditingController(text: widget.data.profile.emergencyPhone);
+  final height = TextEditingController();
+  final weight = TextEditingController();
+  String gender = 'unspecified';
+
+  void _reloadProfileControllers() {
+    final profile = widget.data.profile;
+    name.text = profile.name;
+    birth.text = profile.birthDate;
+    phone.text = profile.phone;
+    email.text = profile.email;
+    blood.text = profile.bloodType;
+    allergies.text = profile.allergies;
+    conditions.text = profile.conditions;
+    medications.text = profile.medications;
+    emergencyName.text = profile.emergencyName;
+    emergencyPhone.text = profile.emergencyPhone;
+    final own = widget.data.members.where((member) => member.relation == 'self');
+    if (own.isNotEmpty) {
+      gender = own.first.gender;
+      height.text = own.first.height;
+      weight.text = own.first.weight;
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final controller in [name, birth, phone, email, blood, allergies, conditions, medications, emergencyName, emergencyPhone, height, weight]) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
   @override
   Widget build(BuildContext context) => Scaffold(
     body: SafeArea(
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 250),
-        child: step == 0 ? _welcome(context) : _choice(context),
+        child: switch (step) {
+          0 => _welcome(context),
+          1 => _permissions(context),
+          2 => _account(context),
+          3 => _profile(context),
+          4 => _family(context),
+          _ => _sharing(context),
+        },
       ),
     ),
   );
@@ -639,6 +697,24 @@ class _OnboardingPageState extends State<OnboardingPage> {
             'Your smart family medicine cabinet.',
           ),
           style: const TextStyle(fontSize: 17, color: navy),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          tx(context, 'Pasirinkite programėlės kalbą', 'Choose app language'),
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: 'lt', label: Text('Lietuvių')),
+            ButtonSegment(value: 'en', label: Text('English')),
+          ],
+          selected: {widget.data.language == 'en' ? 'en' : 'lt'},
+          onSelectionChanged: (value) {
+            widget.data.language = value.first;
+            widget.onChanged();
+            setState(() {});
+          },
         ),
         const SizedBox(height: 10),
         Expanded(
@@ -672,7 +748,13 @@ class _OnboardingPageState extends State<OnboardingPage> {
         ),
         const SizedBox(height: 14),
         FilledButton(
-          onPressed: () => setState(() => step = 1),
+          onPressed: () {
+            if (widget.data.language == 'system') {
+              widget.data.language = Localizations.localeOf(context).languageCode == 'en' ? 'en' : 'lt';
+              widget.onChanged();
+            }
+            setState(() => step = 1);
+          },
           child: Text(tx(context, 'Pradėti', 'Get started')),
         ),
       ],
@@ -690,114 +772,225 @@ class _OnboardingPageState extends State<OnboardingPage> {
     ),
   );
 
-  Widget _choice(BuildContext context) {
-    final options = [
-      ('self', Icons.person_outline, tx(context, 'Aš', 'Me')),
-      ('child', Icons.child_care, tx(context, 'Mano vaikas', 'My child')),
-      (
-        'family',
-        Icons.family_restroom,
-        tx(context, 'Kitas šeimos narys', 'Another family member'),
+  Widget _stepPage(BuildContext context, {required int number, required String title, required String subtitle, required List<Widget> children}) => ListView(
+    key: ValueKey('onboarding-$number'),
+    padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
+    children: [
+      Row(children: [
+        IconButton(onPressed: busy ? null : () => setState(() => step--), icon: const Icon(Icons.arrow_back)),
+        const MediBoxLogo(size: 42),
+        const SizedBox(width: 10),
+        const Expanded(child: Text('MediBox', style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800, color: navy))),
+        Text('$number/6', style: const TextStyle(color: Color(0xff60747f))),
+      ]),
+      const SizedBox(height: 24),
+      Text(title, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: navy)),
+      const SizedBox(height: 8),
+      Text(subtitle, style: const TextStyle(fontSize: 16, color: Color(0xff48606f))),
+      const SizedBox(height: 20),
+      ...children,
+    ],
+  );
+
+  Widget _permissions(BuildContext context) => _stepPage(
+    context,
+    number: 2,
+    title: tx(context, 'Sutikimai ir leidimai', 'Permissions and consent'),
+    subtitle: tx(context, 'Kiekvieną pasirinkimą valdote atskirai. Juos bet kada pakeisite profilyje.', 'You control every choice separately and can change it later in your profile.'),
+    children: [
+      card(Column(children: [
+        _benefit(Icons.camera_alt_outlined, tx(context, 'Kamera vaistų fotografavimui', 'Camera for medicine photos')),
+        _benefit(Icons.medication_outlined, tx(context, 'Vaistų priminimai', 'Medicine reminders')),
+        _benefit(Icons.event_outlined, tx(context, 'Vizitų priminimai', 'Appointment reminders')),
+        _benefit(Icons.auto_awesome, 'Firebase AI / Gemini'),
+      ])),
+      const SizedBox(height: 16),
+      FilledButton(
+        onPressed: busy ? null : () async {
+          final saved = await _showPermissionsCenter(context, widget.data, firstLaunch: true);
+          if (saved && mounted) setState(() => step = 2);
+        },
+        child: Text(tx(context, 'Pasirinkti leidimus', 'Choose permissions')),
       ),
-      (
-        'shared',
-        Icons.home_outlined,
-        tx(context, 'Bendra vaistinėlė', 'Shared cabinet'),
-      ),
-    ];
-    return ListView(
-      key: const ValueKey('choice'),
-      padding: const EdgeInsets.all(24),
+    ],
+  );
+
+  Widget _account(BuildContext context) {
+    final account = CloudSyncService.instance.user;
+    return _stepPage(
+      context,
+      number: 3,
+      title: tx(context, 'Google paskyra', 'Google account'),
+      subtitle: tx(context, 'Prisijungus vaistinėlė, profiliai, nuotraukos, priminimai ir vizitai sinchronizuosis tarp įrenginių.', 'Sign in to sync the cabinet, profiles, photos, reminders and appointments across devices.'),
       children: [
-        Row(
-          children: [
-            IconButton(
-              onPressed: () => setState(() => step = 0),
-              icon: const Icon(Icons.arrow_back),
-            ),
-            const MediBoxLogo(size: 42),
-            const SizedBox(width: 10),
-            const Text(
-              'MediBox',
-              style: TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.w800,
-                color: navy,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 30),
-        Text(
-          tx(context, 'Kas naudosis „MediBox“?', 'Who will use MediBox?'),
-          style: const TextStyle(
-            fontSize: 25,
-            fontWeight: FontWeight.w800,
-            color: navy,
-          ),
-        ),
+        card(Row(children: [
+          CircleAvatar(backgroundColor: mint, child: Icon(account == null ? Icons.cloud_off_outlined : Icons.cloud_done_outlined, color: green)),
+          const SizedBox(width: 14),
+          Expanded(child: Text(account == null ? tx(context, 'Dar neprisijungta', 'Not signed in yet') : (account.email ?? account.displayName ?? ''), style: const TextStyle(fontWeight: FontWeight.w700))),
+        ])),
+        if (error.isNotEmpty) ...[const SizedBox(height: 10), Text(error, style: const TextStyle(color: Colors.red))],
         const SizedBox(height: 16),
-        ...options.map(
-          (o) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () => setState(() => choice = o.$1),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: choice == o.$1
-                      ? const Color(0xffe6f7f2)
-                      : Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: choice == o.$1 ? green : const Color(0xffe0eeeb),
-                    width: choice == o.$1 ? 2 : 1,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    RoleAvatar(type: o.$1),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Text(
-                        o.$3,
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    if (choice == o.$1)
-                      const Icon(Icons.check_circle, color: green),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        FilledButton(
-          onPressed: () {
-            widget.data.onboarded = true;
-            if (choice == 'self' &&
-                !widget.data.members.any((x) => x.relation == 'self')) {
-              widget.data.members.add(
-                Member(
-                  id: newId(),
-                  name: widget.data.profile.name.isEmpty
-                      ? tx(context, 'Aš', 'Me')
-                      : widget.data.profile.name,
-                  relation: 'self',
-                ),
-              );
-            }
-            widget.onChanged();
-          },
-          child: Text(tx(context, 'Tęsti', 'Continue')),
-        ),
+        if (account == null)
+          FilledButton.icon(
+            onPressed: busy ? null : () async {
+              setState(() { busy = true; error = ''; });
+              try {
+                await CloudSyncService.instance.signIn(widget.data, onRemoteApplied: () async => widget.onChanged());
+                _reloadProfileControllers();
+                if (mounted) setState(() => step = 3);
+              } catch (e) {
+                if (mounted) setState(() => error = CloudSyncService.instance.readableError(e));
+              } finally {
+                if (mounted) setState(() => busy = false);
+              }
+            },
+            icon: const Icon(Icons.account_circle_outlined),
+            label: Text(tx(context, 'Prisijungti su Google', 'Sign in with Google')),
+          )
+        else
+          FilledButton(onPressed: () => setState(() => step = 3), child: Text(tx(context, 'Tęsti', 'Continue'))),
+        TextButton(onPressed: busy ? null : () => setState(() => step = 3), child: Text(tx(context, 'Kol kas praleisti', 'Skip for now'))),
       ],
     );
+  }
+
+  Widget _profile(BuildContext context) => _stepPage(
+    context,
+    number: 4,
+    title: tx(context, 'Mano profilis', 'My profile'),
+    subtitle: tx(context, 'Vardas būtinas. Kita informacija padės tiksliau priskirti vaistus ir priminimus.', 'Your name is required. Other details help assign medicines and reminders correctly.'),
+    children: [
+      field(context, name, 'Vardas', 'Name'),
+      dateField(context, birth, 'Gimimo data YYYY-MM-DD', 'Date of birth YYYY-MM-DD'),
+      DropdownButtonFormField<String>(
+        initialValue: gender,
+        decoration: InputDecoration(labelText: tx(context, 'Lytis', 'Gender')),
+        items: [
+          DropdownMenuItem(value: 'female', child: Text(tx(context, 'Moteris', 'Female'))),
+          DropdownMenuItem(value: 'male', child: Text(tx(context, 'Vyras', 'Male'))),
+          DropdownMenuItem(value: 'unspecified', child: Text(tx(context, 'Nenurodyta', 'Not specified'))),
+        ],
+        onChanged: (value) => setState(() => gender = value!),
+      ),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(child: field(context, height, 'Ūgis (cm)', 'Height (cm)', number: true)),
+        const SizedBox(width: 10),
+        Expanded(child: field(context, weight, 'Svoris (kg)', 'Weight (kg)', number: true)),
+      ]),
+      field(context, phone, 'Telefonas', 'Phone'),
+      field(context, email, 'El. paštas', 'Email'),
+      field(context, blood, 'Kraujo grupė', 'Blood type'),
+      field(context, allergies, 'Alergijos', 'Allergies', lines: 2),
+      field(context, conditions, 'Sveikatos būklės', 'Medical conditions', lines: 2),
+      field(context, medications, 'Nuolat vartojami arba netoleruojami vaistai', 'Regular or intolerant medicines', lines: 2),
+      field(context, emergencyName, 'Skubios pagalbos kontaktas', 'Emergency contact'),
+      field(context, emergencyPhone, 'Kontakto telefonas', 'Emergency phone'),
+      FilledButton(onPressed: () {
+        if (name.text.trim().isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context, 'Įrašykite savo vardą.', 'Enter your name.'))));
+          return;
+        }
+        _saveSelf();
+        setState(() => step = 4);
+      }, child: Text(tx(context, 'Išsaugoti ir tęsti', 'Save and continue'))),
+    ],
+  );
+
+  void _saveSelf() {
+    final profile = widget.data.profile;
+    profile
+      ..name = name.text.trim()
+      ..birthDate = birth.text.trim()
+      ..phone = phone.text.trim()
+      ..email = email.text.trim()
+      ..bloodType = blood.text.trim()
+      ..allergies = allergies.text.trim()
+      ..conditions = conditions.text.trim()
+      ..medications = medications.text.trim()
+      ..emergencyName = emergencyName.text.trim()
+      ..emergencyPhone = emergencyPhone.text.trim();
+    final own = widget.data.members.where((member) => member.relation == 'self');
+    final member = own.isNotEmpty ? own.first : Member(id: newId(), name: '', relation: 'self');
+    member
+      ..name = profile.name
+      ..relation = 'self'
+      ..gender = gender
+      ..ageGroup = 'adult'
+      ..birthDate = profile.birthDate
+      ..height = height.text.trim()
+      ..weight = weight.text.trim()
+      ..bloodType = profile.bloodType
+      ..allergies = profile.allergies
+      ..conditions = profile.conditions
+      ..intolerantMedicines = profile.medications;
+    if (own.isEmpty) widget.data.members.add(member);
+    widget.data.linkedMemberId = member.id;
+    widget.onChanged();
+  }
+
+  Widget _family(BuildContext context) => _stepPage(
+    context,
+    number: 5,
+    title: tx(context, 'Šeimos nariai', 'Family members'),
+    subtitle: tx(context, 'Ar norite dabar pridėti kitą šeimos narį? Galėsite pridėti tiek, kiek reikia.', 'Would you like to add another family member now? You can add as many as needed.'),
+    children: [
+      ...widget.data.members.where((member) => member.relation != 'self').map((member) => ListTile(
+        leading: const CircleAvatar(backgroundColor: mint, child: Icon(Icons.person, color: green)),
+        title: Text(member.name),
+        subtitle: Text(relationName(context, member.relation)),
+      )),
+      const SizedBox(height: 8),
+      FilledButton.icon(
+        onPressed: () async {
+          await Navigator.push(context, MaterialPageRoute(builder: (_) => MemberEditor(data: widget.data, initialRelation: 'child', onChanged: widget.onChanged)));
+          if (mounted) setState(() {});
+        },
+        icon: const Icon(Icons.person_add_alt_1),
+        label: Text(tx(context, 'Pridėti šeimos narį', 'Add family member')),
+      ),
+      OutlinedButton(onPressed: () => setState(() => step = 5), child: Text(tx(context, 'Tęsti', 'Continue'))),
+    ],
+  );
+
+  Widget _sharing(BuildContext context) => _stepPage(
+    context,
+    number: 6,
+    title: tx(context, 'Kaip naudosite „MediBox“?', 'How will you use MediBox?'),
+    subtitle: tx(context, 'Galite naudotis vienas arba sukurti bendrą namų ūkio vaistinėlę. Tai visada pakeisite nustatymuose.', 'Use it privately or share a household cabinet. You can change this later in settings.'),
+    children: [
+      card(Column(children: [
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const CircleAvatar(backgroundColor: mint, child: Icon(Icons.person_outline, color: green)),
+          title: Text(tx(context, 'Naudotis tik man', 'Use only for me')),
+          subtitle: Text(tx(context, 'Duomenys lieka asmeninėje erdvėje', 'Data stays in your personal space')),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _finish,
+        ),
+        const Divider(),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const CircleAvatar(backgroundColor: mint, child: Icon(Icons.family_restroom, color: green)),
+          title: Text(tx(context, 'Šeimos bendrinimas', 'Family sharing')),
+          subtitle: Text(tx(context, 'Sukurti namų ūkį arba įvesti kvietimo kodą', 'Create a household or enter an invite code')),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () async {
+            if (CloudSyncService.instance.user == null) {
+              setState(() => step = 2);
+              return;
+            }
+            await Navigator.push(context, MaterialPageRoute(builder: (_) => HouseholdSettingsPage(data: widget.data, onChanged: widget.onChanged)));
+            if (widget.data.householdId.isNotEmpty) _finish();
+          },
+        ),
+      ])),
+    ],
+  );
+
+  void _finish() {
+    widget.data.onboarded = true;
+    widget.onChanged();
   }
 }
 
@@ -4762,11 +4955,13 @@ String relationName(BuildContext c, String r) {
 class MemberEditor extends StatefulWidget {
   final AppData data;
   final Member? member;
+  final String initialRelation;
   final VoidCallback onChanged;
   const MemberEditor({
     super.key,
     required this.data,
     this.member,
+    this.initialRelation = 'self',
     required this.onChanged,
   });
   State<MemberEditor> createState() => _MemberEditor();
@@ -4796,7 +4991,7 @@ class _MemberEditor extends State<MemberEditor> {
         text: widget.member?.facilityAddress ?? '',
       ),
       notes = TextEditingController(text: widget.member?.notes ?? '');
-  late String relation = widget.member?.relation ?? 'self';
+  late String relation = widget.member?.relation ?? widget.initialRelation;
   late String gender = widget.member?.gender ?? 'unspecified';
   late String ageGroup =
       widget.member?.ageGroup ??
@@ -6939,6 +7134,285 @@ class _DataTransferPageState extends State<DataTransferPage> {
   );
 }
 
+class CloudAccountPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const CloudAccountPage({super.key, required this.data, required this.onChanged});
+  @override
+  State<CloudAccountPage> createState() => _CloudAccountPageState();
+}
+
+class _CloudAccountPageState extends State<CloudAccountPage> {
+  bool busy = false;
+  String message = '';
+
+  Future<void> _run(Future<void> Function() action) async {
+    setState(() { busy = true; message = ''; });
+    try {
+      await action();
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (mounted) setState(() => message = CloudSyncService.instance.readableError(error));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final account = CloudSyncService.instance.user;
+    final signedIn = account != null;
+    return Scaffold(
+      appBar: AppBar(title: Text(tx(context, 'Google paskyra ir sinchronizavimas', 'Google account and sync'))),
+      body: ListView(
+        padding: const EdgeInsets.all(18),
+        children: [
+          card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              CircleAvatar(
+                radius: 25,
+                backgroundColor: mint,
+                backgroundImage: account?.photoURL == null ? null : NetworkImage(account!.photoURL!),
+                child: account?.photoURL == null ? const Icon(Icons.account_circle_outlined, color: green, size: 31) : null,
+              ),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(signedIn ? (account.displayName ?? tx(context, 'Google naudotojas', 'Google user')) : tx(context, 'Neprisijungta', 'Signed out'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
+                if (signedIn) Text(account.email ?? '', style: const TextStyle(color: Color(0xff526874))),
+              ])),
+              Icon(signedIn ? Icons.cloud_done_outlined : Icons.cloud_off_outlined, color: signedIn ? green : Colors.grey),
+            ]),
+            const SizedBox(height: 12),
+            Text(tx(context, 'Sinchronizuojami vaistai, jų nuotraukos, šeimos nariai, priminimai, vartojimo istorija, vizitai, profilis ir pirkinių sąrašas.', 'Medicines, photos, family members, reminders, dose history, appointments, profile and shopping list are synchronized.')),
+          ])),
+          if (message.isNotEmpty) ...[const SizedBox(height: 10), Text(message, style: const TextStyle(color: Colors.red))],
+          const SizedBox(height: 14),
+          if (!signedIn)
+            FilledButton.icon(
+              onPressed: busy ? null : () => _run(() async {
+                await CloudSyncService.instance.signIn(widget.data, onRemoteApplied: () async => widget.onChanged());
+                widget.onChanged();
+              }),
+              icon: const Icon(Icons.login),
+              label: Text(tx(context, 'Prisijungti su Google', 'Sign in with Google')),
+            )
+          else ...[
+            FilledButton.icon(
+              onPressed: busy ? null : () => _run(() async {
+                await CloudSyncService.instance.syncNow(widget.data);
+                setState(() => message = tx(context, 'Duomenys sinchronizuoti.', 'Data synchronized.'));
+              }),
+              icon: const Icon(Icons.sync),
+              label: Text(tx(context, 'Sinchronizuoti dabar', 'Sync now')),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: busy ? null : () async {
+                await Navigator.push(context, MaterialPageRoute(builder: (_) => HouseholdSettingsPage(data: widget.data, onChanged: widget.onChanged)));
+                if (mounted) setState(() {});
+              },
+              icon: const Icon(Icons.family_restroom),
+              label: Text(tx(context, 'Šeimos bendrinimas', 'Family sharing')),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: busy ? null : () => _run(() async {
+                await CloudSyncService.instance.signOut();
+                widget.onChanged();
+              }),
+              icon: const Icon(Icons.logout),
+              label: Text(tx(context, 'Atsijungti', 'Sign out')),
+            ),
+            const Divider(height: 30),
+            TextButton.icon(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              onPressed: busy ? null : () async {
+                final confirmed = await confirmDelete(context, tx(context, 'Google paskyrą ir debesies duomenis', 'Google account and cloud data'));
+                if (!confirmed || !mounted) return;
+                await _run(() async {
+                  await CloudSyncService.instance.deleteAccountAndCloudData(widget.data);
+                  widget.onChanged();
+                });
+              },
+              icon: const Icon(Icons.delete_forever_outlined),
+              label: Text(tx(context, 'Ištrinti paskyrą ir debesies duomenis', 'Delete account and cloud data')),
+            ),
+          ],
+          if (busy) const Padding(padding: EdgeInsets.only(top: 14), child: LinearProgressIndicator()),
+        ],
+      ),
+    );
+  }
+}
+
+class HouseholdSettingsPage extends StatefulWidget {
+  final AppData data;
+  final VoidCallback onChanged;
+  const HouseholdSettingsPage({super.key, required this.data, required this.onChanged});
+  @override
+  State<HouseholdSettingsPage> createState() => _HouseholdSettingsPageState();
+}
+
+class _HouseholdSettingsPageState extends State<HouseholdSettingsPage> {
+  final householdName = TextEditingController(text: 'Mano namai');
+  final inviteCode = TextEditingController();
+  bool shareExisting = true;
+  bool busy = false;
+  String error = '';
+  HouseholdInfo? info;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.data.householdId.isNotEmpty) _load();
+  }
+
+  @override
+  void dispose() {
+    householdName.dispose();
+    inviteCode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final value = await CloudSyncService.instance.householdInfo(widget.data);
+      if (mounted) setState(() => info = value);
+    } catch (e) {
+      if (mounted) setState(() => error = CloudSyncService.instance.readableError(e));
+    }
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    setState(() { busy = true; error = ''; });
+    try {
+      await action();
+      widget.onChanged();
+      if (widget.data.householdId.isNotEmpty) await _load();
+    } catch (e) {
+      if (mounted) setState(() => error = CloudSyncService.instance.readableError(e));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(tx(context, 'Šeimos bendrinimas', 'Family sharing'))),
+    body: ListView(
+      padding: const EdgeInsets.all(18),
+      children: widget.data.householdId.isEmpty ? _setup(context) : _manage(context),
+    ),
+  );
+
+  List<Widget> _setup(BuildContext context) => [
+    card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(tx(context, 'Sukurti namų ūkį', 'Create a household'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 8),
+      Text(tx(context, 'Bendra vaistinėlė, šeimos nariai, priminimai, pirkinių sąrašas ir kalendorius bus matomi prisijungusiems šeimos nariams.', 'The shared cabinet, family members, reminders, shopping list and calendar will be visible to joined family members.')),
+      const SizedBox(height: 12),
+      TextField(controller: householdName, decoration: InputDecoration(labelText: tx(context, 'Namų ūkio pavadinimas', 'Household name'))),
+      CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        value: shareExisting,
+        onChanged: (value) => setState(() => shareExisting = value ?? true),
+        title: Text(tx(context, 'Perkelti dabartinius duomenis', 'Move current data')),
+      ),
+      FilledButton(
+        onPressed: busy ? null : () => _run(() async {
+          if (householdName.text.trim().isEmpty) throw StateError('name_required');
+          info = await CloudSyncService.instance.createHousehold(householdName.text, widget.data, shareExistingData: shareExisting, onRemoteApplied: () async => widget.onChanged());
+        }),
+        child: Text(tx(context, 'Sukurti bendrą vaistinėlę', 'Create shared cabinet')),
+      ),
+    ])),
+    const SizedBox(height: 14),
+    card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(tx(context, 'Prisijungti su kodu', 'Join with a code'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 10),
+      TextField(
+        controller: inviteCode,
+        textCapitalization: TextCapitalization.characters,
+        maxLength: 8,
+        decoration: InputDecoration(labelText: tx(context, '8 simbolių kvietimo kodas', '8-character invite code')),
+      ),
+      CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        value: shareExisting,
+        onChanged: (value) => setState(() => shareExisting = value ?? true),
+        title: Text(tx(context, 'Pridėti mano dabartinius duomenis į bendrą erdvę', 'Add my current data to the shared space')),
+      ),
+      FilledButton(
+        onPressed: busy ? null : () => _run(() async {
+          info = await CloudSyncService.instance.joinHousehold(inviteCode.text, widget.data, shareExistingData: shareExisting, onRemoteApplied: () async => widget.onChanged());
+        }),
+        child: Text(tx(context, 'Prisijungti', 'Join')),
+      ),
+    ])),
+    if (error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(error, style: const TextStyle(color: Colors.red))),
+    if (busy) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
+  ];
+
+  List<Widget> _manage(BuildContext context) => [
+    card(Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(info?.name ?? widget.data.householdName, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 4),
+      Text(widget.data.householdRole == 'owner' ? tx(context, 'Administratorius', 'Administrator') : tx(context, 'Šeimos narys', 'Family member')),
+      if (widget.data.householdRole == 'owner') ...[
+        const Divider(height: 28),
+        Text(tx(context, 'Kvietimo kodas', 'Invite code'), style: const TextStyle(fontWeight: FontWeight.w700)),
+        SelectableText(info?.inviteCode ?? '••••••••', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: 3, color: green)),
+        Text(tx(context, 'Kodą siųskite tik šeimos nariui. Jį bet kada galite pakeisti.', 'Share the code only with a family member. You can replace it at any time.')),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: busy ? null : () => _run(() async {
+            await CloudSyncService.instance.regenerateInvite(widget.data);
+          }),
+          icon: const Icon(Icons.refresh),
+          label: Text(tx(context, 'Sugeneruoti naują kodą', 'Generate a new code')),
+        ),
+      ],
+    ])),
+    const SizedBox(height: 14),
+    Text(tx(context, 'Prisijungus nariai', 'Connected members'), style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+    const SizedBox(height: 6),
+    if (info == null) const LinearProgressIndicator() else ...info!.accounts.map((account) => Card(child: ListTile(
+      leading: const CircleAvatar(backgroundColor: mint, child: Icon(Icons.person_outline, color: green)),
+      title: Text(account['name']!.isEmpty ? account['email']! : account['name']!),
+      subtitle: account['name']!.isEmpty ? null : Text(account['email']!),
+      trailing: widget.data.householdRole == 'owner' && account['uid'] != CloudSyncService.instance.user?.uid
+          ? PopupMenuButton<String>(
+              onSelected: (_) => _run(() async {
+                await CloudSyncService.instance.transferOwnership(account['uid']!, widget.data);
+              }),
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'owner',
+                  child: Text(tx(context, 'Padaryti administratoriumi', 'Make administrator')),
+                ),
+              ],
+            )
+          : null,
+    ))),
+    if (error.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(error, style: const TextStyle(color: Colors.red))),
+    const SizedBox(height: 18),
+    OutlinedButton.icon(
+      style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+      onPressed: busy ? null : () async {
+        final confirmed = await confirmDelete(context, tx(context, 'bendrinimą šiame namų ūkyje', 'sharing in this household'));
+        if (!confirmed || !mounted) return;
+        await _run(() async {
+          await CloudSyncService.instance.leaveHousehold(widget.data, onRemoteApplied: () async => widget.onChanged());
+          if (mounted) Navigator.pop(context);
+        });
+      },
+      icon: const Icon(Icons.exit_to_app),
+      label: Text(tx(context, 'Išeiti iš namų ūkio', 'Leave household')),
+    ),
+    if (busy) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
+  ];
+}
+
 class ProfilePage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -7022,6 +7496,17 @@ class _ProfilePage extends State<ProfilePage> {
               p.emergencyName = ctrls[8].text.trim();
               p.emergencyPhone = ctrls[9].text.trim();
               p.notes = ctrls[10].text.trim();
+              final own = widget.data.members.where((member) => member.relation == 'self');
+              if (own.isNotEmpty) {
+                own.first
+                  ..name = p.name
+                  ..birthDate = p.birthDate
+                  ..bloodType = p.bloodType
+                  ..allergies = p.allergies
+                  ..conditions = p.conditions
+                  ..intolerantMedicines = p.medications
+                  ..notes = p.notes;
+              }
               widget.onChanged();
               ScaffoldMessenger.of(c).showSnackBar(
                 SnackBar(
@@ -7104,6 +7589,33 @@ class _ProfilePage extends State<ProfilePage> {
                   onChanged: widget.onChanged,
                 ),
               ),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: mint,
+                child: Icon(Icons.cloud_sync_outlined, color: green),
+              ),
+              title: Text(
+                tx(c, 'Google paskyra ir sinchronizavimas', 'Google account and sync'),
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              subtitle: Text(
+                widget.data.householdId.isEmpty
+                    ? tx(c, 'Asmeninė erdvė arba šeimos bendrinimas', 'Personal space or family sharing')
+                    : tx(c, 'Bendrinama: ${widget.data.householdName}', 'Shared: ${widget.data.householdName}'),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                await Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => CloudAccountPage(data: widget.data, onChanged: widget.onChanged),
+                  ),
+                );
+                if (mounted) setState(() {});
+              },
             ),
           ),
           Card(
@@ -7194,7 +7706,7 @@ class _ProfilePage extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                const Text('MediBox v0.18.2'),
+                const Text('MediBox v0.20.0'),
                 Text(
                   tx(
                     c,

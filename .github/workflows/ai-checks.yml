@@ -5,6 +5,7 @@ on:
     branches:
       - feature/firebase-leaflet-drafts
       - feature/medicine-ai-safety
+      - feature/google-sync
   workflow_dispatch:
 
 permissions:

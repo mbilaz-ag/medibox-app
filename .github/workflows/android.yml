@@ -46,24 +46,24 @@ jobs:
           name: MediBox-body-map-previews
           path: build/body-map-previews/*.png
           if-no-files-found: error
-      - name: Build MediBox v0.19.0 universal Android APK
+      - name: Build MediBox v0.20.0 universal Android APK
         if: github.event_name != 'pull_request'
         env:
           MEDIBOX_KEYSTORE_PASSWORD: ${{ secrets.MEDIBOX_KEYSTORE_PASSWORD }}
         run: |
           flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk MediBox-v0.19.0-universal.apk
+          cp build/app/outputs/flutter-apk/app-release.apk MediBox-v0.20.0-universal.apk
       - name: Verify APK signer before publishing
         if: github.event_name != 'pull_request'
         run: |
           apksigner_path=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
-          python3 tool/verify_apk_signer.py "$apksigner_path" MediBox-v0.19.0-universal.apk
-          "$apksigner_path" verify --print-certs MediBox-v0.19.0-universal.apk | grep 'certificate SHA-256 digest'
+          python3 tool/verify_apk_signer.py "$apksigner_path" MediBox-v0.20.0-universal.apk
+          "$apksigner_path" verify --print-certs MediBox-v0.20.0-universal.apk | grep 'certificate SHA-256 digest'
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'pull_request'
         with:
           name: MediBox-Android-Universal-APK
-          path: MediBox-v0.19.0-universal.apk
+          path: MediBox-v0.20.0-universal.apk
           if-no-files-found: error
       - name: Remove temporary signing key
         if: always()
