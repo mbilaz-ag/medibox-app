@@ -168,6 +168,9 @@ class CloudSyncService {
     _writer = _writer.isEmpty
         ? '${DateTime.now().microsecondsSinceEpoch}-${current.uid.hashCode.abs()}'
         : _writer;
+    if (data.householdId.isNotEmpty) {
+      await _loadPersonalProfile(current.uid, data);
+    }
     final reference = _activeDocument(data);
     final remote = await reference.get();
     if (remote.exists && remote.data()?['payload'] is Map) {
@@ -176,7 +179,11 @@ class CloudSyncService {
         _mergeRemoteIntoLocal(data, payload);
         await _uploadNow(data);
       } else {
-        Store.applyCloudPayload(data, payload);
+        Store.applyCloudPayload(
+          data,
+          payload,
+          applyProfile: data.householdId.isEmpty,
+        );
         await Store.save(data);
         await onRemoteApplied();
       }
@@ -185,6 +192,16 @@ class CloudSyncService {
     }
     await _listen(data, onRemoteApplied);
     state = CloudSyncState.synced;
+  }
+
+  Future<void> _loadPersonalProfile(String uid, AppData data) async {
+    final snapshot = await _personalDocument(uid).get();
+    final payload = snapshot.data()?['payload'];
+    if (payload is! Map) return;
+    final profile = payload['profile'];
+    if (profile is Map) {
+      data.profile = UserProfile.fromJson(Map<String, dynamic>.from(profile));
+    }
   }
 
   Future<void> _listen(
@@ -205,6 +222,7 @@ class CloudSyncService {
         Store.applyCloudPayload(
           data,
           Map<String, dynamic>.from(value['payload'] as Map),
+          applyProfile: data.householdId.isEmpty,
         );
         await Store.save(data);
         await onRemoteApplied();
@@ -242,10 +260,19 @@ class CloudSyncService {
     state = CloudSyncState.syncing;
     try {
       await _activeDocument(data).set({
-        'payload': Store.cloudPayload(data),
+        'payload': Store.cloudPayload(
+          data,
+          includeProfile: data.householdId.isEmpty,
+        ),
         'updatedAt': FieldValue.serverTimestamp(),
         'writer': _writer,
       });
+      if (data.householdId.isNotEmpty) {
+        await _savePersonalProfile(current.uid, data.profile);
+      }
+      if (data.householdId.isNotEmpty && data.householdRole == 'owner') {
+        await _syncHouseholdAccountNames(data);
+      }
       await Store.save(data);
       state = CloudSyncState.synced;
       message = '';
@@ -259,6 +286,43 @@ class CloudSyncService {
         _uploadAgain = false;
         queueUpload(data);
       }
+    }
+  }
+
+  Future<void> _syncHouseholdAccountNames(AppData data) async {
+    final reference = _householdDocument(data.householdId);
+    final snapshot = await reference.get();
+    final rawAccounts = snapshot.data()?['accounts'];
+    if (rawAccounts is! Map) return;
+    final updates = <String, Object>{};
+    for (final entry in rawAccounts.entries) {
+      if (entry.value is! Map) continue;
+      final account = Map<String, dynamic>.from(entry.value as Map);
+      final linkedMemberId = '${account['linkedMemberId'] ?? ''}';
+      final linked = data.members.where((member) => member.id == linkedMemberId);
+      if (linked.isEmpty || linked.first.name == '${account['name'] ?? ''}') {
+        continue;
+      }
+      updates['accounts.${entry.key}.name'] = linked.first.name;
+    }
+    if (updates.isNotEmpty) await reference.update(updates);
+  }
+
+  Future<void> _savePersonalProfile(String uid, UserProfile profile) async {
+    final reference = _personalDocument(uid);
+    try {
+      await reference.update({
+        'payload.profile': profile.toJson(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'writer': _writer,
+      });
+    } on FirebaseException catch (error) {
+      if (error.code != 'not-found') rethrow;
+      await reference.set({
+        'payload': {'schemaVersion': 1, 'profile': profile.toJson()},
+        'updatedAt': FieldValue.serverTimestamp(),
+        'writer': _writer,
+      });
     }
   }
 
@@ -343,35 +407,37 @@ class CloudSyncService {
     final householdId = '${invitation['householdId']}';
     final householdName = '${invitation['householdName'] ?? ''}';
     final personalPayload = Store.cloudPayload(data);
-    final self = _ensureSelfMember(data, current);
+    final personalProfile = UserProfile.fromJson(data.profile.toJson());
+    final accountMember = _newAccountMember(data, current);
     await _householdDocument(householdId).update({
       'memberUids': FieldValue.arrayUnion([current.uid]),
       'accounts.${current.uid}': {
-        'name': current.displayName ?? self.name,
+        'name': accountMember.name,
         'email': current.email ?? '',
-        'linkedMemberId': self.id,
+        'linkedMemberId': accountMember.id,
       },
     });
     await _membershipDocument(current.uid).set({
       'householdId': householdId,
       'householdName': householdName,
       'role': 'member',
-      'linkedMemberId': self.id,
+      'linkedMemberId': accountMember.id,
     });
     data
       ..householdId = householdId
       ..householdName = householdName
       ..householdRole = 'member'
-      ..linkedMemberId = self.id;
+      ..linkedMemberId = accountMember.id;
     final remote = await _householdStateDocument(householdId).get();
     if (remote.data()?['payload'] is Map) {
       final payload = Map<String, dynamic>.from(remote.data()!['payload'] as Map);
-      Store.applyCloudPayload(data, payload);
+      Store.applyCloudPayload(data, payload, applyProfile: false);
       if (shareExistingData) _mergePayloadIntoLocal(data, personalPayload);
-      if (!data.members.any((member) => member.id == self.id)) {
-        data.members.add(self);
-      }
     }
+    if (!data.members.any((member) => member.id == accountMember.id)) {
+      data.members.add(accountMember);
+    }
+    data.profile = personalProfile;
     await _uploadNow(data);
     await _listen(data, onRemoteApplied);
     await Store.save(data);
@@ -490,6 +556,12 @@ class CloudSyncService {
   }
 
   Member _ensureSelfMember(AppData data, User current) {
+    if (data.linkedMemberId.isNotEmpty) {
+      final linked = data.members.where(
+        (member) => member.id == data.linkedMemberId,
+      );
+      if (linked.isNotEmpty) return linked.first;
+    }
     final existing = data.members.where((member) => member.relation == 'self');
     if (existing.isNotEmpty) return existing.first;
     final member = Member(
@@ -506,6 +578,28 @@ class CloudSyncService {
     );
     data.members.add(member);
     return member;
+  }
+
+  Member _newAccountMember(AppData data, User current) {
+    final id = 'account-${current.uid}';
+    final existing = data.members.where((member) => member.id == id);
+    if (existing.isNotEmpty) return existing.first;
+    final googleName = current.displayName?.trim() ?? '';
+    return Member(
+      id: id,
+      name: googleName.isNotEmpty
+          ? googleName
+          : (data.profile.name.trim().isNotEmpty
+                ? data.profile.name.trim()
+                : 'Naujas narys'),
+      relation: 'member',
+      ageGroup: 'adult',
+      birthDate: data.profile.birthDate,
+      bloodType: data.profile.bloodType,
+      allergies: data.profile.allergies,
+      conditions: data.profile.conditions,
+      intolerantMedicines: data.profile.medications,
+    );
   }
 
   Future<String> _newInviteCode() async {
