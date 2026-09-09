@@ -8,7 +8,10 @@ Veikia / įgyvendinta kode: vietinė vaistų saugykla, vaistų ir šeimos narių
 
 GitHub Actions turi Android APK ir atskirą iOS kompiliavimo workflow. Native projektai generuojami atskirai ir konfigūruojami `tool/prepare_platforms.py`, nekeičiant Dart programos ar testų.
 
-Android artifact: `MediBox-Android-APK`. iOS compilation artifact: `MediBox-iOS-unsigned`.
+Android artifact: `MediBox-Android-APK`. Nemokamam asmeniniam iPhone
+pasirašymui skirtas iOS artefaktas: `MediBox-iOS-free-install`. Jame pateikiamas
+nepasirašytas IPA, kurį galima pasirašyti nemokamu „Apple ID“ per „Sideloadly“
+arba įdiegti iš Xcode. Instrukcija: [docs/ios-free-install.md](docs/ios-free-install.md).
 
 The manually triggered `Build and upload MediBox iOS to TestFlight` workflow
 creates a signed `MediBox-iOS-signed-IPA` artifact and uploads it to TestFlight.

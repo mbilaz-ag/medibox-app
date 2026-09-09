@@ -34,10 +34,16 @@ jobs:
       - run: flutter test
       - name: Verify iOS compilation without signing
         run: flutter build ios --release --no-codesign
-      - name: Archive unsigned app (not directly installable on iPhone)
-        run: ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app MediBox-iOS-unsigned.zip
+      - name: Package unsigned IPA for free personal signing
+        run: |
+          mkdir -p build/ios/free-install/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/free-install/Payload/Runner.app
+          cd build/ios/free-install
+          zip -qry "${GITHUB_WORKSPACE}/MediBox-v0.20.1-unsigned.ipa" Payload
+          unzip -t "${GITHUB_WORKSPACE}/MediBox-v0.20.1-unsigned.ipa"
       - uses: actions/upload-artifact@v4
         with:
-          name: MediBox-iOS-unsigned
-          path: MediBox-iOS-unsigned.zip
+          name: MediBox-iOS-free-install
+          path: MediBox-v0.20.1-unsigned.ipa
           if-no-files-found: error
+          retention-days: 30

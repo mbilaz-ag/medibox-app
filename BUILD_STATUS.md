@@ -23,7 +23,11 @@ Commit cd0b6ee sėkmingai praėjo iOS analyze, test ir unsigned release kompilia
 ## Dar neįgyvendinta
 Šeimos profiliai ir priminimų ekranai demonstraciniai. Pranešimų planavimo, vartojimo istorijos, HealthKit / Health Connect ir debesų sinchronizacijos nėra. Dabartinis pradinis vaistų sąrašas ir šiandienos dozės yra demonstraciniai duomenys. Tai nėra baigtas produktas.
 
-iOS įtrauktas į kūrimo eigą, tačiau nepasirašytas Runner.app nėra įdiegiamas iPhone. TestFlight etapui reikės Apple Developer paskyros ir pasirašymo konfigūracijos. Android naudoja Flutter šablono testinį pasirašymą; viešam leidimui būtinas stabilus privatus pasirašymo raktas.
+iOS įtrauktas į kūrimo eigą. Workflow sukuria `MediBox-iOS-free-install`
+artefaktą su nepasirašytu IPA, paruoštu asmeniniam pasirašymui per „Sideloadly“
+arba Xcode. Naudojant nemokamą „Apple ID“, „Apple“ parašas galioja 7 dienas;
+TestFlight ir App Store vis tiek reikalinga mokama „Apple Developer“ narystė.
+Android viešas APK/AAB pasirašomas stabiliu privačiu leidybos raktu.
 
 ## Šaltiniai
 - https://pub.dev/packages/google_mlkit_text_recognition/versions/0.15.0 — iOS 15.5 ir native konfigūracija.
