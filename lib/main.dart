@@ -99,6 +99,123 @@ class App extends StatefulWidget {
   State<App> createState() => _App();
 }
 
+Future<bool> _showPermissionsCenter(
+  BuildContext context,
+  AppData data, {
+  required bool firstLaunch,
+}) async {
+  var camera = data.cameraConsentGranted;
+  var medicineNotifications = data.medicationNotificationsGranted;
+  var appointmentNotifications = data.appointmentNotificationsGranted;
+  var ai = data.aiConsentGranted;
+  final confirmed = await showDialog<bool>(
+    context: context,
+    barrierDismissible: !firstLaunch,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => AlertDialog(
+        title: Text(tx(dialogContext, 'Sutikimai ir leidimai', 'Permissions and consent')),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(tx(
+                dialogContext,
+                'Pasirinkite kiekvieną funkciją atskirai. Šiuos pasirinkimus vėliau galėsite pakeisti profilyje.',
+                'Choose each feature separately. You can change these choices later in your profile.',
+              )),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.camera_alt_outlined),
+                value: camera,
+                title: Text(tx(dialogContext, 'Kamera', 'Camera')),
+                subtitle: Text(tx(dialogContext, 'Fotografuoti ir atpažinti vaistų pakuotes', 'Photograph and recognize medicine packages')),
+                onChanged: (value) => setDialogState(() => camera = value),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.medication_outlined),
+                value: medicineNotifications,
+                title: Text(tx(dialogContext, 'Vaistų priminimai', 'Medicine reminders')),
+                subtitle: Text(tx(dialogContext, 'Gauti pranešimus apie vaistą, dozę ir vartojimo laiką', 'Receive medicine, dose and schedule notifications')),
+                onChanged: (value) => setDialogState(() => medicineNotifications = value),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.event_available_outlined),
+                value: appointmentNotifications,
+                title: Text(tx(dialogContext, 'Vizitų priminimai', 'Appointment reminders')),
+                subtitle: Text(tx(dialogContext, 'Gauti pranešimus apie suplanuotus vizitus', 'Receive notifications about scheduled appointments')),
+                onChanged: (value) => setDialogState(() => appointmentNotifications = value),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.auto_awesome_rounded),
+                value: ai,
+                title: const Text('Firebase AI / Gemini'),
+                subtitle: Text(tx(dialogContext, 'Vaistų atpažinimas, paaiškinimai ir „Man bloga“ analizė', 'Medicine recognition, explanations and symptom analysis')),
+                onChanged: (value) => setDialogState(() => ai = value),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          if (!firstLaunch)
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: Text(tx(dialogContext, 'Atšaukti', 'Cancel')),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(tx(dialogContext, 'Išsaugoti ir tęsti', 'Save and continue')),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (confirmed != true) return false;
+
+  data
+    ..permissionsChoiceMade = true
+    ..aiConsentChoiceMade = true
+    ..aiConsentGranted = ai
+    ..cameraConsentGranted = camera
+    ..medicationNotificationsGranted = medicineNotifications
+    ..appointmentNotificationsGranted = appointmentNotifications;
+
+  if (camera) {
+    data.cameraPermissionAsked = true;
+    final status = await Permission.camera.request();
+    if (!status.isGranted) data.cameraConsentGranted = false;
+  }
+  if (medicineNotifications || appointmentNotifications) {
+    await ReminderNotifications.requestPermissions();
+  }
+  await Store.save(data);
+  await ReminderNotifications.scheduleAll(data);
+  return true;
+}
+
+Future<bool> _cameraAvailable(BuildContext context, AppData data) async {
+  if (!data.cameraConsentGranted) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(tx(
+          context,
+          'Kamerą įjunkite: Profilis → Sutikimai ir leidimai.',
+          'Enable the camera in Profile → Permissions and consent.',
+        )),
+      ));
+    }
+    return false;
+  }
+  final status = await Permission.camera.request();
+  if (status.isGranted) return true;
+  data.cameraConsentGranted = false;
+  await Store.save(data);
+  return false;
+}
+
 class _App extends State<App> {
   AppData? data;
   bool launchAccepted = false;
@@ -106,41 +223,12 @@ class _App extends State<App> {
   final navigatorKey = GlobalKey<NavigatorState>();
 
   Future<void> _finishOpening(AppData current) async {
-    if (!current.aiConsentChoiceMade && mounted) {
-      final granted = await showDialog<bool>(
-        context: navigatorKey.currentContext!,
-        barrierDismissible: false,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Išmaniosios MediBox funkcijos'),
-          content: const Text(
-            'Ar sutinkate, kad „Firebase AI / Google Gemini“ apdorotų vaisto '
-            'pakuotės tekstą ir pasirinktus sveikatos duomenis: amžių, svorį, '
-            'alergijas, ligas, simptomus bei tinkamus vaistinėlės įrašus? '
-            'Vardas nesiunčiamas. Sutikimas išsaugomas ir daugiau nekartojamas. '
-            'Dozės rodomos tik pagal patvirtintas oficialias taisykles. '
-            'Po šio pasirinkimo telefonas iškart paprašys kameros prieigos, '
-            'kad galėtumėte fotografuoti ir atpažinti vaistų pakuotes.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Naudoti be AI'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Sutinku ir tęsti'),
-            ),
-          ],
-        ),
+    if (!current.permissionsChoiceMade && mounted) {
+      await _showPermissionsCenter(
+        navigatorKey.currentContext!,
+        current,
+        firstLaunch: true,
       );
-      current.aiConsentChoiceMade = true;
-      current.aiConsentGranted = granted == true;
-      await Store.save(current);
-    }
-    if (!current.cameraPermissionAsked) {
-      await Permission.camera.request();
-      current.cameraPermissionAsked = true;
-      await Store.save(current);
     }
     if (mounted) setState(() => launchAccepted = true);
   }
@@ -178,7 +266,6 @@ class _App extends State<App> {
     ]).then((values) {
       final v = values.first as AppData;
       ReminderNotifications.onAction = _handleReminderAction;
-      ReminderNotifications.requestPermissions();
       ReminderNotifications.scheduleAll(v);
       if (mounted) setState(() => data = v);
     });
@@ -3794,6 +3881,8 @@ class _MedicineEditor extends State<MedicineEditor> {
   }
 
   Future<void> _pickPhoto(ImageSource source) async {
+    if (source == ImageSource.camera &&
+        !await _cameraAvailable(context, widget.data)) return;
     final picked = await ImagePicker().pickImage(
       source: source,
       imageQuality: 82,
@@ -3880,7 +3969,6 @@ class _MedicineEditor extends State<MedicineEditor> {
   }
 
   Widget _memberPicker(BuildContext c) {
-    if (widget.data.members.isEmpty) return const SizedBox.shrink();
     final medicineTerms = '${name.text} ${sub.text}'.toLowerCase();
     final warningsForMembers = widget.data.members.where((member) {
       if (!selectedMemberIds.contains(member.id)) return false;
@@ -3894,12 +3982,27 @@ class _MedicineEditor extends State<MedicineEditor> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          tx(c, 'Kam skirtas vaistas?', 'Who is this medicine for?'),
-          style: const TextStyle(fontWeight: FontWeight.w700),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.home_outlined, color: green),
+          title: Text(
+            tx(c, 'Bendra vaistinėlė', 'Shared medicine cabinet'),
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(tx(
+            c,
+            'Vaistas visada saugomas bendroje vaistinėlėje',
+            'Every medicine is always kept in the shared cabinet',
+          )),
+          trailing: const Icon(Icons.check_circle, color: green),
         ),
-        const SizedBox(height: 8),
-        Wrap(
+        if (widget.data.members.isNotEmpty) ...[
+          Text(
+            tx(c, 'Papildomai priskirti šeimos nariams', 'Also assign to family members'),
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
           spacing: 8,
           children: widget.data.members
               .map(
@@ -3917,7 +4020,8 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ),
               )
               .toList(),
-        ),
+          ),
+        ],
         if (warningsForMembers.isNotEmpty)
           Card(
             color: const Color(0xffffe9e8),
@@ -4585,7 +4689,11 @@ Widget _familyMemberCard(
   AppData data,
   Member member,
   VoidCallback onChanged,
-) => Card(
+) {
+  final medicineCount = data.meds
+      .where((medicine) => medicine.memberIds.contains(member.id))
+      .length;
+  return Card(
   child: ListTile(
     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
     leading: _FamilyAvatar(
@@ -4596,7 +4704,10 @@ Widget _familyMemberCard(
       member.name,
       style: const TextStyle(fontWeight: FontWeight.w700),
     ),
-    subtitle: Text(relationName(c, member.relation)),
+    subtitle: Text(
+      '${relationName(c, member.relation)} • '
+      '${tx(c, '$medicineCount vaistai', '$medicineCount medicines')}',
+    ),
     trailing: const Icon(Icons.chevron_right),
     onTap: () => Navigator.push(
       c,
@@ -4606,7 +4717,8 @@ Widget _familyMemberCard(
       ),
     ),
   ),
-);
+  );
+}
 
 const relations = [
   'self',
@@ -4713,6 +4825,8 @@ class _MemberEditor extends State<MemberEditor> {
   }
 
   Future<void> _pickMemberPhoto(ImageSource source) async {
+    if (source == ImageSource.camera &&
+        !await _cameraAvailable(context, widget.data)) return;
     final picked = await ImagePicker().pickImage(
       source: source,
       imageQuality: 82,
@@ -4934,15 +5048,29 @@ class _MemberEditor extends State<MemberEditor> {
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
-          ...widget.data.meds
-              .where((m) => m.memberIds.contains(widget.member!.id))
-              .map(
-                (m) => ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.medication_outlined, color: green),
-                  title: Text('${m.name} ${m.strength}'.trim()),
-                ),
-              ),
+          if (widget.data.meds.isEmpty)
+            Text(tx(c, 'Bendra vaistinėlė tuščia.', 'The shared cabinet is empty.')),
+          ...widget.data.meds.map(
+            (m) => CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              secondary: const Icon(Icons.medication_outlined, color: green),
+              title: Text('${m.name} ${m.strength}'.trim()),
+              subtitle: Text(tx(c, 'Bendra vaistinėlė', 'Shared cabinet')),
+              value: m.memberIds.contains(widget.member!.id),
+              onChanged: (selected) {
+                setState(() {
+                  if (selected == true) {
+                    if (!m.memberIds.contains(widget.member!.id)) {
+                      m.memberIds.add(widget.member!.id);
+                    }
+                  } else {
+                    m.memberIds.remove(widget.member!.id);
+                  }
+                });
+                widget.onChanged();
+              },
+            ),
+          ),
           ...widget.data.reminders
               .where((r) => r.memberId == widget.member!.id)
               .map(
@@ -5622,7 +5750,6 @@ class _AppointmentEditorState extends State<AppointmentEditor> {
               ..remindBeforeMinutes = remindBefore
               ..completed = completed;
             if (widget.appointment == null) widget.data.appointments.add(item);
-            ReminderNotifications.requestPermissions();
             widget.onChanged();
             Navigator.pop(context);
           },
@@ -5658,6 +5785,17 @@ class RemindersPage extends StatelessWidget {
             Expanded(
               child: OutlinedButton.icon(
                 onPressed: () async {
+                  if (!data.medicationNotificationsGranted &&
+                      !data.appointmentNotificationsGranted) {
+                    ScaffoldMessenger.of(c).showSnackBar(SnackBar(
+                      content: Text(tx(
+                        c,
+                        'Pranešimus pirmiausia įjunkite profilio skiltyje „Sutikimai ir leidimai“.',
+                        'First enable notifications in Profile → Permissions and consent.',
+                      )),
+                    ));
+                    return;
+                  }
                   await ReminderNotifications.requestPermissions();
                   await ReminderNotifications.scheduleAll(data);
                   await ReminderNotifications.showTest();
@@ -6049,7 +6187,6 @@ class _ReminderEditor extends State<ReminderEditor> {
             r.weekdays = [...days];
             r.enabled = enabled;
             if (widget.reminder == null) widget.data.reminders.add(r);
-            await ReminderNotifications.requestPermissions();
             widget.onChanged();
             await ReminderNotifications.scheduleAll(widget.data);
             if (!c.mounted) return;
@@ -6267,15 +6404,19 @@ class ShoppingPage extends StatefulWidget {
 }
 
 class _ShoppingPageState extends State<ShoppingPage> {
-  Future<void> _addCustomItem() async {
-    final name = TextEditingController();
-    final quantity = TextEditingController(text: '1');
-    var prescription = false;
+  Future<void> _editItem([ShoppingItem? item]) async {
+    final name = TextEditingController(text: item?.name ?? '');
+    final quantity = TextEditingController(
+      text: quantityLabel(item?.quantity ?? 1),
+    );
+    var prescription = item?.prescription ?? false;
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: Text(tx(context, 'Pridėti į sąrašą', 'Add to list')),
+          title: Text(item == null
+              ? tx(context, 'Pridėti į sąrašą', 'Add to list')
+              : tx(context, 'Redaguoti pirkinį', 'Edit item')),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -6304,19 +6445,40 @@ class _ShoppingPageState extends State<ShoppingPage> {
                 );
                 if (name.text.trim().isEmpty || value == null || value <= 0)
                   return;
-                widget.data.shopping.add(
-                  ShoppingItem(
-                    id: newId(),
-                    name: name.text.trim(),
-                    quantity: value,
-                    prescription: prescription,
-                  ),
-                );
+                if (item == null) {
+                  final duplicate = widget.data.shopping
+                      .where((existing) =>
+                          !existing.purchased &&
+                          existing.name.toLowerCase() ==
+                              name.text.trim().toLowerCase())
+                      .firstOrNull;
+                  if (duplicate == null) {
+                    widget.data.shopping.add(ShoppingItem(
+                      id: newId(),
+                      name: name.text.trim(),
+                      quantity: value,
+                      prescription: prescription,
+                    ));
+                  } else {
+                    duplicate.quantity += value;
+                    duplicate.prescription =
+                        duplicate.prescription || prescription;
+                  }
+                } else {
+                  final delta = value - item.quantity;
+                  if (item.purchased) _adjustMedicineStock(item, delta);
+                  item
+                    ..name = name.text.trim()
+                    ..quantity = value
+                    ..prescription = prescription;
+                }
                 widget.onChanged();
                 Navigator.pop(dialogContext);
                 setState(() {});
               },
-              child: Text(tx(context, 'Pridėti', 'Add')),
+              child: Text(item == null
+                  ? tx(context, 'Pridėti', 'Add')
+                  : tx(context, 'Išsaugoti', 'Save')),
             ),
           ],
         ),
@@ -6326,9 +6488,38 @@ class _ShoppingPageState extends State<ShoppingPage> {
     quantity.dispose();
   }
 
+  void _adjustMedicineStock(ShoppingItem item, double delta) {
+    final medicine = widget.data.meds
+        .where((med) => med.id == item.medId)
+        .firstOrNull;
+    if (medicine != null) {
+      medicine.stock = (medicine.stock + delta)
+          .clamp(0, double.infinity)
+          .toDouble();
+    }
+  }
+
+  void _changeQuantity(ShoppingItem item, double delta) {
+    final next = (item.quantity + delta).clamp(1, 999).toDouble();
+    final applied = next - item.quantity;
+    if (applied == 0) return;
+    if (item.purchased) _adjustMedicineStock(item, applied);
+    item.quantity = next;
+    widget.onChanged();
+    setState(() {});
+  }
+
+  void _setPurchased(ShoppingItem item, bool purchased) {
+    if (item.purchased == purchased) return;
+    _adjustMedicineStock(item, purchased ? item.quantity : -item.quantity);
+    item.purchased = purchased;
+    widget.onChanged();
+    setState(() {});
+  }
+
   void _addLowStock() {
     for (final medicine in widget.data.meds.where(
-      (medicine) => medicine.stock <= 10,
+      (medicine) => medicine.stock <= medicine.lowStockThreshold,
     )) {
       if (widget.data.shopping.any(
         (item) => item.medId == medicine.id && !item.purchased,
@@ -6347,6 +6538,91 @@ class _ShoppingPageState extends State<ShoppingPage> {
     setState(() {});
   }
 
+  Future<void> _clearPurchased() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(tx(context, 'Išvalyti nupirktus?', 'Clear purchased items?')),
+        content: Text(tx(
+          context,
+          'Nupirkti įrašai bus pašalinti iš sąrašo. Vaistų likučiai išliks papildyti.',
+          'Purchased entries will be removed. Updated medicine stock will remain.',
+        )),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(tx(context, 'Atšaukti', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(tx(context, 'Išvalyti', 'Clear')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    widget.data.shopping.removeWhere((item) => item.purchased);
+    widget.onChanged();
+    setState(() {});
+  }
+
+  Widget _shoppingCard(BuildContext c, ShoppingItem item) => Card(
+    child: Column(
+      children: [
+        CheckboxListTile(
+          value: item.purchased,
+          title: Text(
+            item.name,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              decoration: item.purchased ? TextDecoration.lineThrough : null,
+            ),
+          ),
+          subtitle: item.prescription
+              ? Text(tx(c, 'Reikalingas receptas', 'Prescription required'))
+              : null,
+          secondary: IconButton(
+            tooltip: tx(c, 'Redaguoti', 'Edit'),
+            icon: const Icon(Icons.edit_outlined),
+            onPressed: () => _editItem(item),
+          ),
+          onChanged: (checked) => _setPurchased(item, checked ?? false),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 8, 8),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: tx(c, 'Ištrinti', 'Delete'),
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () {
+                  widget.data.shopping.remove(item);
+                  widget.onChanged();
+                  setState(() {});
+                },
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: tx(c, 'Sumažinti', 'Decrease'),
+                onPressed: () => _changeQuantity(item, -1),
+                icon: const Icon(Icons.remove_circle_outline),
+              ),
+              Text(
+                quantityLabel(item.quantity),
+                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+              ),
+              IconButton(
+                tooltip: tx(c, 'Padidinti', 'Increase'),
+                onPressed: () => _changeQuantity(item, 1),
+                icon: const Icon(Icons.add_circle_outline),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+
   @override
   Widget build(BuildContext c) => Scaffold(
     appBar: AppBar(title: Text(tx(c, 'Pirkinių sąrašas', 'Shopping list'))),
@@ -6362,7 +6638,7 @@ class _ShoppingPageState extends State<ShoppingPage> {
         ),
         const SizedBox(height: 8),
         FilledButton.icon(
-          onPressed: _addCustomItem,
+          onPressed: _editItem,
           icon: const Icon(Icons.add_shopping_cart),
           label: Text(tx(c, 'Pridėti rankiniu būdu', 'Add manually')),
         ),
@@ -6370,41 +6646,33 @@ class _ShoppingPageState extends State<ShoppingPage> {
           card(
             Text(tx(c, 'Pirkinių sąrašas tuščias.', 'Shopping list is empty.')),
           ),
-        ...widget.data.shopping.map(
-          (item) => Card(
-            child: CheckboxListTile(
-              value: item.purchased,
-              title: Text(item.name),
-              subtitle: Text(
-                [
-                  '${tx(c, 'Kiekis', 'Quantity')}: ${quantityLabel(item.quantity)}',
-                  if (item.prescription)
-                    tx(c, 'Reikalingas receptas', 'Prescription required'),
-                ].join(' • '),
+        if (widget.data.shopping.any((item) => !item.purchased)) ...[
+          const SizedBox(height: 14),
+          Text(tx(c, 'Reikia nupirkti', 'To buy'),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          ...widget.data.shopping
+              .where((item) => !item.purchased)
+              .map((item) => _shoppingCard(c, item)),
+        ],
+        if (widget.data.shopping.any((item) => item.purchased)) ...[
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: Text(tx(c, 'Nupirkta', 'Purchased'),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
               ),
-              secondary: IconButton(
-                icon: const Icon(Icons.delete_outline),
-                onPressed: () {
-                  widget.data.shopping.remove(item);
-                  widget.onChanged();
-                  setState(() {});
-                },
+              TextButton.icon(
+                onPressed: _clearPurchased,
+                icon: const Icon(Icons.cleaning_services_outlined),
+                label: Text(tx(c, 'Išvalyti', 'Clear')),
               ),
-              onChanged: (checked) {
-                final wasPurchased = item.purchased;
-                item.purchased = checked ?? false;
-                final medicine = widget.data.meds
-                    .where((med) => med.id == item.medId)
-                    .firstOrNull;
-                if (medicine != null && !wasPurchased && item.purchased) {
-                  medicine.stock += item.quantity;
-                }
-                widget.onChanged();
-                setState(() {});
-              },
-            ),
+            ],
           ),
-        ),
+          ...widget.data.shopping
+              .where((item) => item.purchased)
+              .map((item) => _shoppingCard(c, item)),
+        ],
       ],
     ),
   );
@@ -6839,25 +7107,31 @@ class _ProfilePage extends State<ProfilePage> {
             ),
           ),
           Card(
-            child: SwitchListTile(
-              secondary: const CircleAvatar(
+            child: ListTile(
+              leading: const CircleAvatar(
                 backgroundColor: mint,
-                child: Icon(Icons.auto_awesome_rounded, color: green),
+                child: Icon(Icons.admin_panel_settings_outlined, color: green),
               ),
-              value: widget.data.aiConsentGranted,
               title: Text(
-                tx(c, 'Firebase AI / Gemini', 'Firebase AI / Gemini'),
+                tx(c, 'Sutikimai ir leidimai', 'Permissions and consent'),
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: Text(tx(c,
-                'Vienas bendras leidimas vaistų kortelėms ir „Man bloga“ analizei',
-                'One permission for medicine cards and symptom analysis')),
-              onChanged: (value) {
-                setState(() {
-                  widget.data.aiConsentGranted = value;
-                  widget.data.aiConsentChoiceMade = true;
-                });
-                widget.onChanged();
+              subtitle: Text(tx(
+                c,
+                'Kamerą, vaistų ir vizitų pranešimus bei AI valdykite atskirai',
+                'Manage camera, medicine and appointment alerts, and AI separately',
+              )),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                final changed = await _showPermissionsCenter(
+                  context,
+                  widget.data,
+                  firstLaunch: false,
+                );
+                if (changed && mounted) {
+                  setState(() {});
+                  widget.onChanged();
+                }
               },
             ),
           ),
@@ -7141,6 +7415,8 @@ class _ScanPage extends State<ScanPage> {
 
   Future<void> ocr(ImageSource src) async {
     if (busy) return;
+    if (src == ImageSource.camera &&
+        !await _cameraAvailable(context, widget.data)) return;
     setState(() => busy = true);
     TextRecognizer? r;
     try {
@@ -7174,6 +7450,7 @@ class _ScanPage extends State<ScanPage> {
   }
 
   Future<void> openCamera() async {
+    if (!await _cameraAvailable(context, widget.data)) return;
     final result = await Navigator.push<ScanCaptureResult>(
       context,
       MaterialPageRoute(
