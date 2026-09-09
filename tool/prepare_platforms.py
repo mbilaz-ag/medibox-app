@@ -23,6 +23,18 @@ if 'android.permission.INTERNET' not in text:
         '<uses-permission android:name="android.permission.INTERNET"/>\n    <application',
         1,
     )
+if 'android.permission.POST_NOTIFICATIONS' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application',
+        1,
+    )
+if 'android.permission.SCHEDULE_EXACT_ALARM' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n    <application',
+        1,
+    )
 if 'android.permission.CAMERA' not in text:
     text = text.replace('<application', '<uses-permission android:name="android.permission.CAMERA"/>\n    <uses-feature android:name="android.hardware.camera" android:required="false"/>\n    <application', 1)
 if 'android.permission.RECEIVE_BOOT_COMPLETED' not in text:
