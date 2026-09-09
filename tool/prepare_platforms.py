@@ -126,7 +126,16 @@ data.update({
     'CFBundleDisplayName': 'MediBox',
     'NSCameraUsageDescription': 'Kamera naudojama vaistų pakuotėms, čekiams ir kodams nuskaityti.',
     'NSPhotoLibraryUsageDescription': 'Pasirinkta nuotrauka naudojama vaisto arba čekio tekstui atpažinti.',
+    'NSPhotoLibraryAddUsageDescription': 'Nuotrauka išsaugoma tik tada, kai tai aiškiai pasirenkate.',
     'NSFaceIDUsageDescription': 'Face ID naudojamas MediBox sveikatos duomenims apsaugoti.',
+    'GIDClientID': '281777960665-ih4n1o1v4mqhsm2kj0mddc1oso1mljrm.apps.googleusercontent.com',
+    'GIDServerClientID': '281777960665-b2nigi9i4lfsi6s2gjegvidmnbrhv7mm.apps.googleusercontent.com',
+    'CFBundleURLTypes': [{
+        'CFBundleTypeRole': 'Editor',
+        'CFBundleURLSchemes': [
+            'com.googleusercontent.apps.281777960665-ih4n1o1v4mqhsm2kj0mddc1oso1mljrm',
+        ],
+    }],
 })
 with info.open('wb') as f:
     plistlib.dump(data, f, sort_keys=False)

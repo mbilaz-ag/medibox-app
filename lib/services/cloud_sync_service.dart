@@ -7,6 +7,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/models.dart';
 import 'firebase_leaflet_service.dart';
@@ -65,7 +66,15 @@ class CloudSyncService {
       (value) => value['client_type'] == 3,
     );
     if (webClient.isEmpty) throw StateError('google_oauth_not_configured');
+    String? appleClientId;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      final iosConfig = jsonDecode(
+        await rootBundle.loadString('config/firebase-ios.json'),
+      );
+      appleClientId = '${iosConfig['clientId']}';
+    }
     await GoogleSignIn.instance.initialize(
+      clientId: appleClientId,
       serverClientId: '${webClient.first['client_id']}',
     );
   }

@@ -17,31 +17,56 @@ class FirebaseLeafletService {
   static Future<void>? _initialization;
 
   static bool get supported =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   // Lazy initialization: offline/local inventory never depends on Firebase.
   static Future<void> _initialize() async {
-    if (!supported) throw UnsupportedError('android_only');
-    final config = jsonDecode(
-      await rootBundle.loadString('config/google-services.json'),
-    );
-    final project = config['project_info'];
-    final client = (config['client'] as List).singleWhere(
-      (c) =>
-          c['client_info']['android_client_info']['package_name'] ==
-          'lt.medibox.medibox',
-    );
-    if (project['project_id'] != 'medibox-6d80d') {
-      throw const FormatException('firebase_project');
+    if (!supported) throw UnsupportedError('mobile_only');
+    final isApple = defaultTargetPlatform == TargetPlatform.iOS;
+    final Map<String, dynamic> firebaseOptions;
+    if (isApple) {
+      final config = Map<String, dynamic>.from(
+        jsonDecode(
+          await rootBundle.loadString('config/firebase-ios.json'),
+        ) as Map,
+      );
+      if (config['projectId'] != 'medibox-6d80d' ||
+          config['bundleId'] != 'lt.medibox.medibox') {
+        throw const FormatException('firebase_ios_project');
+      }
+      firebaseOptions = config;
+    } else {
+      final config = jsonDecode(
+        await rootBundle.loadString('config/google-services.json'),
+      );
+      final project = config['project_info'];
+      final client = (config['client'] as List).singleWhere(
+        (c) =>
+            c['client_info']['android_client_info']['package_name'] ==
+            'lt.medibox.medibox',
+      );
+      if (project['project_id'] != 'medibox-6d80d') {
+        throw const FormatException('firebase_project');
+      }
+      firebaseOptions = {
+        'apiKey': client['api_key'][0]['current_key'],
+        'appId': client['client_info']['mobilesdk_app_id'],
+        'messagingSenderId': project['project_number'],
+        'projectId': project['project_id'],
+        'storageBucket': project['storage_bucket'],
+      };
     }
     if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(
         options: FirebaseOptions(
-          apiKey: client['api_key'][0]['current_key'],
-          appId: client['client_info']['mobilesdk_app_id'],
-          messagingSenderId: project['project_number'],
-          projectId: project['project_id'],
-          storageBucket: project['storage_bucket'],
+          apiKey: '${firebaseOptions['apiKey']}',
+          appId: '${firebaseOptions['appId']}',
+          messagingSenderId: '${firebaseOptions['messagingSenderId']}',
+          projectId: '${firebaseOptions['projectId']}',
+          storageBucket: '${firebaseOptions['storageBucket']}',
+          iosBundleId: isApple ? '${firebaseOptions['bundleId']}' : null,
         ),
       );
     }
@@ -50,6 +75,9 @@ class FirebaseLeafletService {
       providerAndroid: kDebugMode
           ? const AndroidDebugProvider()
           : const AndroidPlayIntegrityProvider(),
+      providerApple: kDebugMode
+          ? const AppleDebugProvider()
+          : const AppleAppAttestWithDeviceCheckFallbackProvider(),
     );
   }
 
