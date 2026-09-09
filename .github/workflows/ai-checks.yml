@@ -29,12 +29,15 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
-      - name: Verify release certificate and print SHA-1
+      - name: Restore permanent signing key outside checkout
         env:
           MEDIBOX_KEYSTORE_BASE64: ${{ secrets.MEDIBOX_KEYSTORE_BASE64 }}
           MEDIBOX_KEYSTORE_PASSWORD: ${{ secrets.MEDIBOX_KEYSTORE_PASSWORD }}
+        run: python3 tool/restore_release_keystore.py
+      - name: Verify release certificate and print SHA-1
+        env:
+          MEDIBOX_KEYSTORE_PASSWORD: ${{ secrets.MEDIBOX_KEYSTORE_PASSWORD }}
         run: |
-          python3 tool/restore_release_keystore.py
           keytool -list -v \
             -keystore "$MEDIBOX_KEYSTORE_PATH" \
             -storetype PKCS12 \
