@@ -5,12 +5,18 @@ import 'package:timezone/timezone.dart' as tz;
 import '../models/models.dart';
 import 'expiry_status.dart';
 import 'reminder_logic.dart';
+import 'store.dart';
 
 typedef ReminderActionHandler = Future<void> Function(
   String action,
   String reminderId,
   DateTime occurrence,
 );
+
+@pragma('vm:entry-point')
+Future<void> notificationTapBackground(NotificationResponse response) async {
+  await ReminderNotifications.handleBackgroundAction(response);
+}
 
 class ReminderNotifications {
   static final _plugin = FlutterLocalNotificationsPlugin();
@@ -30,7 +36,7 @@ class ReminderNotifications {
           'medicine',
           actions: [
             DarwinNotificationAction.plain('taken', 'Išgėriau'),
-            DarwinNotificationAction.plain('snooze', 'Po 10 min.'),
+            DarwinNotificationAction.plain('snooze', 'Atidėti 15 min.'),
             DarwinNotificationAction.plain('skip', 'Praleisti'),
           ],
         ),
@@ -39,6 +45,7 @@ class ReminderNotifications {
     await _plugin.initialize(
       InitializationSettings(android: android, iOS: ios),
       onDidReceiveNotificationResponse: _notificationResponse,
+      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
     _initialized = true;
   }
@@ -215,8 +222,9 @@ class ReminderNotifications {
     DateTime occurrence,
   ) async {
     if (!_initialized) return;
-    final at = DateTime.now().add(const Duration(minutes: 10));
+    final at = DateTime.now().add(const Duration(minutes: 15));
     await _schedule(reminder, data, at, followUp: false, snoozed: true);
+    await _plugin.cancel(_id(reminder.id, occurrence, false));
     await _plugin.cancel(_id(reminder.id, occurrence, true));
   }
 
@@ -244,10 +252,11 @@ class ReminderNotifications {
         ? '${reminder.quantityPerDose} ${reminder.doseUnit}'
         : reminder.dose;
     final body = [
-      if (followUp) 'Dar nepažymėta kaip išgerta.',
-      'Išgerti $dose',
-      if (member != null) member,
-      if (reminder.instructions.isNotEmpty) reminder.instructions,
+      if (followUp) 'MediBox: ankstesnė dozė dar nepažymėta kaip išgerta.',
+      'Vaistas: ${reminder.title}',
+      'Išgerti: $dose',
+      if (member != null) 'Kam: $member',
+      if (reminder.instructions.isNotEmpty) 'Pastaba: ${reminder.instructions}',
     ].join('\n');
     final occurrence = followUp
         ? when.subtract(const Duration(minutes: 30))
@@ -255,7 +264,9 @@ class ReminderNotifications {
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
     await _plugin.zonedSchedule(
       _id(reminder.id, occurrence, followUp),
-      snoozed ? 'Atidėtas priminimas: ${reminder.title}' : reminder.title,
+      snoozed
+          ? 'MediBox • atidėta 15 min.'
+          : 'MediBox • vaistų priminimas',
       body,
       tz.TZDateTime.from(when, tz.local),
       const NotificationDetails(
@@ -266,9 +277,13 @@ class ReminderNotifications {
           importance: Importance.max,
           priority: Priority.high,
           actions: [
-            AndroidNotificationAction('taken', 'Išgėriau', showsUserInterface: true),
-            AndroidNotificationAction('snooze', 'Po 10 min.', showsUserInterface: true),
-            AndroidNotificationAction('skip', 'Praleisti', showsUserInterface: true),
+            AndroidNotificationAction('taken', 'Išgėriau', showsUserInterface: false),
+            AndroidNotificationAction(
+              'snooze',
+              'Atidėti 15 min.',
+              showsUserInterface: false,
+            ),
+            AndroidNotificationAction('skip', 'Praleisti', showsUserInterface: false),
           ],
         ),
         iOS: DarwinNotificationDetails(categoryIdentifier: 'medicine'),
@@ -289,6 +304,33 @@ class ReminderNotifications {
       parts[0],
       occurrence,
     );
+  }
+
+  static Future<void> handleBackgroundAction(
+    NotificationResponse response,
+  ) async {
+    final parts = response.payload?.split('|');
+    if (parts == null || parts.length != 2) return;
+    final occurrence = DateTime.tryParse(parts[1]);
+    if (occurrence == null) return;
+    final action = response.actionId;
+    if (action == null || action.isEmpty || action == 'open') return;
+
+    await initialize();
+    final data = await Store.load();
+    final matches = data.reminders.where((x) => x.id == parts[0]);
+    if (matches.isEmpty) return;
+    final reminder = matches.first;
+    if (action == 'taken') {
+      markDoseTaken(data, reminder, occurrence);
+      await cancelOccurrence(reminder, occurrence);
+    } else if (action == 'skip') {
+      markDoseSkipped(reminder, occurrence);
+      await cancelOccurrence(reminder, occurrence);
+    } else if (action == 'snooze') {
+      await snooze(reminder, data, occurrence);
+    }
+    await Store.save(data);
   }
 
   static int _id(String reminderId, DateTime occurrence, bool followUp) {
