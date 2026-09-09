@@ -128,7 +128,10 @@ class Store {
 
   /// Only user-created content is synchronized. Device permissions, app lock
   /// and language remain local because they can differ between phones.
-  static Map<String, dynamic> cloudPayload(AppData data) => {
+  static Map<String, dynamic> cloudPayload(
+    AppData data, {
+    bool includeProfile = true,
+  }) => {
     'schemaVersion': 1,
     'meds': data.meds.map((item) {
       final json = item.toJson();
@@ -147,10 +150,14 @@ class Store {
     'reminders': data.reminders.map((item) => item.toJson()).toList(),
     'shopping': data.shopping.map((item) => item.toJson()).toList(),
     'appointments': data.appointments.map((item) => item.toJson()).toList(),
-    'profile': data.profile.toJson(),
+    if (includeProfile) 'profile': data.profile.toJson(),
   };
 
-  static void applyCloudPayload(AppData data, Map<String, dynamic> payload) {
+  static void applyCloudPayload(
+    AppData data,
+    Map<String, dynamic> payload, {
+    bool applyProfile = true,
+  }) {
     final medicineImages = {
       for (final item in data.meds) item.id: item.imagePath,
     };
@@ -181,7 +188,7 @@ class Store {
       ..shopping = readList('shopping', ShoppingItem.fromJson)
       ..appointments = readList('appointments', HealthAppointment.fromJson);
     final profile = payload['profile'];
-    if (profile is Map) {
+    if (applyProfile && profile is Map) {
       data.profile = UserProfile.fromJson(Map<String, dynamic>.from(profile));
     }
   }
