@@ -59,4 +59,35 @@ void main() {
     expect(restored.title, 'Kardiologas');
     expect(restored.remindBeforeMinutes, 2880);
   });
+
+  test('medicine can be assigned to several family members', () {
+    final medicine = Med(
+      id: 'm2',
+      name: 'Ibuprofenas',
+      substance: 'ibuprofenas',
+      strength: '400 mg',
+      purpose: '',
+      category: '',
+      expiry: '2028-01',
+      stock: 12,
+      memberIds: ['adult', 'child'],
+    );
+    final restored = Med.fromJson(medicine.toJson());
+    expect(restored.memberIds, ['adult', 'child']);
+  });
+
+  test('shopping item keeps quantity and purchased state', () {
+    final item = ShoppingItem(
+      id: 's1',
+      medId: 'm2',
+      name: 'Ibuprofenas 400 mg',
+      quantity: 3,
+      prescription: true,
+      purchased: true,
+    );
+    final restored = ShoppingItem.fromJson(item.toJson());
+    expect(restored.quantity, 3);
+    expect(restored.purchased, isTrue);
+    expect(restored.medId, 'm2');
+  });
 }
