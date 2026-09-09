@@ -133,11 +133,15 @@ class Store {
     'meds': data.meds.map((item) {
       final json = item.toJson();
       json['imagePath'] = '';
+      json['cloudImagePath'] = '';
+      json['cloudImageVersion'] = '';
       return json;
     }).toList(),
     'members': data.members.map((item) {
       final json = item.toJson();
       json['imagePath'] = '';
+      json['cloudImagePath'] = '';
+      json['cloudImageVersion'] = '';
       return json;
     }).toList(),
     'reminders': data.reminders.map((item) => item.toJson()).toList(),
@@ -147,6 +151,12 @@ class Store {
   };
 
   static void applyCloudPayload(AppData data, Map<String, dynamic> payload) {
+    final medicineImages = {
+      for (final item in data.meds) item.id: item.imagePath,
+    };
+    final memberImages = {
+      for (final item in data.members) item.id: item.imagePath,
+    };
     List<T> readList<T>(
       String key,
       T Function(Map<String, dynamic>) parse,
@@ -155,9 +165,18 @@ class Store {
         .map((item) => parse(Map<String, dynamic>.from(item)))
         .toList();
 
+    final medicines = readList('meds', Med.fromJson);
+    for (final item in medicines) {
+      item.imagePath = medicineImages[item.id] ?? '';
+    }
+    final members = readList('members', Member.fromJson);
+    for (final item in members) {
+      item.imagePath = memberImages[item.id] ?? '';
+    }
+
     data
-      ..meds = readList('meds', Med.fromJson)
-      ..members = readList('members', Member.fromJson)
+      ..meds = medicines
+      ..members = members
       ..reminders = readList('reminders', Reminder.fromJson)
       ..shopping = readList('shopping', ShoppingItem.fromJson)
       ..appointments = readList('appointments', HealthAppointment.fromJson);

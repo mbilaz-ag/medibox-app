@@ -5,9 +5,7 @@ import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
 
 import '../models/models.dart';
@@ -170,7 +168,6 @@ class CloudSyncService {
         await _uploadNow(data);
       } else {
         Store.applyCloudPayload(data, payload);
-        await _downloadImages(data);
         await Store.save(data);
         await onRemoteApplied();
       }
@@ -200,7 +197,6 @@ class CloudSyncService {
           data,
           Map<String, dynamic>.from(value['payload'] as Map),
         );
-        await _downloadImages(data);
         await Store.save(data);
         await onRemoteApplied();
         state = CloudSyncState.synced;
@@ -236,7 +232,6 @@ class CloudSyncService {
     _uploading = true;
     state = CloudSyncState.syncing;
     try {
-      await _uploadImages(data);
       await _activeDocument(data).set({
         'payload': Store.cloudPayload(data),
         'updatedAt': FieldValue.serverTimestamp(),
@@ -577,99 +572,6 @@ class CloudSyncService {
     }
   }
 
-  Future<void> _uploadImages(AppData data) async {
-    final current = user;
-    if (current == null) return;
-    final root = data.householdId.isEmpty
-        ? 'users/${current.uid}'
-        : 'households/${data.householdId}';
-    for (final medicine in data.meds) {
-      final result = await _uploadImage(
-        root: root,
-        kind: 'medicines',
-        id: medicine.id,
-        localPath: medicine.imagePath,
-        cloudPath: medicine.cloudImagePath,
-        cloudVersion: medicine.cloudImageVersion,
-      );
-      medicine
-        ..cloudImagePath = result.$1
-        ..cloudImageVersion = result.$2;
-    }
-    for (final member in data.members) {
-      final result = await _uploadImage(
-        root: root,
-        kind: 'members',
-        id: member.id,
-        localPath: member.imagePath,
-        cloudPath: member.cloudImagePath,
-        cloudVersion: member.cloudImageVersion,
-      );
-      member
-        ..cloudImagePath = result.$1
-        ..cloudImageVersion = result.$2;
-    }
-  }
-
-  Future<(String, String)> _uploadImage({
-    required String root,
-    required String kind,
-    required String id,
-    required String localPath,
-    required String cloudPath,
-    required String cloudVersion,
-  }) async {
-    if (localPath.isEmpty) return (cloudPath, cloudVersion);
-    final file = File(localPath);
-    if (!await file.exists()) return (cloudPath, cloudVersion);
-    final stat = await file.stat();
-    final version = '${stat.size}-${stat.modified.millisecondsSinceEpoch}';
-    if (cloudPath.isNotEmpty && version == cloudVersion) {
-      return (cloudPath, cloudVersion);
-    }
-    final path = '$root/images/$kind/$id.jpg';
-    await FirebaseStorage.instance.ref(path).putFile(
-      file,
-      SettableMetadata(contentType: 'image/jpeg'),
-    );
-    return (path, version);
-  }
-
-  Future<void> _downloadImages(AppData data) async {
-    final current = user;
-    if (current == null) return;
-    final base = await getApplicationDocumentsDirectory();
-    for (final medicine in data.meds) {
-      medicine.imagePath = await _downloadImage(
-        cloudPath: medicine.cloudImagePath,
-        cloudVersion: medicine.cloudImageVersion,
-        localPath: '${base.path}/cloud-sync/${medicine.id}',
-      );
-    }
-    for (final member in data.members) {
-      member.imagePath = await _downloadImage(
-        cloudPath: member.cloudImagePath,
-        cloudVersion: member.cloudImageVersion,
-        localPath: '${base.path}/cloud-sync/member-${member.id}',
-      );
-    }
-  }
-
-  Future<String> _downloadImage({
-    required String cloudPath,
-    required String cloudVersion,
-    required String localPath,
-  }) async {
-    if (cloudPath.isEmpty) return '';
-    final safeVersion = cloudVersion.replaceAll(RegExp(r'[^0-9-]'), '');
-    final file = File('$localPath-$safeVersion.jpg');
-    await file.parent.create(recursive: true);
-    if (!await file.exists()) {
-      await FirebaseStorage.instance.ref(cloudPath).writeToFile(file);
-    }
-    return file.path;
-  }
-
   Future<void> signOut() async {
     _uploadTimer?.cancel();
     await _subscription?.cancel();
@@ -691,7 +593,6 @@ class CloudSyncService {
     await current.reauthenticateWithCredential(
       GoogleAuthProvider.credential(idToken: authentication.idToken),
     );
-    await _deleteTree(FirebaseStorage.instance.ref('users/${current.uid}'));
     await _personalDocument(current.uid).delete();
     await _membershipDocument(current.uid).delete();
     await current.delete();
@@ -699,16 +600,6 @@ class CloudSyncService {
     await _subscription?.cancel();
     _subscription = null;
     state = CloudSyncState.signedOut;
-  }
-
-  Future<void> _deleteTree(Reference root) async {
-    final list = await root.listAll();
-    for (final item in list.items) {
-      await item.delete();
-    }
-    for (final prefix in list.prefixes) {
-      await _deleteTree(prefix);
-    }
   }
 
   String readableError(Object error) {

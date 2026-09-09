@@ -46,7 +46,7 @@ void main() {
     expect((payload['meds'] as List).single['imagePath'], '');
     expect(
       (payload['meds'] as List).single['cloudImagePath'],
-      'users/u/images/medicines/m1.jpg',
+      '',
     );
     expect(payload.containsKey('privacyLock'), isFalse);
     expect(payload.containsKey('aiConsentGranted'), isFalse);
@@ -69,6 +69,7 @@ void main() {
     Store.applyCloudPayload(target, Store.cloudPayload(original));
 
     expect(target.meds.single.name, 'Vaistas');
+    expect(target.meds.single.imagePath, '');
     expect(target.members.single.name, 'Andrius');
     expect(target.reminders.single.id, 'r1');
     expect(target.shopping.single.id, 's1');
@@ -78,6 +79,18 @@ void main() {
     expect(target.privacyLock, isFalse);
     expect(target.aiConsentGranted, isFalse);
     expect(target.householdId, 'local-house');
+  });
+
+  test('cloud refresh keeps photos local to this device', () {
+    final source = data();
+    final target = data();
+    target.meds.single.imagePath = '/this-device/medicine.jpg';
+    target.members.single.imagePath = '/this-device/member.jpg';
+
+    Store.applyCloudPayload(target, Store.cloudPayload(source));
+
+    expect(target.meds.single.imagePath, '/this-device/medicine.jpg');
+    expect(target.members.single.imagePath, '/this-device/member.jpg');
   });
 
   test('personal content detection ignores untouched demo cabinet', () {
