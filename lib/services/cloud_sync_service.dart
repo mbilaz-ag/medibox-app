@@ -96,6 +96,11 @@ class CloudSyncService {
     AppData data, {
     required Future<void> Function() onRemoteApplied,
   }) async {
+    // Widget tests run with a fake clock. Firebase initialization owns a
+    // real-world timeout, which would otherwise remain pending after the test
+    // tree is disposed. Cloud sync is an integration concern and is exercised
+    // separately from the application smoke test.
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
     try {
       await initialize();
       final current = FirebaseAuth.instance.currentUser;
