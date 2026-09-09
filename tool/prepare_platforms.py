@@ -83,7 +83,10 @@ for folder, source_name in android_icons.items():
                  destination / 'ic_launcher.png')
 gradle = root / 'android/app/build.gradle.kts'
 if gradle.exists():
-    text = gradle.read_text().replace('minSdk = flutter.minSdkVersion', 'minSdk = 23')
+    text = (gradle.read_text()
+            .replace('minSdk = flutter.minSdkVersion', 'minSdk = 23')
+            .replace('compileSdk = flutter.compileSdkVersion', 'compileSdk = 36')
+            .replace('targetSdk = flutter.targetSdkVersion', 'targetSdk = 36'))
     text = configure_android_signing(text)
     if 'medibox-r8-rules' not in text:
         text += '''
