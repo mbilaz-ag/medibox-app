@@ -178,7 +178,7 @@ class _App extends State<App> {
     ]).then((values) {
       final v = values.first as AppData;
       ReminderNotifications.onAction = _handleReminderAction;
-      await ReminderNotifications.requestPermissions();
+      ReminderNotifications.requestPermissions();
       ReminderNotifications.scheduleAll(v);
       if (mounted) setState(() => data = v);
     });
