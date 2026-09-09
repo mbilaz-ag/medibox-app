@@ -36,7 +36,7 @@ class ReminderNotifications {
           'medicine',
           actions: [
             DarwinNotificationAction.plain('taken', 'Išgėriau'),
-            DarwinNotificationAction.plain('snooze', 'Atidėti 15 min.'),
+            DarwinNotificationAction.plain('snooze', 'Priminti po 10 min.'),
             DarwinNotificationAction.plain('skip', 'Praleisti'),
           ],
         ),
@@ -52,11 +52,12 @@ class ReminderNotifications {
 
   static Future<void> requestPermissions() async {
     if (!_initialized) return;
-    await _plugin
+    final android = _plugin
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.requestNotificationsPermission();
+        >();
+    await android?.requestNotificationsPermission();
+    await android?.requestExactAlarmsPermission();
     await _plugin
         .resolvePlatformSpecificImplementation<
           IOSFlutterLocalNotificationsPlugin
@@ -88,32 +89,35 @@ class ReminderNotifications {
     await _plugin.cancelAll();
     final now = DateTime.now();
     var scheduledCount = 0;
-    reminders:
-    for (final reminder in data.reminders.where((x) => x.enabled)) {
-      for (var offset = 0; offset < 14; offset++) {
-        if (scheduledCount >= 60) break reminders;
-        final day = DateTime(now.year, now.month, now.day + offset);
-        if (!reminderAppliesOn(reminder, day)) continue;
-        final due = reminderDateTime(reminder, day);
-        if (due == null || !due.isAfter(now)) continue;
-        final key = _dateKey(day);
-        if (reminder.takenDates.contains(key) ||
-            reminder.skippedDates.contains(key)) {
-          continue;
+    if (data.medicationNotificationsGranted) {
+      reminders:
+      for (final reminder in data.reminders.where((x) => x.enabled)) {
+        for (var offset = 0; offset < 14; offset++) {
+          if (scheduledCount >= 60) break reminders;
+          final day = DateTime(now.year, now.month, now.day + offset);
+          if (!reminderAppliesOn(reminder, day)) continue;
+          final due = reminderDateTime(reminder, day);
+          if (due == null || !due.isAfter(now)) continue;
+          final key = _dateKey(day);
+          if (reminder.takenDates.contains(key) ||
+              reminder.skippedDates.contains(key)) {
+            continue;
+          }
+          await _schedule(reminder, data, due, followUp: false);
+          scheduledCount++;
+          if (scheduledCount >= 60) break reminders;
+          await _schedule(
+            reminder,
+            data,
+            due.add(const Duration(minutes: 30)),
+            followUp: true,
+          );
+          scheduledCount++;
         }
-        await _schedule(reminder, data, due, followUp: false);
-        scheduledCount++;
-        if (scheduledCount >= 60) break reminders;
-        await _schedule(
-          reminder,
-          data,
-          due.add(const Duration(minutes: 30)),
-          followUp: true,
-        );
-        scheduledCount++;
       }
     }
-    for (final appointment in data.appointments.where((x) => !x.completed)) {
+    if (data.appointmentNotificationsGranted) {
+      for (final appointment in data.appointments.where((x) => !x.completed)) {
       final at = DateTime.tryParse('${appointment.date}T${appointment.time}');
       if (at == null) continue;
       final notifyAt = at.subtract(
@@ -124,9 +128,9 @@ class ReminderNotifications {
           .where((x) => x.id == appointment.memberId)
           .map((x) => x.name)
           .firstOrNull;
-      await _plugin.zonedSchedule(
+        await _plugin.zonedSchedule(
         ('appointment-${appointment.id}').hashCode & 0x7fffffff,
-        'Artėja vizitas: ${appointment.title}',
+        'MediBox • artėja vizitas: ${appointment.title}',
         [
           if (member != null) member,
           '${appointment.date} ${appointment.time}',
@@ -145,35 +149,38 @@ class ReminderNotifications {
           iOS: DarwinNotificationDetails(),
         ),
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-      );
+        );
+      }
     }
-    for (final medicine in data.meds) {
-      final expiry = medicineExpiryDate(medicine.expiry);
-      if (expiry != null) {
-        await _scheduleMedicineDeadline(
-          medicine,
-          '${expiry.year.toString().padLeft(4, '0')}-'
-              '${expiry.month.toString().padLeft(2, '0')}-'
-              '${expiry.day.toString().padLeft(2, '0')}',
-          'Baigiasi vaisto galiojimas',
-          now,
-        );
-      }
-      if (medicine.prescriptionValidUntil.isNotEmpty) {
-        await _scheduleMedicineDeadline(
-          medicine,
-          medicine.prescriptionValidUntil,
-          'Baigiasi recepto galiojimas',
-          now,
-        );
-      }
-      if (medicine.treatmentUntil.isNotEmpty) {
-        await _scheduleMedicineDeadline(
-          medicine,
-          medicine.treatmentUntil,
-          'Vaisto atsargos ir gydymo laikotarpio pabaiga',
-          now,
-        );
+    if (data.medicationNotificationsGranted) {
+      for (final medicine in data.meds) {
+        final expiry = medicineExpiryDate(medicine.expiry);
+        if (expiry != null) {
+          await _scheduleMedicineDeadline(
+            medicine,
+            '${expiry.year.toString().padLeft(4, '0')}-'
+                '${expiry.month.toString().padLeft(2, '0')}-'
+                '${expiry.day.toString().padLeft(2, '0')}',
+            'Baigiasi vaisto galiojimas',
+            now,
+          );
+        }
+        if (medicine.prescriptionValidUntil.isNotEmpty) {
+          await _scheduleMedicineDeadline(
+            medicine,
+            medicine.prescriptionValidUntil,
+            'Baigiasi recepto galiojimas',
+            now,
+          );
+        }
+        if (medicine.treatmentUntil.isNotEmpty) {
+          await _scheduleMedicineDeadline(
+            medicine,
+            medicine.treatmentUntil,
+            'Vaisto atsargos ir gydymo laikotarpio pabaiga',
+            now,
+          );
+        }
       }
     }
   }
@@ -197,7 +204,7 @@ class ReminderNotifications {
       await _plugin.zonedSchedule(
         ('medicine-deadline-${medicine.id}-$reason-$daysBefore').hashCode &
             0x7fffffff,
-        '$reason po $daysBefore d.',
+        'MediBox • $reason po $daysBefore d.',
         '${medicine.name} ${medicine.strength}. '
             'Patikrinkite likutį ir prireikus suplanuokite vizitą pas gydytoją.',
         tz.TZDateTime.from(notifyAt, tz.local),
@@ -222,7 +229,7 @@ class ReminderNotifications {
     DateTime occurrence,
   ) async {
     if (!_initialized) return;
-    final at = DateTime.now().add(const Duration(minutes: 15));
+    final at = DateTime.now().add(const Duration(minutes: 10));
     await _schedule(reminder, data, at, followUp: false, snoozed: true);
     await _plugin.cancel(_id(reminder.id, occurrence, false));
     await _plugin.cancel(_id(reminder.id, occurrence, true));
@@ -262,14 +269,7 @@ class ReminderNotifications {
         ? when.subtract(const Duration(minutes: 30))
         : when;
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
-    await _plugin.zonedSchedule(
-      _id(reminder.id, occurrence, followUp),
-      snoozed
-          ? 'MediBox • atidėta 15 min.'
-          : 'MediBox • vaistų priminimas',
-      body,
-      tz.TZDateTime.from(when, tz.local),
-      const NotificationDetails(
+    const details = NotificationDetails(
         android: AndroidNotificationDetails(
           'medicine_reminders',
           'Vaistų priminimai',
@@ -280,17 +280,34 @@ class ReminderNotifications {
             AndroidNotificationAction('taken', 'Išgėriau', showsUserInterface: false),
             AndroidNotificationAction(
               'snooze',
-              'Atidėti 15 min.',
+              'Priminti po 10 min.',
               showsUserInterface: false,
             ),
             AndroidNotificationAction('skip', 'Praleisti', showsUserInterface: false),
           ],
         ),
         iOS: DarwinNotificationDetails(categoryIdentifier: 'medicine'),
-      ),
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-      payload: payload,
     );
+    Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
+          _id(reminder.id, occurrence, followUp),
+          snoozed
+              ? 'MediBox • priminimas po 10 min.'
+              : 'MediBox • vaistų priminimas',
+          body,
+          tz.TZDateTime.from(when, tz.local),
+          details,
+          androidScheduleMode: mode,
+          payload: payload,
+        );
+    if (snoozed) {
+      try {
+        await schedule(AndroidScheduleMode.exactAllowWhileIdle);
+      } catch (_) {
+        await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
+      }
+    } else {
+      await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
+    }
   }
 
   static void _notificationResponse(NotificationResponse response) {
