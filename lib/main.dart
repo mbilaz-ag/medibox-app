@@ -1195,6 +1195,14 @@ class HomePage extends StatelessWidget {
           (a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'),
         );
     final nextAppointment = upcomingAppointments.firstOrNull;
+    final sameDayAppointments = nextAppointment == null
+        ? <HealthAppointment>[]
+        : upcomingAppointments
+              .where((item) => item.date == nextAppointment.date)
+              .toList();
+    final selectedMemberName = memberId.isEmpty
+        ? tx(c, 'Visa šeima', 'Whole family')
+        : _memberName(data, memberId);
 
     return Stack(
       children: [
@@ -1329,7 +1337,7 @@ class HomePage extends StatelessWidget {
                                 ),
                               ),
                               Text(
-                                '$taken/${active.length}\n${tx(c, 'vaistai\nišgerti', 'medicines\ntaken')}',
+                                '$taken/${active.length}\n${tx(c, 'dozės\nišgertos', 'doses\ntaken')}',
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   fontSize: 16,
@@ -1381,6 +1389,18 @@ class HomePage extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      tx(
+                        c,
+                        'Rodoma: $selectedMemberName',
+                        'Showing: $selectedMemberName',
+                      ),
+                      style: const TextStyle(
+                        color: Color(0xff526575),
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ],
                 ),
@@ -1450,6 +1470,10 @@ class HomePage extends StatelessWidget {
                                 ),
                               ],
                             ),
+                            subtitle: memberId.isEmpty &&
+                                    data.householdId.isNotEmpty
+                                ? Text(_who(data, r, tx(c, 'Aš', 'Me')))
+                                : null,
                             trailing: IconButton(
                               tooltip: isTaken
                                   ? tx(
@@ -1486,6 +1510,21 @@ class HomePage extends StatelessWidget {
                         ],
                       );
                     }),
+                    if (active.length > 4)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 10, bottom: 6),
+                        child: Text(
+                          tx(
+                            c,
+                            'Dar ${active.length - 4} suplanuotos dozės',
+                            '${active.length - 4} more scheduled doses',
+                          ),
+                          style: const TextStyle(
+                            color: green,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -1507,7 +1546,20 @@ class HomePage extends StatelessWidget {
                     ),
                   ),
                   subtitle: Text(
-                    '${nextAppointment.date} ${nextAppointment.time} • ${nextAppointment.title}',
+                    [
+                      '${nextAppointment.date} ${nextAppointment.time} • ${nextAppointment.title}',
+                      [
+                        _memberName(data, nextAppointment.memberId),
+                        nextAppointment.doctor,
+                        nextAppointment.facility,
+                      ].where((value) => value.isNotEmpty).join(' • '),
+                      if (sameDayAppointments.length > 1)
+                        tx(
+                          c,
+                          'Dar ${sameDayAppointments.length - 1} ${sameDayAppointments.length == 2 ? 'vizitas' : 'vizitai'} šią dieną',
+                          '${sameDayAppointments.length - 1} more on this day',
+                        ),
+                    ].where((value) => value.isNotEmpty).join('\n'),
                   ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.push(
@@ -1774,6 +1826,18 @@ Widget _medicineStatusCard({
             ),
           );
         }),
+        if (medicines.length > 4)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(36, 6, 4, 0),
+            child: Text(
+              tx(
+                context,
+                'Dar ${medicines.length - 4} vaistai',
+                '${medicines.length - 4} more medicines',
+              ),
+              style: TextStyle(color: color, fontWeight: FontWeight.w800),
+            ),
+          ),
       ],
     ),
   ),
@@ -1828,7 +1892,7 @@ Widget _familyStatusCard(
           ),
         ),
         SizedBox(
-          width: 112,
+          width: data.members.length > 3 ? 146 : 112,
           height: 52,
           child: Stack(
             children: [
@@ -1838,6 +1902,27 @@ Widget _familyStatusCard(
                   child: _FamilyAvatar(
                     member: data.members[i],
                     fallbackIndex: i,
+                  ),
+                ),
+              if (data.members.length > 3)
+                Positioned(
+                  left: 102,
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: green,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                    child: Text(
+                      '+${data.members.length - 3}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
                   ),
                 ),
               if (data.members.isEmpty)
@@ -1985,7 +2070,13 @@ class _ExpiringMedicinesPageState extends State<ExpiringMedicinesPage> {
 }
 
 String _who(AppData d, Reminder r, String me) {
-  if (r.memberId.isEmpty) return me;
+  if (r.memberId.isEmpty) {
+    if (d.householdId.isNotEmpty && d.linkedMemberId.isNotEmpty) {
+      final linkedName = _memberName(d, d.linkedMemberId);
+      if (linkedName.isNotEmpty) return linkedName;
+    }
+    return me;
+  }
   return d.members
           .where((x) => x.id == r.memberId)
           .map((x) => x.name)
@@ -5074,7 +5165,8 @@ class _MemberEditor extends State<MemberEditor> {
             : tx(c, 'Redaguoti narį', 'Edit member'),
       ),
       actions: [
-        if (widget.member != null)
+        if (widget.member != null &&
+            widget.member!.id != widget.data.linkedMemberId)
           IconButton(
             onPressed: () async {
               if (!await confirmDelete(c, widget.member!.name) || !c.mounted) {
@@ -5395,6 +5487,16 @@ class _MemberEditor extends State<MemberEditor> {
               widget.data.profile.conditions = m.conditions;
               widget.data.profile.notes = m.notes;
             }
+            if (m.id == widget.data.linkedMemberId) {
+              widget.data.profile
+                ..name = m.name
+                ..birthDate = m.birthDate
+                ..bloodType = m.bloodType
+                ..allergies = m.allergies
+                ..conditions = m.conditions
+                ..medications = m.intolerantMedicines
+                ..notes = m.notes;
+            }
             if (widget.member == null) widget.data.members.add(m);
             widget.onChanged();
             Navigator.pop(c);
@@ -5406,21 +5508,202 @@ class _MemberEditor extends State<MemberEditor> {
   );
 }
 
+Future<DateTime?> showMediBoxCalendar({
+  required BuildContext context,
+  required DateTime initialDate,
+  required List<HealthAppointment> appointments,
+  String memberId = '',
+}) {
+  var month = DateTime(initialDate.year, initialDate.month);
+  final appointmentDates = appointments
+      .where((item) => memberId.isEmpty || item.memberId == memberId)
+      .map((item) => item.date)
+      .toSet();
+  return showDialog<DateTime>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) {
+        final firstDay = DateTime(month.year, month.month, 1);
+        final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
+        final leadingEmptyDays = firstDay.weekday - DateTime.monday;
+        final cellCount = ((leadingEmptyDays + daysInMonth + 6) ~/ 7) * 7;
+        final locale = Localizations.localeOf(context).languageCode;
+        final today = dateKey();
+        return Dialog(
+          insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          tx(context, 'Pasirinkite datą', 'Choose a date'),
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: navy,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      IconButton(
+                        tooltip: tx(context, 'Ankstesnis mėnuo', 'Previous month'),
+                        onPressed: () => setDialogState(
+                          () => month = DateTime(month.year, month.month - 1),
+                        ),
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      Expanded(
+                        child: Text(
+                          DateFormat('LLLL yyyy', locale).format(month),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: tx(context, 'Kitas mėnuo', 'Next month'),
+                        onPressed: () => setDialogState(
+                          () => month = DateTime(month.year, month.month + 1),
+                        ),
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      for (final label in (locale == 'en'
+                          ? const ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+                          : const ['P', 'A', 'T', 'K', 'P', 'Š', 'S']))
+                        Expanded(
+                          child: Text(
+                            label,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 7,
+                      childAspectRatio: .82,
+                    ),
+                    itemCount: cellCount,
+                    itemBuilder: (context, index) {
+                      final dayNumber = index - leadingEmptyDays + 1;
+                      if (dayNumber < 1 || dayNumber > daysInMonth) {
+                        return const SizedBox.shrink();
+                      }
+                      final day = DateTime(month.year, month.month, dayNumber);
+                      final key = dateKey(day);
+                      final selected = key == dateKey(initialDate);
+                      final hasVisit = appointmentDates.contains(key);
+                      return Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () => Navigator.pop(dialogContext, day),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            decoration: BoxDecoration(
+                              color: selected ? green : null,
+                              borderRadius: BorderRadius.circular(14),
+                              border: key == today && !selected
+                                  ? Border.all(color: green)
+                                  : null,
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  '$dayNumber',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: selected ? Colors.white : navy,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                if (hasVisit)
+                                  Icon(
+                                    Icons.medical_services,
+                                    size: 14,
+                                    color: selected
+                                        ? Colors.white
+                                        : const Color(0xffff9f1c),
+                                  )
+                                else
+                                  const SizedBox(height: 14),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(
+                        dialogContext,
+                        DateTime.now(),
+                      ),
+                      child: Text(tx(context, 'Šiandien', 'Today')),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
+
 class HealthCalendarPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
+  final DateTime? initialDate;
   const HealthCalendarPage({
     super.key,
     required this.data,
     required this.onChanged,
+    this.initialDate,
   });
   @override
   State<HealthCalendarPage> createState() => _HealthCalendarPageState();
 }
 
 class _HealthCalendarPageState extends State<HealthCalendarPage> {
-  DateTime selectedDay = DateTime.now();
+  late DateTime selectedDay;
   String memberId = '';
+
+  @override
+  void initState() {
+    super.initState();
+    selectedDay = widget.initialDate ?? DateTime.now();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -5430,7 +5713,7 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
             .where(
               (item) =>
                   reminderAppliesOn(item, selectedDay) &&
-                  (memberId.isEmpty || item.memberId == memberId),
+                  reminderMatchesMember(widget.data, item, memberId),
             )
             .toList()
           ..sort((a, b) => a.time.compareTo(b.time));
@@ -5443,6 +5726,13 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
             )
             .toList()
           ..sort((a, b) => a.time.compareTo(b.time));
+    final scheduledEvents = <(String, int, Object)>[
+      ...doses.map((item) => (item.time, 1, item as Object)),
+      ...appointments.map((item) => (item.time, 0, item as Object)),
+    ]..sort((a, b) {
+      final timeOrder = a.$1.compareTo(b.$1);
+      return timeOrder == 0 ? a.$2.compareTo(b.$2) : timeOrder;
+    });
     final medicineDeadlines = <(Med, String, String)>[];
     for (final medicine in widget.data.meds) {
       if (memberId.isNotEmpty &&
@@ -5469,8 +5759,11 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
       }
     }
     final days = List.generate(7, (index) {
-      final now = DateTime.now();
-      return DateTime(now.year, now.month, now.day + index - 2);
+      return DateTime(
+        selectedDay.year,
+        selectedDay.month,
+        selectedDay.day + index - 3,
+      );
     });
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
@@ -5485,11 +5778,11 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
             IconButton(
               tooltip: tx(context, 'Pasirinkti datą', 'Choose date'),
               onPressed: () async {
-                final value = await showDatePicker(
+                final value = await showMediBoxCalendar(
                   context: context,
                   initialDate: selectedDay,
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2100),
+                  appointments: widget.data.appointments,
+                  memberId: memberId,
                 );
                 if (value != null) setState(() => selectedDay = value);
               },
@@ -5527,44 +5820,65 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
           ),
         const SizedBox(height: 12),
         SizedBox(
-          height: 78,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: days.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 7),
-            itemBuilder: (context, index) {
-              final day = days[index];
+          height: 72,
+          child: Row(
+            children: days.map((day) {
               final selected = dateKey(day) == key;
-              return ChoiceChip(
-                selected: selected,
-                onSelected: (_) => setState(() => selectedDay = day),
-                label: SizedBox(
-                  width: 47,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        DateFormat(
-                          'E',
-                          Localizations.localeOf(context).languageCode,
-                        ).format(day),
-                      ),
-                      Text(
-                        '${day.day}',
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w800,
+              return Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () => setState(() => selectedDay = day),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 160),
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? const Color(0xffcceee4)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: selected
+                              ? green
+                              : const Color(0xffd8e4e1),
                         ),
                       ),
-                    ],
+                      alignment: Alignment.center,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            DateFormat(
+                              'E',
+                              Localizations.localeOf(context).languageCode,
+                            ).format(day),
+                            style: TextStyle(
+                              color: selected ? green : navy,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            '${day.day}',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w900,
+                              color: selected ? green : navy,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               );
-            },
+            }).toList(),
           ),
         ),
         Text(
-          DateFormat('yyyy-MM-dd').format(selectedDay),
+          DateFormat(
+            'y MMMM d, EEEE',
+            Localizations.localeOf(context).languageCode,
+          ).format(selectedDay),
           style: const TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w800,
@@ -5625,9 +5939,13 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
             ),
           ),
         ),
-        ...appointments.map(
-          (item) => Card(
-            child: ListTile(
+        ...scheduledEvents.map((event) {
+          if (event.$3 is HealthAppointment) {
+            final item = event.$3 as HealthAppointment;
+            return Opacity(
+              opacity: item.completed ? .62 : 1,
+              child: Card(
+                child: ListTile(
               leading: const CircleAvatar(
                 backgroundColor: mint,
                 child: Icon(Icons.medical_services_outlined, color: green),
@@ -5661,10 +5979,11 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
                 setState(() {});
               },
             ),
-          ),
-        ),
-        ...doses.map(
-          (item) => Card(
+              ),
+            );
+          }
+          final item = event.$3 as Reminder;
+          return Card(
             child: ListTile(
               leading: Icon(
                 item.takenDates.contains(key)
@@ -5690,8 +6009,8 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
                 ),
               ),
             ),
-          ),
-        ),
+          );
+        }),
         const SizedBox(height: 10),
         FilledButton.icon(
           onPressed: () async {
@@ -6900,77 +7219,537 @@ class _ShoppingPageState extends State<ShoppingPage> {
   );
 }
 
-String _doctorSummary(AppData data) {
-  final p = data.profile;
-  final buffer = StringBuffer('MEDIBOX – SVEIKATOS SANTRAUKA\n\n')
-    ..writeln('Vardas: ${p.name}')
-    ..writeln('Gimimo data: ${p.birthDate}')
-    ..writeln('Kraujo grupė: ${p.bloodType}')
-    ..writeln('Alergijos: ${p.allergies}')
-    ..writeln('Sveikatos būklės: ${p.conditions}')
-    ..writeln(
-      'Skubios pagalbos kontaktas: ${p.emergencyName} ${p.emergencyPhone}',
+List<Reminder> _summaryReminders(AppData data, String memberId) => data.reminders
+    .where(
+      (item) =>
+          memberId.isEmpty || reminderMatchesMember(data, item, memberId),
     )
-    ..writeln('\nVARTOJAMI VAISTAI');
-  for (final medicine in data.meds) {
+    .toList();
+
+List<Med> _summaryMedicines(AppData data, String memberId) {
+  if (memberId.isEmpty) return data.meds;
+  final reminderMedicineIds = data.reminders
+      .where(
+        (item) =>
+            reminderMatchesMember(data, item, memberId) &&
+            item.medId.isNotEmpty,
+      )
+      .map((item) => item.medId)
+      .toSet();
+  return data.meds
+      .where(
+        (medicine) =>
+            medicine.memberIds.contains(memberId) ||
+            reminderMedicineIds.contains(medicine.id),
+      )
+      .toList();
+}
+
+class _DosePeriodStats {
+  final int planned, taken;
+  final double consumed;
+  final List<double> dailyPercent;
+  const _DosePeriodStats({
+    required this.planned,
+    required this.taken,
+    required this.consumed,
+    required this.dailyPercent,
+  });
+  int get percent => planned == 0 ? 0 : (taken * 100 / planned).round();
+}
+
+_DosePeriodStats _dosePeriodStats(
+  AppData data,
+  String memberId,
+  int periodDays,
+) {
+  final reminders = _summaryReminders(data, memberId);
+  final now = DateTime.now();
+  var planned = 0;
+  var taken = 0;
+  var consumed = 0.0;
+  final daily = <double>[];
+  for (var offset = periodDays - 1; offset >= 0; offset--) {
+    final day = DateTime(now.year, now.month, now.day - offset);
+    final key = dateKey(day);
+    var dayPlanned = 0;
+    var dayTaken = 0;
+    for (final reminder in reminders) {
+      if (!reminderAppliesOn(reminder, day)) continue;
+      if (dateKey(day) == dateKey(now) &&
+          reminderStatus(reminder, now) == DoseStatus.upcoming) {
+        continue;
+      }
+      dayPlanned++;
+      if (reminder.takenDates.contains(key)) {
+        dayTaken++;
+        consumed += reminder.quantityPerDose;
+      }
+    }
+    planned += dayPlanned;
+    taken += dayTaken;
+    daily.add(dayPlanned == 0 ? 0 : dayTaken / dayPlanned);
+  }
+  return _DosePeriodStats(
+    planned: planned,
+    taken: taken,
+    consumed: consumed,
+    dailyPercent: daily,
+  );
+}
+
+double _consumedMedicineAmount(
+  AppData data,
+  String memberId,
+  String medicineId,
+  int periodDays,
+) {
+  final firstDay = DateTime.now().subtract(Duration(days: periodDays - 1));
+  var consumed = 0.0;
+  for (final reminder in _summaryReminders(data, memberId)) {
+    if (reminder.medId != medicineId) continue;
+    for (final key in reminder.takenDates) {
+      final day = DateTime.tryParse(key);
+      if (day != null && !day.isBefore(DateTime(firstDay.year, firstDay.month, firstDay.day))) {
+        consumed += reminder.quantityPerDose;
+      }
+    }
+  }
+  return consumed;
+}
+
+String _doctorSummary(AppData data, String memberId, int periodDays) {
+  final member = data.members.where((item) => item.id == memberId).firstOrNull;
+  if (member == null) return '';
+  final medicines = _summaryMedicines(data, memberId);
+  final prescriptions = medicines.where((item) => item.prescription).toList();
+  final stats = _dosePeriodStats(data, memberId, periodDays);
+  final buffer = StringBuffer('MEDIBOX – SVEIKATOS SANTRAUKA\n\n')
+    ..writeln('ASMUO: ${member.name}')
+    ..writeln('Gimimo data: ${member.birthDate}')
+    ..writeln('Kraujo grupė: ${member.bloodType}')
+    ..writeln('Alergijos: ${member.allergies}')
+    ..writeln('Sveikatos būklės: ${member.conditions}')
+    ..writeln('Netoleruojami vaistai: ${member.intolerantMedicines}');
+  if (member.id == data.linkedMemberId) {
     buffer.writeln(
-      '• ${medicine.name} ${medicine.strength} – ${medicine.dosage}',
+      'Skubios pagalbos kontaktas: ${data.profile.emergencyName} ${data.profile.emergencyPhone}',
     );
   }
-  final upcomingAppointments =
-      data.appointments.where((item) {
-          final at = DateTime.tryParse('${item.date}T${item.time}');
-          return !item.completed && at != null && at.isAfter(DateTime.now());
-        }).toList()
-        ..sort((a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'));
-  if (upcomingAppointments.isNotEmpty) {
+  buffer
+    ..writeln('\nVARTOJIMO SUVESTINĖ ($periodDays D.)')
+    ..writeln(
+      'Pažymėta išgerta: ${stats.taken} iš ${stats.planned} dozių (${stats.percent} %)',
+    )
+    ..writeln('Pažymėtas suvartotas kiekis: ${quantityLabel(stats.consumed)} vnt.')
+    ..writeln('\nPRISKIRTI VAISTAI');
+  if (medicines.isEmpty) buffer.writeln('• Nėra priskirtų vaistų');
+  for (final medicine in medicines) {
+    buffer.writeln(
+      '• ${medicine.name} ${medicine.strength}'
+      '${medicine.dosage.isEmpty ? '' : ' – ${medicine.dosage}'}',
+    );
+  }
+  buffer.writeln('\nRECEPTINIAI VAISTAI IR RECEPTŲ GALIOJIMAS');
+  if (prescriptions.isEmpty) buffer.writeln('• Duomenų nėra');
+  for (final medicine in prescriptions) {
+    buffer.writeln(
+      '• ${medicine.name} ${medicine.strength} – ${medicine.prescriptionValidUntil.isEmpty ? 'galiojimo data neįvesta' : 'galioja iki ${medicine.prescriptionValidUntil}'}',
+    );
+  }
+  final upcoming = data.appointments.where((item) {
+    final at = DateTime.tryParse('${item.date}T${item.time}');
+    return item.memberId == memberId &&
+        !item.completed &&
+        at != null &&
+        at.isAfter(DateTime.now());
+  }).toList()..sort(
+    (a, b) => '${a.date}${a.time}'.compareTo('${b.date}${b.time}'),
+  );
+  if (upcoming.isNotEmpty) {
     buffer.writeln('\nARTĖJANTYS VIZITAI');
-    for (final item in upcomingAppointments) {
+    for (final item in upcoming) {
       buffer.writeln(
         '• ${item.date} ${item.time} – ${item.title}'
-        '${item.doctor.isEmpty ? '' : ', ${item.doctor}'}',
+        '${item.doctor.isEmpty ? '' : ', ${item.doctor}'}'
+        '${item.facility.isEmpty ? '' : ', ${item.facility}'}',
       );
     }
   }
-  buffer.writeln(
-    '\nSukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}',
-  );
+  buffer
+    ..writeln('\nPastaba: suvartojimas skaičiuojamas tik iš programėlėje pažymėtų dozių.')
+    ..writeln('Sukurta: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}');
   return buffer.toString();
 }
 
-class DoctorSummaryPage extends StatelessWidget {
+class DoctorSummaryPage extends StatefulWidget {
   final AppData data;
   const DoctorSummaryPage({super.key, required this.data});
   @override
+  State<DoctorSummaryPage> createState() => _DoctorSummaryPageState();
+}
+
+class _DoctorSummaryPageState extends State<DoctorSummaryPage> {
+  late String memberId;
+  int periodDays = 30;
+  bool household = false;
+
+  @override
+  void initState() {
+    super.initState();
+    memberId = widget.data.members.any(
+      (member) => member.id == widget.data.linkedMemberId,
+    )
+        ? widget.data.linkedMemberId
+        : widget.data.members.firstOrNull?.id ?? '';
+  }
+
+  @override
   Widget build(BuildContext c) {
-    final summary = _doctorSummary(data);
+    final data = widget.data;
+    final stats = _dosePeriodStats(data, household ? '' : memberId, periodDays);
+    final medicines = _summaryMedicines(data, household ? '' : memberId);
+    final prescriptionMedicines = medicines
+        .where((item) => item.prescription)
+        .toList();
+    final lowStock = medicines
+        .where((item) => item.stock < item.lowStockThreshold)
+        .length;
+    final summary = household ? '' : _doctorSummary(data, memberId, periodDays);
     return Scaffold(
       appBar: AppBar(
-        title: Text(tx(c, 'Santrauka gydytojui', 'Doctor summary')),
+        title: Text(tx(c, 'Sveikatos suvestinė', 'Health summary')),
       ),
       body: ListView(
         padding: const EdgeInsets.all(18),
         children: [
-          card(SelectableText(summary)),
-          FilledButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: summary));
-              if (c.mounted)
-                ScaffoldMessenger.of(c).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      tx(c, 'Santrauka nukopijuota.', 'Summary copied.'),
+          SegmentedButton<bool>(
+            segments: [
+              ButtonSegment(
+                value: false,
+                label: Text(tx(c, 'Asmuo', 'Person')),
+                icon: const Icon(Icons.person_outline),
+              ),
+              ButtonSegment(
+                value: true,
+                label: Text(tx(c, 'Namų ūkis', 'Household')),
+                icon: const Icon(Icons.groups_outlined),
+              ),
+            ],
+            selected: {household},
+            onSelectionChanged: (value) =>
+                setState(() => household = value.first),
+          ),
+          const SizedBox(height: 12),
+          if (!household && data.members.isNotEmpty)
+            DropdownButtonFormField<String>(
+              initialValue: memberId,
+              decoration: InputDecoration(
+                labelText: tx(c, 'Šeimos narys', 'Family member'),
+              ),
+              items: data.members
+                  .map(
+                    (member) => DropdownMenuItem(
+                      value: member.id,
+                      child: Text(member.name),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (value) => setState(() => memberId = value ?? ''),
+            ),
+          const SizedBox(height: 10),
+          SegmentedButton<int>(
+            segments: const [
+              ButtonSegment(value: 7, label: Text('7 d.')),
+              ButtonSegment(value: 30, label: Text('30 d.')),
+              ButtonSegment(value: 90, label: Text('90 d.')),
+            ],
+            selected: {periodDays},
+            onSelectionChanged: (value) =>
+                setState(() => periodDays = value.first),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _summaryMetric(
+                  tx(c, 'Išgerta', 'Taken'),
+                  '${stats.percent} %',
+                  Icons.check_circle_outline,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _summaryMetric(
+                  tx(c, 'Suvartota', 'Consumed'),
+                  '${quantityLabel(stats.consumed)} vnt.',
+                  Icons.medication_outlined,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _summaryMetric(
+                  tx(c, 'Receptiniai', 'Prescription'),
+                  '${prescriptionMedicines.length}',
+                  Icons.receipt_long_outlined,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _summaryMetric(
+                  tx(c, 'Mažas likutis', 'Low stock'),
+                  '$lowStock',
+                  Icons.warning_amber_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx(c, 'Dozių laikymosi kreivė', 'Dose adherence trend'),
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 150,
+                  child: CustomPaint(
+                    painter: _AdherenceChartPainter(stats.dailyPercent),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+                Text(
+                  tx(
+                    c,
+                    'Kreivė paremta programėlėje pažymėtomis dozėmis.',
+                    'The trend uses doses marked in the app.',
+                  ),
+                  style: const TextStyle(fontSize: 12, color: Color(0xff60747f)),
+                ),
+              ],
+            ),
+          ),
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx(
+                    c,
+                    'Suvartojimas pagal vaistą',
+                    'Consumption by medicine',
+                  ),
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                if (medicines.isEmpty)
+                  Text(tx(c, 'Vaistų nepriskirta.', 'No medicines assigned.')),
+                ...medicines.map(
+                  (medicine) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.medication_outlined, color: green),
+                    title: Text('${medicine.name} ${medicine.strength}'.trim()),
+                    subtitle: Text(
+                      tx(
+                        c,
+                        'Likutis: ${quantityLabel(medicine.stock)} vnt.',
+                        'Stock: ${quantityLabel(medicine.stock)}',
+                      ),
+                    ),
+                    trailing: Text(
+                      '${quantityLabel(_consumedMedicineAmount(data, household ? '' : memberId, medicine.id, periodDays))} vnt.',
+                      style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                   ),
-                );
-            },
-            icon: const Icon(Icons.copy),
-            label: Text(tx(c, 'Kopijuoti santrauką', 'Copy summary')),
+                ),
+              ],
+            ),
           ),
+          card(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tx(
+                    c,
+                    'Receptiniai vaistai ir receptų galiojimas',
+                    'Prescription medicines and validity',
+                  ),
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                if (prescriptionMedicines.isEmpty)
+                  Text(tx(c, 'Duomenų nėra.', 'No data.')),
+                ...prescriptionMedicines.map(
+                  (medicine) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.receipt_long_outlined, color: green),
+                    title: Text('${medicine.name} ${medicine.strength}'.trim()),
+                    subtitle: Text(
+                      medicine.prescriptionValidUntil.isEmpty
+                          ? tx(
+                              c,
+                              'Recepto galiojimo data neįvesta',
+                              'Prescription validity not entered',
+                            )
+                          : tx(
+                              c,
+                              'Receptas galioja iki ${medicine.prescriptionValidUntil}',
+                              'Prescription valid until ${medicine.prescriptionValidUntil}',
+                            ),
+                  ),
+                ),
+                ),
+              ],
+            ),
+          ),
+          if (household) ...[
+            card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tx(c, 'Namų ūkio situacija', 'Household situation'),
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    tx(
+                      c,
+                      '${data.members.length} nariai • ${medicines.length} vaistai • ${stats.taken}/${stats.planned} išgertų dozių',
+                      '${data.members.length} members • ${medicines.length} medicines • ${stats.taken}/${stats.planned} doses taken',
+                    ),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const Divider(),
+                  ...data.members.map((member) {
+                    final memberStats = _dosePeriodStats(
+                      data,
+                      member.id,
+                      periodDays,
+                    );
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Text(
+                        _memberEmoji(member.gender, member.ageGroup),
+                        style: const TextStyle(fontSize: 26),
+                      ),
+                      title: Text(member.name),
+                      subtitle: Text(
+                        '${memberStats.taken}/${memberStats.planned} ${tx(c, 'dozių', 'doses')}',
+                      ),
+                      trailing: Text(
+                        '${memberStats.percent} %',
+                        style: const TextStyle(
+                          color: green,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ] else if (summary.isNotEmpty) ...[
+            card(SelectableText(summary)),
+            FilledButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: summary));
+                if (c.mounted) {
+                  ScaffoldMessenger.of(c).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        tx(c, 'Santrauka nukopijuota.', 'Summary copied.'),
+                      ),
+                    ),
+                  );
+                }
+              },
+              icon: const Icon(Icons.copy),
+              label: Text(tx(c, 'Kopijuoti santrauką', 'Copy summary')),
+            ),
+          ],
         ],
       ),
     );
   }
+}
+
+Widget _summaryMetric(String label, String value, IconData icon) => Card(
+  child: Padding(
+    padding: const EdgeInsets.all(12),
+    child: Column(
+      children: [
+        Icon(icon, color: green),
+        const SizedBox(height: 6),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w900,
+            color: navy,
+          ),
+        ),
+        Text(label, textAlign: TextAlign.center),
+      ],
+    ),
+  ),
+);
+
+class _AdherenceChartPainter extends CustomPainter {
+  final List<double> values;
+  const _AdherenceChartPainter(this.values);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final grid = Paint()
+      ..color = const Color(0xffdce8e5)
+      ..strokeWidth = 1;
+    for (var i = 0; i <= 4; i++) {
+      final y = size.height * i / 4;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
+    }
+    if (values.isEmpty) return;
+    final path = Path();
+    for (var i = 0; i < values.length; i++) {
+      final x = values.length == 1 ? 0.0 : size.width * i / (values.length - 1);
+      final y = size.height * (1 - values[i].clamp(0, 1));
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = green
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke,
+    );
+  }
+  @override
+  bool shouldRepaint(covariant _AdherenceChartPainter oldDelegate) =>
+      oldDelegate.values != values;
 }
 
 class EmergencyInfoPage extends StatelessWidget {
@@ -7449,51 +8228,36 @@ class ProfilePage extends StatefulWidget {
 
 class _ProfilePage extends State<ProfilePage> {
   late final UserProfile p;
-  late final Member? linkedMember;
-  late final List<TextEditingController> ctrls;
+  late final TextEditingController phone;
+  late final TextEditingController email;
+  late final TextEditingController emergencyName;
+  late final TextEditingController emergencyPhone;
+
+  Member? get linkedMember => widget.data.members
+      .where((member) => member.id == widget.data.linkedMemberId)
+      .firstOrNull;
 
   @override
   void initState() {
     super.initState();
     p = widget.data.profile;
-    linkedMember = widget.data.members
-        .where((member) => member.id == widget.data.linkedMemberId)
-        .firstOrNull;
-    ctrls = [
-      linkedMember?.name ?? p.name,
-      linkedMember?.birthDate ?? p.birthDate,
-      p.phone,
-      p.email,
-      linkedMember?.bloodType ?? p.bloodType,
-      linkedMember?.allergies ?? p.allergies,
-      linkedMember?.conditions ?? p.conditions,
-      linkedMember?.intolerantMedicines ?? p.medications,
-      p.emergencyName,
-      p.emergencyPhone,
-      linkedMember?.notes ?? p.notes,
-    ].map((value) => TextEditingController(text: value)).toList();
+    phone = TextEditingController(text: p.phone);
+    email = TextEditingController(text: p.email);
+    emergencyName = TextEditingController(text: p.emergencyName);
+    emergencyPhone = TextEditingController(text: p.emergencyPhone);
   }
   @override
   void dispose() {
-    for (final x in ctrls) x.dispose();
+    phone.dispose();
+    email.dispose();
+    emergencyName.dispose();
+    emergencyPhone.dispose();
     super.dispose();
   }
 
   @override
   Widget build(c) {
-    final labels = [
-      ['Vardas', 'Name'],
-      ['Gimimo data', 'Date of birth'],
-      ['Telefonas', 'Phone'],
-      ['El. paštas', 'Email'],
-      ['Kraujo grupė', 'Blood type'],
-      ['Alergijos', 'Allergies'],
-      ['Lėtinės būklės', 'Medical conditions'],
-      ['Nuolat vartojami vaistai', 'Regular medications'],
-      ['Skubios pagalbos kontaktas', 'Emergency contact'],
-      ['Kontakto telefonas', 'Emergency phone'],
-      ['Pastabos', 'Notes'],
-    ];
+    final member = linkedMember;
     return Scaffold(
       appBar: AppBar(title: Text(tx(c, 'Mano profilis', 'My profile'))),
       body: ListView(
@@ -7504,49 +8268,89 @@ class _ProfilePage extends State<ProfilePage> {
           MediaQuery.paddingOf(c).bottom + 36,
         ),
         children: [
-          ...List.generate(ctrls.length, (i) {
-            if (i == 1) {
-              return dateField(
-                c,
-                ctrls[i],
-                'Gimimo data YYYY-MM-DD',
-                'Date of birth YYYY-MM-DD',
-              );
-            }
-            return field(
-              c,
-              ctrls[i],
-              labels[i][0],
-              labels[i][1],
-              lines: i >= 5 ? 2 : 1,
-            );
-          }),
+          Text(
+            tx(c, 'Paskyra ir kontaktai', 'Account and contacts'),
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          if ((CloudSyncService.instance.user?.email ?? '').isNotEmpty)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.account_circle_outlined, color: green),
+                title: Text(accountDisplayName(widget.data)),
+                subtitle: Text(CloudSyncService.instance.user!.email!),
+              ),
+            ),
+          field(c, phone, 'Telefonas', 'Phone'),
+          field(c, email, 'Kontaktinis el. paštas', 'Contact email'),
+          const SizedBox(height: 14),
+          Text(
+            tx(c, 'Mano sveikatos profilis', 'My health profile'),
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: mint,
+                child: Text(
+                  member == null
+                      ? '👤'
+                      : _memberEmoji(member.gender, member.ageGroup),
+                ),
+              ),
+              title: Text(
+                member?.name ?? tx(c, 'Profilis nesusietas', 'Profile not linked'),
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              subtitle: Text(
+                member == null
+                    ? tx(
+                        c,
+                        'Susiekite paskyrą su šeimos nariu.',
+                        'Link the account to a family member.',
+                      )
+                    : [
+                        if (member.birthDate.isNotEmpty) member.birthDate,
+                        if (member.bloodType.isNotEmpty)
+                          '${tx(c, 'Kraujo grupė', 'Blood type')}: ${member.bloodType}',
+                        if (member.allergies.isNotEmpty)
+                          '${tx(c, 'Alergijos', 'Allergies')}: ${member.allergies}',
+                      ].join('\n'),
+              ),
+              isThreeLine: member != null,
+              trailing: const Icon(Icons.edit_outlined),
+              onTap: member == null
+                  ? null
+                  : () async {
+                      await Navigator.push(
+                        c,
+                        MaterialPageRoute(
+                          builder: (_) => MemberEditor(
+                            data: widget.data,
+                            member: member,
+                            onChanged: widget.onChanged,
+                          ),
+                        ),
+                      );
+                      if (mounted) setState(() {});
+                    },
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            tx(c, 'Skubios pagalbos kontaktas', 'Emergency contact'),
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          field(c, emergencyName, 'Vardas ir pavardė', 'Full name'),
+          field(c, emergencyPhone, 'Telefono numeris', 'Phone number'),
           FilledButton(
             onPressed: () {
-              p.name = ctrls[0].text.trim();
-              p.birthDate = ctrls[1].text.trim();
-              p.phone = ctrls[2].text.trim();
-              p.email = ctrls[3].text.trim();
-              p.bloodType = ctrls[4].text.trim();
-              p.allergies = ctrls[5].text.trim();
-              p.conditions = ctrls[6].text.trim();
-              p.medications = ctrls[7].text.trim();
-              p.emergencyName = ctrls[8].text.trim();
-              p.emergencyPhone = ctrls[9].text.trim();
-              p.notes = ctrls[10].text.trim();
-              final own = widget.data.members.where(
-                (member) => member.id == widget.data.linkedMemberId,
-              );
-              if (own.isNotEmpty) {
-                own.first
-                  ..name = p.name
-                  ..birthDate = p.birthDate
-                  ..bloodType = p.bloodType
-                  ..allergies = p.allergies
-                  ..conditions = p.conditions
-                  ..intolerantMedicines = p.medications
-                  ..notes = p.notes;
-              }
+              p.phone = phone.text.trim();
+              p.email = email.text.trim();
+              p.emergencyName = emergencyName.text.trim();
+              p.emergencyPhone = emergencyPhone.text.trim();
               widget.onChanged();
               ScaffoldMessenger.of(c).showSnackBar(
                 SnackBar(
