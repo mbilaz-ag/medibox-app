@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function household(id) {
+      return get(/databases/$(database)/documents/households/$(id)).data;
+    }
+    function isHouseholdMember(id) {
+      return signedIn() && request.auth.uid in household(id).memberUids;
+    }
+    function validJoin(id) {
+      return signedIn()
+        && !(request.auth.uid in resource.data.memberUids)
+        && request.auth.uid in request.resource.data.memberUids
+        && request.resource.data.memberUids.size() == resource.data.memberUids.size() + 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'accounts'])
+        && request.resource.data.inviteCode == resource.data.inviteCode
+        && get(/databases/$(database)/documents/householdInvites/$(resource.data.inviteCode)).data.active == true
+        && get(/databases/$(database)/documents/householdInvites/$(resource.data.inviteCode)).data.householdId == id
+        && get(/databases/$(database)/documents/householdInvites/$(resource.data.inviteCode)).data.ownerUid == resource.data.ownerUid;
+    }
+    function validLeave() {
+      return signedIn()
+        && request.auth.uid in resource.data.memberUids
+        && !(request.auth.uid in request.resource.data.memberUids)
+        && resource.data.ownerUid != request.auth.uid
+        && request.resource.data.memberUids.size() == resource.data.memberUids.size() - 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'accounts']);
+    }
+
+    match /users/{userId}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    match /households/{householdpk} {
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.auth.uid in request.resource.data.memberUids;
+      allow read: if signedIn() && request.auth.uid in resource.data.memberUids;
+      allow update: if (signedIn() && resource.data.ownerUid == request.auth.uid)
+                    || validJoin(householdpk)
+                    || validLeave();
+      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      match /data/{document} {
+        allow read, write: if isHouseholdMember(householdpk);
+      }
+    }
+    match /householdInvites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && get(/databases/$(database)/documents/households/$(request.resource.data.householdId)).data.ownerUid == request.auth.uid;
+      allow update, delete: if signedIn()
+                            && resource.data.ownerUid == request.auth.uid;
+    }
+  }
+}

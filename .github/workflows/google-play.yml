@@ -38,15 +38,15 @@ jobs:
           MEDIBOX_KEYSTORE_PASSWORD: ${{ secrets.MEDIBOX_KEYSTORE_PASSWORD }}
         run: |
           flutter build appbundle --release
-          cp build/app/outputs/bundle/release/app-release.aab MediBox-v0.19.0-build43.aab
+          cp build/app/outputs/bundle/release/app-release.aab MediBox-v0.20.0-build44.aab
       - name: Verify AAB signature and target API
         run: |
-          jarsigner -verify -verbose -certs MediBox-v0.19.0-build43.aab
+          jarsigner -verify -verbose -certs MediBox-v0.20.0-build44.aab
           grep -q 'targetSdk = 36' android/app/build.gradle.kts
       - uses: actions/upload-artifact@v4
         with:
           name: MediBox-Google-Play-AAB
-          path: MediBox-v0.19.0-build43.aab
+          path: MediBox-v0.20.0-build44.aab
           if-no-files-found: error
       - name: Remove temporary signing key
         if: always()

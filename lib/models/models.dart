@@ -40,6 +40,8 @@ class Med {
       treatmentUntil,
       leaflet,
       imagePath,
+      cloudImagePath,
+      cloudImageVersion,
       manufacturer,
       dosageForm,
       batchNumber,
@@ -90,6 +92,8 @@ class Med {
     this.prescription = false,
     this.leaflet = '',
     this.imagePath = '',
+    this.cloudImagePath = '',
+    this.cloudImageVersion = '',
     this.manufacturer = '',
     this.dosageForm = '',
     this.batchNumber = '',
@@ -154,6 +158,8 @@ class Med {
     'prescription': prescription,
     'leaflet': leaflet,
     'imagePath': imagePath,
+    'cloudImagePath': cloudImagePath,
+    'cloudImageVersion': cloudImageVersion,
     'manufacturer': manufacturer,
     'dosageForm': dosageForm,
     'batchNumber': batchNumber,
@@ -202,6 +208,8 @@ class Med {
     prescription: j['prescription'] == true,
     leaflet: '${j['leaflet'] ?? ''}',
     imagePath: '${j['imagePath'] ?? ''}',
+    cloudImagePath: '${j['cloudImagePath'] ?? ''}',
+    cloudImageVersion: '${j['cloudImageVersion'] ?? ''}',
     manufacturer: '${j['manufacturer'] ?? ''}',
     dosageForm: '${j['dosageForm'] ?? ''}',
     batchNumber: '${j['batchNumber'] ?? ''}',
@@ -252,6 +260,8 @@ class Member {
       ageGroup,
       birthDate,
       imagePath,
+      cloudImagePath,
+      cloudImageVersion,
       bloodType,
       height,
       weight,
@@ -271,6 +281,8 @@ class Member {
     this.ageGroup = 'adult',
     this.birthDate = '',
     this.imagePath = '',
+    this.cloudImagePath = '',
+    this.cloudImageVersion = '',
     this.bloodType = '',
     this.height = '',
     this.weight = '',
@@ -291,6 +303,8 @@ class Member {
     'ageGroup': ageGroup,
     'birthDate': birthDate,
     'imagePath': imagePath,
+    'cloudImagePath': cloudImagePath,
+    'cloudImageVersion': cloudImageVersion,
     'bloodType': bloodType,
     'height': height,
     'weight': weight,
@@ -312,6 +326,8 @@ class Member {
         '${j['ageGroup'] ?? ('${j['relation']}' == 'child' ? 'child' : 'adult')}',
     birthDate: '${j['birthDate'] ?? ''}',
     imagePath: '${j['imagePath'] ?? ''}',
+    cloudImagePath: '${j['cloudImagePath'] ?? ''}',
+    cloudImageVersion: '${j['cloudImageVersion'] ?? ''}',
     bloodType: '${j['bloodType'] ?? ''}',
     height: '${j['height'] ?? ''}',
     weight: '${j['weight'] ?? ''}',
@@ -561,6 +577,10 @@ class AppData {
   bool medicationNotificationsGranted;
   bool appointmentNotificationsGranted;
   bool cameraPermissionAsked;
+  String householdId;
+  String householdName;
+  String householdRole;
+  String linkedMemberId;
   AppData({
     required this.meds,
     required this.members,
@@ -578,6 +598,10 @@ class AppData {
     this.medicationNotificationsGranted = false,
     this.appointmentNotificationsGranted = false,
     this.cameraPermissionAsked = false,
+    this.householdId = '',
+    this.householdName = '',
+    this.householdRole = '',
+    this.linkedMemberId = '',
   }) : shopping = shopping ?? [],
        appointments = appointments ?? [];
 }

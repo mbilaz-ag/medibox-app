@@ -12,7 +12,12 @@
           "package_name": "lt.medibox.medibox"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "281777960665-b2nigi9i4lfsi6s2gjegvidmnbrhv7mm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyCS4_FhipWdyMl5VtpG-3fKhS-toPpKb6Y"
@@ -20,7 +25,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "281777960665-b2nigi9i4lfsi6s2gjegvidmnbrhv7mm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

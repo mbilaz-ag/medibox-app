@@ -23,6 +23,10 @@ class Store {
       'medibox_medication_notifications_consent_v2';
   static const _appointmentNotifications =
       'medibox_appointment_notifications_consent_v2';
+  static const _householdId = 'medibox_household_id_v1';
+  static const _householdName = 'medibox_household_name_v1';
+  static const _householdRole = 'medibox_household_role_v1';
+  static const _linkedMemberId = 'medibox_linked_member_id_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
     List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
@@ -71,6 +75,10 @@ class Store {
       appointmentNotificationsGranted:
           p.getBool(_appointmentNotifications) ?? false,
       cameraPermissionAsked: p.getBool(_cameraPermissionAsked) ?? false,
+      householdId: p.getString(_householdId) ?? '',
+      householdName: p.getString(_householdName) ?? '',
+      householdRole: p.getString(_householdRole) ?? '',
+      linkedMemberId: p.getString(_linkedMemberId) ?? '',
     );
   }
 
@@ -111,7 +119,82 @@ class Store {
         d.appointmentNotificationsGranted,
       ),
       p.setBool(_cameraPermissionAsked, d.cameraPermissionAsked),
+      p.setString(_householdId, d.householdId),
+      p.setString(_householdName, d.householdName),
+      p.setString(_householdRole, d.householdRole),
+      p.setString(_linkedMemberId, d.linkedMemberId),
     ]);
+  }
+
+  /// Only user-created content is synchronized. Device permissions, app lock
+  /// and language remain local because they can differ between phones.
+  static Map<String, dynamic> cloudPayload(AppData data) => {
+    'schemaVersion': 1,
+    'meds': data.meds.map((item) {
+      final json = item.toJson();
+      json['imagePath'] = '';
+      json['cloudImagePath'] = '';
+      json['cloudImageVersion'] = '';
+      return json;
+    }).toList(),
+    'members': data.members.map((item) {
+      final json = item.toJson();
+      json['imagePath'] = '';
+      json['cloudImagePath'] = '';
+      json['cloudImageVersion'] = '';
+      return json;
+    }).toList(),
+    'reminders': data.reminders.map((item) => item.toJson()).toList(),
+    'shopping': data.shopping.map((item) => item.toJson()).toList(),
+    'appointments': data.appointments.map((item) => item.toJson()).toList(),
+    'profile': data.profile.toJson(),
+  };
+
+  static void applyCloudPayload(AppData data, Map<String, dynamic> payload) {
+    final medicineImages = {
+      for (final item in data.meds) item.id: item.imagePath,
+    };
+    final memberImages = {
+      for (final item in data.members) item.id: item.imagePath,
+    };
+    List<T> readList<T>(
+      String key,
+      T Function(Map<String, dynamic>) parse,
+    ) => (payload[key] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => parse(Map<String, dynamic>.from(item)))
+        .toList();
+
+    final medicines = readList('meds', Med.fromJson);
+    for (final item in medicines) {
+      item.imagePath = medicineImages[item.id] ?? '';
+    }
+    final members = readList('members', Member.fromJson);
+    for (final item in members) {
+      item.imagePath = memberImages[item.id] ?? '';
+    }
+
+    data
+      ..meds = medicines
+      ..members = members
+      ..reminders = readList('reminders', Reminder.fromJson)
+      ..shopping = readList('shopping', ShoppingItem.fromJson)
+      ..appointments = readList('appointments', HealthAppointment.fromJson);
+    final profile = payload['profile'];
+    if (profile is Map) {
+      data.profile = UserProfile.fromJson(Map<String, dynamic>.from(profile));
+    }
+  }
+
+  static bool containsPersonalContent(AppData data) {
+    if (data.members.isNotEmpty ||
+        data.reminders.isNotEmpty ||
+        data.shopping.isNotEmpty ||
+        data.appointments.isNotEmpty) {
+      return true;
+    }
+    final seedIds = seed.map((item) => item.id).toSet();
+    return data.meds.any((item) => !seedIds.contains(item.id));
   }
 
   static final seed = <Med>[
