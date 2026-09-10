@@ -66,6 +66,17 @@ void main() {
     expect(reminderStatus(value, DateTime(2026, 9, 7, 8, 31)), DoseStatus.late);
   });
 
+  test(
+    'unconfirmed dose repeats every thirty minutes for twenty-four hours',
+    () {
+      final due = DateTime(2026, 9, 7, 8);
+      final repeats = unconfirmedReminderTimes(due);
+      expect(repeats, hasLength(48));
+      expect(repeats.first, DateTime(2026, 9, 7, 8, 30));
+      expect(repeats.last, DateTime(2026, 9, 8, 8));
+    },
+  );
+
   test('uses the package with the nearest expiry first', () {
     final value = reminder();
     final app = data(value);

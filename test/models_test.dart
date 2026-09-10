@@ -2,6 +2,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:medibox/models/models.dart';
 
 void main() {
+  test('unconfirmed medicine reminder repetition is enabled by default', () {
+    final data = AppData(
+      meds: [],
+      members: [],
+      reminders: [],
+      profile: UserProfile(),
+    );
+    expect(data.repeatUnconfirmedMedicationReminders, isTrue);
+  });
+
   test('member and reminder survive JSON round trip', () {
     final member = Member(
       id: 'm1',
