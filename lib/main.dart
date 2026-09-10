@@ -134,6 +134,7 @@ Future<bool> _showPermissionsCenter(
 }) async {
   var camera = data.cameraConsentGranted;
   var medicineNotifications = data.medicationNotificationsGranted;
+  var repeatUnconfirmed = data.repeatUnconfirmedMedicationReminders;
   var appointmentNotifications = data.appointmentNotificationsGranted;
   var ai = data.aiConsentGranted;
   final confirmed = await showDialog<bool>(
@@ -167,6 +168,24 @@ Future<bool> _showPermissionsCenter(
                 title: Text(tx(dialogContext, 'Vaistų priminimai', 'Medicine reminders')),
                 subtitle: Text(tx(dialogContext, 'Gauti pranešimus apie vaistą, dozę ir vartojimo laiką', 'Receive medicine, dose and schedule notifications')),
                 onChanged: (value) => setDialogState(() => medicineNotifications = value),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.notification_important_outlined),
+                value: medicineNotifications && repeatUnconfirmed,
+                title: Text(tx(
+                  dialogContext,
+                  'Kartoti nepatvirtintą priminimą',
+                  'Repeat unconfirmed reminder',
+                )),
+                subtitle: Text(tx(
+                  dialogContext,
+                  'Jei nepasirinktas joks veiksmas, kartoti kas 30 min. iki reakcijos (ne ilgiau kaip 24 val.)',
+                  'If no action is selected, repeat every 30 min. until you respond (up to 24 hours)',
+                )),
+                onChanged: medicineNotifications
+                    ? (value) => setDialogState(() => repeatUnconfirmed = value)
+                    : null,
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -209,6 +228,7 @@ Future<bool> _showPermissionsCenter(
     ..aiConsentGranted = ai
     ..cameraConsentGranted = camera
     ..medicationNotificationsGranted = medicineNotifications
+    ..repeatUnconfirmedMedicationReminders = repeatUnconfirmed
     ..appointmentNotificationsGranted = appointmentNotifications;
 
   if (camera) {
