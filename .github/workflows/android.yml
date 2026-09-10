@@ -3,7 +3,7 @@ name: Build MediBox Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feature/reminder-repeat-30]
   pull_request:
 
 permissions:
