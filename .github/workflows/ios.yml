@@ -32,6 +32,12 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Read application version
+        id: version
+        run: |
+          version=$(sed -n 's/^version: \([^+]*\).*/\1/p' pubspec.yaml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ipa=MediBox-v${version}-unsigned.ipa" >> "$GITHUB_OUTPUT"
       - name: Verify iOS compilation without signing
         run: flutter build ios --release --no-codesign
       - name: Package unsigned IPA for free personal signing
@@ -39,11 +45,11 @@ jobs:
           mkdir -p build/ios/free-install/Payload
           cp -R build/ios/iphoneos/Runner.app build/ios/free-install/Payload/Runner.app
           cd build/ios/free-install
-          zip -qry "${GITHUB_WORKSPACE}/MediBox-v0.20.1-unsigned.ipa" Payload
-          unzip -t "${GITHUB_WORKSPACE}/MediBox-v0.20.1-unsigned.ipa"
+          zip -qry "${GITHUB_WORKSPACE}/${{ steps.version.outputs.ipa }}" Payload
+          unzip -t "${GITHUB_WORKSPACE}/${{ steps.version.outputs.ipa }}"
       - uses: actions/upload-artifact@v4
         with:
           name: MediBox-iOS-free-install
-          path: MediBox-v0.20.1-unsigned.ipa
+          path: ${{ steps.version.outputs.ipa }}
           if-no-files-found: error
           retention-days: 30

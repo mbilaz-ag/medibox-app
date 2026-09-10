@@ -1,4 +1,5 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
@@ -50,32 +51,52 @@ class ReminderNotifications {
     _initialized = true;
   }
 
-  static Future<void> requestPermissions() async {
-    if (!_initialized) return;
+  static Future<bool> requestPermissions() async {
+    if (!_initialized) return false;
     final android = _plugin
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
         >();
-    await android?.requestNotificationsPermission();
-    await android?.requestExactAlarmsPermission();
-    await _plugin
+    final androidGranted = android == null
+        ? null
+        : await android.requestNotificationsPermission();
+    if (androidGranted != false) {
+      await android?.requestExactAlarmsPermission();
+    }
+    final iosGranted = await _plugin
         .resolvePlatformSpecificImplementation<
           IOSFlutterLocalNotificationsPlugin
         >()
         ?.requestPermissions(alert: true, badge: true, sound: true);
+    return androidGranted ?? iosGranted ?? false;
   }
 
-  static Future<void> showTest() async {
+  static Future<bool> notificationsEnabled() async {
+    if (!_initialized) return false;
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (android != null) return await android.areNotificationsEnabled() ?? false;
+    return Permission.notification.isGranted;
+  }
+
+  static Future<void> showTest(AppData data) async {
     if (!_initialized) return;
+    final english = data.language == 'en';
     await _plugin.show(
       2147483000,
-      'MediBox priminimas veikia',
-      'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.',
-      const NotificationDetails(
+      english ? 'MediBox reminders work' : 'MediBox priminimas veikia',
+      english
+          ? 'Notifications are enabled. Scheduled reminders will appear at the selected time.'
+          : 'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.',
+      NotificationDetails(
         android: AndroidNotificationDetails(
           'medicine_reminders',
-          'Vaistų priminimai',
-          channelDescription: 'Priminimai apie suplanuotą vaistų vartojimą',
+          english ? 'Medicine reminders' : 'Vaistų priminimai',
+          channelDescription: english
+              ? 'Reminders for scheduled medicines'
+              : 'Priminimai apie suplanuotą vaistų vartojimą',
           importance: Importance.max,
           priority: Priority.high,
         ),
@@ -128,28 +149,34 @@ class ReminderNotifications {
           .where((x) => x.id == appointment.memberId)
           .map((x) => x.name)
           .firstOrNull;
-        await _plugin.zonedSchedule(
-        ('appointment-${appointment.id}').hashCode & 0x7fffffff,
-        'MediBox • artėja vizitas: ${appointment.title}',
-        [
-          if (member != null) member,
-          '${appointment.date} ${appointment.time}',
-          if (appointment.doctor.isNotEmpty) appointment.doctor,
-          if (appointment.facility.isNotEmpty) appointment.facility,
-        ].join(' • '),
-        tz.TZDateTime.from(notifyAt, tz.local),
-        const NotificationDetails(
-          android: AndroidNotificationDetails(
-            'health_appointments',
-            'Gydytojų vizitai',
-            channelDescription: 'Priminimai apie suplanuotus vizitus',
-            importance: Importance.high,
-            priority: Priority.high,
-          ),
-          iOS: DarwinNotificationDetails(),
-        ),
-        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-        );
+        Future<void> scheduleAppointment(AndroidScheduleMode mode) =>
+            _plugin.zonedSchedule(
+              ('appointment-${appointment.id}').hashCode & 0x7fffffff,
+              'MediBox • artėja vizitas: ${appointment.title}',
+              [
+                if (member != null) member,
+                '${appointment.date} ${appointment.time}',
+                if (appointment.doctor.isNotEmpty) appointment.doctor,
+                if (appointment.facility.isNotEmpty) appointment.facility,
+              ].join(' • '),
+              tz.TZDateTime.from(notifyAt, tz.local),
+              const NotificationDetails(
+                android: AndroidNotificationDetails(
+                  'health_appointments',
+                  'Gydytojų vizitai',
+                  channelDescription: 'Priminimai apie suplanuotus vizitus',
+                  importance: Importance.high,
+                  priority: Priority.high,
+                ),
+                iOS: DarwinNotificationDetails(),
+              ),
+              androidScheduleMode: mode,
+            );
+        try {
+          await scheduleAppointment(AndroidScheduleMode.exactAllowWhileIdle);
+        } catch (_) {
+          await scheduleAppointment(AndroidScheduleMode.inexactAllowWhileIdle);
+        }
       }
     }
     if (data.medicationNotificationsGranted) {
@@ -251,39 +278,63 @@ class ReminderNotifications {
     required bool followUp,
     bool snoozed = false,
   }) async {
+    final english = data.language == 'en';
+    final unit = english
+        ? switch (reminder.doseUnit) {
+            'vnt.' => 'unit',
+            'tabletė' => 'tablet',
+            'kapsulė' => 'capsule',
+            'dozė' => 'dose',
+            _ => reminder.doseUnit,
+          }
+        : reminder.doseUnit;
     final member = data.members
         .where((x) => x.id == reminder.memberId)
         .map((x) => x.name)
         .firstOrNull;
     final dose = reminder.dose.isEmpty
-        ? '${reminder.quantityPerDose} ${reminder.doseUnit}'
+        ? '${reminder.quantityPerDose} $unit'
         : reminder.dose;
     final body = [
-      if (followUp) 'MediBox: ankstesnė dozė dar nepažymėta kaip išgerta.',
-      'Vaistas: ${reminder.title}',
-      'Išgerti: $dose',
-      if (member != null) 'Kam: $member',
-      if (reminder.instructions.isNotEmpty) 'Pastaba: ${reminder.instructions}',
+      if (followUp)
+        english
+            ? 'MediBox: the previous dose is not marked as taken.'
+            : 'MediBox: ankstesnė dozė dar nepažymėta kaip išgerta.',
+      '${english ? 'Medicine' : 'Vaistas'}: ${reminder.title}',
+      '${english ? 'Take' : 'Išgerti'}: $dose',
+      if (member != null) '${english ? 'For' : 'Kam'}: $member',
+      if (reminder.instructions.isNotEmpty)
+        '${english ? 'Note' : 'Pastaba'}: ${reminder.instructions}',
     ].join('\n');
     final occurrence = followUp
         ? when.subtract(const Duration(minutes: 30))
         : when;
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
-    const details = NotificationDetails(
+    final details = NotificationDetails(
         android: AndroidNotificationDetails(
           'medicine_reminders',
-          'Vaistų priminimai',
-          channelDescription: 'Priminimai apie suplanuotą vaistų vartojimą',
+          english ? 'Medicine reminders' : 'Vaistų priminimai',
+          channelDescription: english
+              ? 'Reminders for scheduled medicines'
+              : 'Priminimai apie suplanuotą vaistų vartojimą',
           importance: Importance.max,
           priority: Priority.high,
           actions: [
-            AndroidNotificationAction('taken', 'Išgėriau', showsUserInterface: false),
             AndroidNotificationAction(
-              'snooze',
-              'Priminti po 10 min.',
+              'taken',
+              english ? 'Taken' : 'Išgėriau',
               showsUserInterface: false,
             ),
-            AndroidNotificationAction('skip', 'Praleisti', showsUserInterface: false),
+            AndroidNotificationAction(
+              'snooze',
+              english ? 'Remind in 10 min.' : 'Priminti po 10 min.',
+              showsUserInterface: false,
+            ),
+            AndroidNotificationAction(
+              'skip',
+              english ? 'Skip' : 'Praleisti',
+              showsUserInterface: false,
+            ),
           ],
         ),
         iOS: DarwinNotificationDetails(categoryIdentifier: 'medicine'),
@@ -291,7 +342,11 @@ class ReminderNotifications {
     Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
           _id(reminder.id, occurrence, followUp),
           snoozed
-              ? 'MediBox • priminimas po 10 min.'
+              ? english
+                    ? 'MediBox • reminder after 10 min.'
+                    : 'MediBox • priminimas po 10 min.'
+              : english
+              ? 'MediBox • medicine reminder'
               : 'MediBox • vaistų priminimas',
           body,
           tz.TZDateTime.from(when, tz.local),
@@ -306,7 +361,11 @@ class ReminderNotifications {
         await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
       }
     } else {
-      await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
+      try {
+        await schedule(AndroidScheduleMode.exactAllowWhileIdle);
+      } catch (_) {
+        await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
+      }
     }
   }
 

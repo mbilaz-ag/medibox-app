@@ -81,6 +81,29 @@ void main() {
     expect(target.householdId, 'local-house');
   });
 
+  test('household payload excludes the account owner profile', () {
+    final payload = Store.cloudPayload(data(), includeProfile: false);
+
+    expect(payload.containsKey('profile'), isFalse);
+    expect((payload['members'] as List).single['name'], 'Andrius');
+    expect((payload['meds'] as List).single['name'], 'Vaistas');
+  });
+
+  test('household refresh does not replace the signed-in account profile', () {
+    final source = data();
+    final target = data();
+    target.profile = UserProfile(name: 'Naujas narys');
+
+    Store.applyCloudPayload(
+      target,
+      Store.cloudPayload(source),
+      applyProfile: false,
+    );
+
+    expect(target.profile.name, 'Naujas narys');
+    expect(target.members.single.name, 'Andrius');
+  });
+
   test('cloud refresh keeps photos local to this device', () {
     final source = data();
     final target = data();
