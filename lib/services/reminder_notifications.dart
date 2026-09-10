@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -23,6 +25,10 @@ class ReminderNotifications {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static ReminderActionHandler? onAction;
   static bool _initialized = false;
+  static const _maxRepeatIndex = 48;
+
+  // Leave room for appointments, medicine deadlines and test notifications.
+  static int get _medicationScheduleLimit => Platform.isAndroid ? 180 : 48;
 
   static Future<void> initialize() async {
     tz_data.initializeTimeZones();
@@ -109,32 +115,51 @@ class ReminderNotifications {
     if (!_initialized) return;
     await _plugin.cancelAll();
     final now = DateTime.now();
-    var scheduledCount = 0;
     if (data.medicationNotificationsGranted) {
-      reminders:
+      final scheduledDoses = <_ScheduledDose>[];
       for (final reminder in data.reminders.where((x) => x.enabled)) {
-        for (var offset = 0; offset < 14; offset++) {
-          if (scheduledCount >= 60) break reminders;
+        final firstOffset = data.repeatUnconfirmedMedicationReminders ? -1 : 0;
+        for (var offset = firstOffset; offset < 14; offset++) {
           final day = DateTime(now.year, now.month, now.day + offset);
           if (!reminderAppliesOn(reminder, day)) continue;
           final due = reminderDateTime(reminder, day);
-          if (due == null || !due.isAfter(now)) continue;
+          if (due == null) continue;
           final key = _dateKey(day);
           if (reminder.takenDates.contains(key) ||
               reminder.skippedDates.contains(key)) {
             continue;
           }
-          await _schedule(reminder, data, due, followUp: false);
-          scheduledCount++;
-          if (scheduledCount >= 60) break reminders;
-          await _schedule(
-            reminder,
-            data,
-            due.add(const Duration(minutes: 30)),
-            followUp: true,
-          );
-          scheduledCount++;
+          if (due.isAfter(now)) {
+            scheduledDoses.add(
+              _ScheduledDose(reminder, due, due, repeatIndex: 0),
+            );
+          }
+          if (data.repeatUnconfirmedMedicationReminders) {
+            final repeats = unconfirmedReminderTimes(due);
+            for (var index = 0; index < repeats.length; index++) {
+              final when = repeats[index];
+              if (!when.isAfter(now)) continue;
+              scheduledDoses.add(
+                _ScheduledDose(
+                  reminder,
+                  due,
+                  when,
+                  repeatIndex: index + 1,
+                ),
+              );
+            }
+          }
         }
+      }
+      scheduledDoses.sort((a, b) => a.when.compareTo(b.when));
+      for (final scheduled in scheduledDoses.take(_medicationScheduleLimit)) {
+        await _schedule(
+          scheduled.reminder,
+          data,
+          scheduled.when,
+          occurrence: scheduled.occurrence,
+          repeatIndex: scheduled.repeatIndex,
+        );
       }
     }
     if (data.appointmentNotificationsGranted) {
@@ -257,9 +282,15 @@ class ReminderNotifications {
   ) async {
     if (!_initialized) return;
     final at = DateTime.now().add(const Duration(minutes: 10));
-    await _schedule(reminder, data, at, followUp: false, snoozed: true);
-    await _plugin.cancel(_id(reminder.id, occurrence, false));
-    await _plugin.cancel(_id(reminder.id, occurrence, true));
+    await cancelOccurrence(reminder, occurrence);
+    await _schedule(
+      reminder,
+      data,
+      at,
+      occurrence: occurrence,
+      repeatIndex: -1,
+      snoozed: true,
+    );
   }
 
   static Future<void> cancelOccurrence(
@@ -267,15 +298,20 @@ class ReminderNotifications {
     DateTime occurrence,
   ) async {
     if (!_initialized) return;
-    await _plugin.cancel(_id(reminder.id, occurrence, false));
-    await _plugin.cancel(_id(reminder.id, occurrence, true));
+    for (var index = -1; index <= _maxRepeatIndex; index++) {
+      await _plugin.cancel(_id(reminder.id, occurrence, index));
+    }
+    // Cancel identifiers created by MediBox 0.20.3 and older.
+    await _plugin.cancel(_legacyId(reminder.id, occurrence, false));
+    await _plugin.cancel(_legacyId(reminder.id, occurrence, true));
   }
 
   static Future<void> _schedule(
     Reminder reminder,
     AppData data,
     DateTime when, {
-    required bool followUp,
+    required DateTime occurrence,
+    required int repeatIndex,
     bool snoozed = false,
   }) async {
     final english = data.language == 'en';
@@ -296,7 +332,7 @@ class ReminderNotifications {
         ? '${reminder.quantityPerDose} $unit'
         : reminder.dose;
     final body = [
-      if (followUp)
+      if (repeatIndex > 0)
         english
             ? 'MediBox: the previous dose is not marked as taken.'
             : 'MediBox: ankstesnė dozė dar nepažymėta kaip išgerta.',
@@ -306,9 +342,6 @@ class ReminderNotifications {
       if (reminder.instructions.isNotEmpty)
         '${english ? 'Note' : 'Pastaba'}: ${reminder.instructions}',
     ].join('\n');
-    final occurrence = followUp
-        ? when.subtract(const Duration(minutes: 30))
-        : when;
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
     final details = NotificationDetails(
         android: AndroidNotificationDetails(
@@ -340,14 +373,18 @@ class ReminderNotifications {
         iOS: DarwinNotificationDetails(categoryIdentifier: 'medicine'),
     );
     Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
-          _id(reminder.id, occurrence, followUp),
+          _id(reminder.id, occurrence, repeatIndex),
           snoozed
               ? english
                     ? 'MediBox • reminder after 10 min.'
                     : 'MediBox • priminimas po 10 min.'
+              : repeatIndex > 0
+              ? english
+                    ? 'MediBox • unconfirmed medicine reminder'
+                    : 'MediBox • nepatvirtintas vaistų priminimas'
               : english
-              ? 'MediBox • medicine reminder'
-              : 'MediBox • vaistų priminimas',
+                    ? 'MediBox • medicine reminder'
+                    : 'MediBox • vaistų priminimas',
           body,
           tz.TZDateTime.from(when, tz.local),
           details,
@@ -409,7 +446,16 @@ class ReminderNotifications {
     await Store.save(data);
   }
 
-  static int _id(String reminderId, DateTime occurrence, bool followUp) {
+  static int _id(String reminderId, DateTime occurrence, int repeatIndex) {
+    final raw = '$reminderId-${occurrence.toIso8601String()}-$repeatIndex';
+    return raw.hashCode & 0x7fffffff;
+  }
+
+  static int _legacyId(
+    String reminderId,
+    DateTime occurrence,
+    bool followUp,
+  ) {
     final raw = '$reminderId-${occurrence.toIso8601String()}-$followUp';
     return raw.hashCode & 0x7fffffff;
   }
@@ -418,4 +464,18 @@ class ReminderNotifications {
       '${value.year.toString().padLeft(4, '0')}-'
       '${value.month.toString().padLeft(2, '0')}-'
       '${value.day.toString().padLeft(2, '0')}';
+}
+
+class _ScheduledDose {
+  final Reminder reminder;
+  final DateTime occurrence;
+  final DateTime when;
+  final int repeatIndex;
+
+  const _ScheduledDose(
+    this.reminder,
+    this.occurrence,
+    this.when, {
+    required this.repeatIndex,
+  });
 }
