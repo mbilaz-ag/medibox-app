@@ -575,6 +575,7 @@ class AppData {
   bool permissionsChoiceMade;
   bool cameraConsentGranted;
   bool medicationNotificationsGranted;
+  bool repeatUnconfirmedMedicationReminders;
   bool appointmentNotificationsGranted;
   bool cameraPermissionAsked;
   String householdId;
@@ -596,6 +597,7 @@ class AppData {
     this.permissionsChoiceMade = false,
     this.cameraConsentGranted = false,
     this.medicationNotificationsGranted = false,
+    this.repeatUnconfirmedMedicationReminders = true,
     this.appointmentNotificationsGranted = false,
     this.cameraPermissionAsked = false,
     this.householdId = '',
