@@ -34,6 +34,7 @@ import 'widgets/leaflet_import_page.dart' show LeafletRecordCard;
 import 'services/firebase_leaflet_service.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/app_update_service.dart';
+import 'services/subscription_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -67,6 +68,24 @@ String doseUnitLabel(BuildContext context, String unit) {
     'dozė' => 'dose',
     _ => unit,
   };
+}
+
+String subscriptionPlanLabel(BuildContext context, SubscriptionPlan plan) =>
+    switch (plan) {
+      SubscriptionPlan.free => 'Free',
+      SubscriptionPlan.premiumMonthly =>
+        tx(context, 'Premium mėnesinis', 'Premium monthly'),
+      SubscriptionPlan.premiumYearly =>
+        tx(context, 'Premium metinis', 'Premium yearly'),
+    };
+
+Future<bool> requirePremium(BuildContext context) async {
+  if (SubscriptionService.instance.hasPremium) return true;
+  await Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+  );
+  return SubscriptionService.instance.hasPremium;
 }
 
 /// Keeps the final control above Android's gesture/navigation area on long
@@ -1052,6 +1071,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       const SizedBox(height: 8),
       FilledButton.icon(
         onPressed: () async {
+          if (!await requirePremium(context) || !context.mounted) return;
           await Navigator.push(context, MaterialPageRoute(builder: (_) => MemberEditor(data: widget.data, initialRelation: 'child', onChanged: widget.onChanged)));
           if (mounted) setState(() {});
         },
@@ -1085,6 +1105,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
           subtitle: Text(tx(context, 'Sukurti namų ūkį arba įvesti kvietimo kodą', 'Create a household or enter an invite code')),
           trailing: const Icon(Icons.chevron_right),
           onTap: () async {
+            if (!await requirePremium(context) || !context.mounted) return;
             if (CloudSyncService.instance.user == null) {
               setState(() => step = 2);
               return;
@@ -1187,7 +1208,10 @@ class _Shell extends State<Shell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
-        onDestinationSelected: (v) => setState(() => index = v),
+        onDestinationSelected: (v) async {
+          if (v == 3 && !await requirePremium(c)) return;
+          if (mounted) setState(() => index = v);
+        },
         destinations: [
           NavigationDestination(
             icon: const Icon(Icons.home_outlined),
@@ -1988,12 +2012,15 @@ Widget _familyStatusCard(
   VoidCallback onChanged,
 ) => InkWell(
   borderRadius: BorderRadius.circular(16),
-  onTap: () => Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => FamilyPage(data: data, onChanged: onChanged),
-    ),
-  ),
+  onTap: () async {
+    if (!await requirePremium(context) || !context.mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FamilyPage(data: data, onChanged: onChanged),
+      ),
+    );
+  },
   child: Container(
     height: 82,
     padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
@@ -2671,6 +2698,10 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
   }
 
   Future<void> ask([String? suggested]) async {
+    if (!SubscriptionService.instance.hasPremium) {
+      await requirePremium(context);
+      return;
+    }
     final value = (suggested ?? question.text).trim().isEmpty
         ? tx(
             context,
@@ -2684,7 +2715,9 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
     if (suggested == null) question.text = value;
     setState(() { busy = true; error = ''; answer = null; });
     try {
-      if (widget.data.aiConsentGranted && AiMedicineProfileService.needsInformation(widget.medicine)) {
+      if (widget.data.aiConsentGranted &&
+          SubscriptionService.instance.hasPremium &&
+          AiMedicineProfileService.needsInformation(widget.medicine)) {
         try {
           if (await AiMedicineProfileService.populate(widget.medicine)) await Store.save(widget.data);
         } catch (_) { /* The advisor may still answer from available data. */ }
@@ -2812,7 +2845,9 @@ class _MedicinePageState extends State<MedicinePage> {
   @override
   void initState() {
     super.initState();
-    if (data.aiConsentGranted && AiMedicineProfileService.needsInformation(med)) {
+    if (data.aiConsentGranted &&
+        SubscriptionService.instance.hasPremium &&
+        AiMedicineProfileService.needsInformation(med)) {
       filling = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _fillInformation());
     }
@@ -2950,7 +2985,9 @@ class _MedicinePageState extends State<MedicinePage> {
                   const SizedBox(height: 8),
                   FilledButton.tonalIcon(
                     onPressed: data.aiConsentGranted
-                        ? () => Navigator.push(
+                        ? () async {
+                            if (!await requirePremium(c) || !c.mounted) return;
+                            await Navigator.push(
                               c,
                               MaterialPageRoute(
                                 builder: (_) => MedicineAiPage(
@@ -2960,7 +2997,8 @@ class _MedicinePageState extends State<MedicinePage> {
                                       'Paaiškink šį vaistą: kam jis skirtas, kaip vartojamas ir į ką svarbiausia atkreipti dėmesį.',
                                 ),
                               ),
-                            )
+                            );
+                          }
                         : null,
                     icon: const Icon(Icons.auto_awesome),
                     label: Text(
@@ -4022,7 +4060,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     if (_registryMedicine == null && existing != null && existing.registryVerified) {
       _registryMedicine = AiMedicineProfileService.identity(existing);
     }
-    if (widget.data.aiConsentGranted && _registryMedicine != null &&
+    if (widget.data.aiConsentGranted &&
+        SubscriptionService.instance.hasPremium &&
+        _registryMedicine != null &&
         (existing == null || AiMedicineProfileService.needsInformation(existing))) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _autoFillProfile(_registryMedicine!);
@@ -4155,7 +4195,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     _registryMedicine = medicine;
     _applyingVvkt = false;
     if (mounted) setState(() {});
-    if (widget.data.aiConsentGranted) _autoFillProfile(medicine);
+    if (widget.data.aiConsentGranted && SubscriptionService.instance.hasPremium) {
+      _autoFillProfile(medicine);
+    }
   }
 
   Future<void> _autoFillProfile(VvktMedicine medicine) async {
@@ -5071,12 +5113,15 @@ class FamilyPage extends StatelessWidget {
         ],
         const SizedBox(height: 8),
         FilledButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => MemberEditor(data: data, onChanged: onChanged),
-            ),
-          ),
+          onPressed: () async {
+            if (!await requirePremium(c) || !c.mounted) return;
+            await Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MemberEditor(data: data, onChanged: onChanged),
+              ),
+            );
+          },
           icon: const Icon(Icons.person_add),
           label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
         ),
@@ -5125,13 +5170,16 @@ Widget _familyMemberCard(
       '${tx(c, '$medicineCount vaistai', '$medicineCount medicines')}',
     ),
     trailing: const Icon(Icons.chevron_right),
-    onTap: () => Navigator.push(
-      c,
-      MaterialPageRoute(
-        builder: (_) =>
-            MemberEditor(data: data, member: member, onChanged: onChanged),
-      ),
-    ),
+    onTap: () async {
+      if (!await requirePremium(c) || !c.mounted) return;
+      await Navigator.push(
+        c,
+        MaterialPageRoute(
+          builder: (_) =>
+              MemberEditor(data: data, member: member, onChanged: onChanged),
+        ),
+      );
+    },
   ),
   );
 }
@@ -8328,6 +8376,7 @@ class _CloudAccountPageState extends State<CloudAccountPage> {
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: busy ? null : () async {
+                if (!await requirePremium(context) || !context.mounted) return;
                 await Navigator.push(context, MaterialPageRoute(builder: (_) => HouseholdSettingsPage(data: widget.data, onChanged: widget.onChanged)));
                 if (mounted) setState(() {});
               },
@@ -8533,6 +8582,264 @@ class _HouseholdSettingsPageState extends State<HouseholdSettingsPage> {
   ];
 }
 
+class SubscriptionPage extends StatelessWidget {
+  const SubscriptionPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(tx(context, 'Planai', 'Plans'))),
+    body: AnimatedBuilder(
+      animation: SubscriptionService.instance,
+      builder: (context, _) {
+        final service = SubscriptionService.instance;
+        final entitlement = service.entitlement;
+        final plan = entitlement.effectivePlan;
+        final user = CloudSyncService.instance.user;
+        final validUntil = entitlement.validUntil;
+        return ListView(
+          padding: scrollPagePadding(context),
+          children: [
+            card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: plan == SubscriptionPlan.free
+                            ? const Color(0xffeef3f2)
+                            : mint,
+                        child: Icon(
+                          Icons.workspace_premium_rounded,
+                          color: plan == SubscriptionPlan.free
+                              ? Colors.grey
+                              : green,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              tx(context, 'Dabartinis planas', 'Current plan'),
+                              style: const TextStyle(color: Color(0xff526874)),
+                            ),
+                            Text(
+                              service.loading
+                                  ? tx(context, 'Tikrinama…', 'Checking…')
+                                  : subscriptionPlanLabel(context, plan),
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w900,
+                                color: navy,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: tx(context, 'Atnaujinti', 'Refresh'),
+                        onPressed: service.loading ? null : service.refresh,
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                    ],
+                  ),
+                  if (validUntil != null && entitlement.plan != SubscriptionPlan.free) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '${tx(context, 'Galioja iki', 'Valid until')}: '
+                      '${DateFormat.yMMMd(Localizations.localeOf(context).languageCode).format(validUntil.toLocal())}',
+                    ),
+                  ],
+                  if (user == null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      tx(
+                        context,
+                        'Prisijunkite su „Google“, kad planas būtų susietas su jūsų paskyra.',
+                        'Sign in with Google to link the plan to your account.',
+                      ),
+                    ),
+                  ],
+                  if (service.message.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      tx(
+                        context,
+                        'Plano patikrinti nepavyko. Saugumo sumetimais taikomas „Free“ planas.',
+                        'The plan could not be checked. Free is applied for security.',
+                      ),
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _subscriptionPlanCard(
+              context,
+              title: 'Free',
+              price: '0 €',
+              selected: plan == SubscriptionPlan.free,
+              features: [
+                tx(context, 'Asmeninė vaistinėlė', 'Personal medicine cabinet'),
+                tx(context, 'Vaistų ir vizitų priminimai', 'Medicine and appointment reminders'),
+                tx(context, 'Kalendorius, likučiai ir galiojimas', 'Calendar, stock and expiry'),
+                tx(context, 'Vienas asmeninis profilis', 'One personal profile'),
+              ],
+            ),
+            _subscriptionPlanCard(
+              context,
+              title: tx(context, 'Premium mėnesinis', 'Premium monthly'),
+              price: tx(context, '1,99 € / mėn.', '€1.99 / month'),
+              selected: plan == SubscriptionPlan.premiumMonthly,
+              features: _premiumFeatures(context),
+            ),
+            _subscriptionPlanCard(
+              context,
+              title: tx(context, 'Premium metinis', 'Premium yearly'),
+              price: tx(context, '19,99 € / metus', '€19.99 / year'),
+              selected: plan == SubscriptionPlan.premiumYearly,
+              badge: tx(context, '2 mėn. nemokamai', '2 months free'),
+              features: _premiumFeatures(context),
+            ),
+            const SizedBox(height: 8),
+            card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tx(context, 'Aktyvavimas', 'Activation'),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: navy,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    tx(
+                      context,
+                      'Kol mokėjimai neprijungti, planą administratorius pakeičia rankiniu būdu „Firebase“. Pakeitimas programėlėje atsiranda automatiškai.',
+                      'Until payments are connected, an administrator changes the plan manually in Firebase. The change appears automatically in the app.',
+                    ),
+                  ),
+                  if (user != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      tx(context, 'Paskyros UID', 'Account UID'),
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 4),
+                    SelectableText(user.uid),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: user.uid));
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                tx(context, 'UID nukopijuotas', 'UID copied'),
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.copy_rounded),
+                      label: Text(tx(context, 'Kopijuoti UID', 'Copy UID')),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+List<String> _premiumFeatures(BuildContext context) => [
+  tx(context, 'Viskas, kas yra „Free“ plane', 'Everything in Free'),
+  tx(context, 'Šeimos nariai ir bendrinamas namų ūkis', 'Family members and household sharing'),
+  tx(context, 'AI vaistų ir simptomų paaiškinimai', 'AI medicine and symptom explanations'),
+  tx(context, 'Gydytojo suvestinė ir išplėstos ataskaitos', 'Doctor summary and advanced reports'),
+  tx(context, 'Atsarginė kopija ir duomenų eksportas', 'Backup and data export'),
+];
+
+Widget _subscriptionPlanCard(
+  BuildContext context, {
+  required String title,
+  required String price,
+  required bool selected,
+  required List<String> features,
+  String badge = '',
+}) => Card(
+  color: selected ? mint : Colors.white,
+  shape: RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(18),
+    side: BorderSide(
+      color: selected ? green : const Color(0xffe0eeeb),
+      width: selected ? 2 : 1,
+    ),
+  ),
+  child: Padding(
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  color: navy,
+                ),
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_circle_rounded, color: green),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(price, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+        if (badge.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xffffedca),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              child: Text(badge, style: const TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
+        ],
+        const Divider(height: 24),
+        ...features.map(
+          (feature) => Padding(
+            padding: const EdgeInsets.only(bottom: 7),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.check_rounded, color: green, size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text(feature)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
 class ProfilePage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -8595,6 +8902,42 @@ class _ProfilePage extends State<ProfilePage> {
                 subtitle: Text(CloudSyncService.instance.user!.email!),
               ),
             ),
+          AnimatedBuilder(
+            animation: SubscriptionService.instance,
+            builder: (context, _) {
+              final service = SubscriptionService.instance;
+              final plan = service.entitlement.effectivePlan;
+              return Card(
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: plan == SubscriptionPlan.free
+                        ? const Color(0xffeef3f2)
+                        : mint,
+                    child: Icon(
+                      plan == SubscriptionPlan.free
+                          ? Icons.workspace_premium_outlined
+                          : Icons.workspace_premium_rounded,
+                      color: plan == SubscriptionPlan.free ? Colors.grey : green,
+                    ),
+                  ),
+                  title: Text(
+                    tx(context, 'Mano planas', 'My plan'),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: Text(
+                    service.loading
+                        ? tx(context, 'Tikrinama…', 'Checking…')
+                        : subscriptionPlanLabel(context, plan),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                  ),
+                ),
+              );
+            },
+          ),
           field(c, phone, 'Telefonas', 'Phone'),
           field(c, email, 'Kontaktinis el. paštas', 'Contact email'),
           const SizedBox(height: 14),
@@ -8715,12 +9058,15 @@ class _ProfilePage extends State<ProfilePage> {
             Icons.medical_information_outlined,
             'Santrauka gydytojui',
             'Doctor summary',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DoctorSummaryPage(data: widget.data),
-              ),
-            ),
+            () async {
+              if (!await requirePremium(c) || !c.mounted) return;
+              await Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) => DoctorSummaryPage(data: widget.data),
+                ),
+              );
+            },
           ),
           _profileToolTile(
             c,
@@ -8739,15 +9085,18 @@ class _ProfilePage extends State<ProfilePage> {
             Icons.backup_outlined,
             'Atsarginė kopija',
             'Backup and restore',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DataTransferPage(
-                  data: widget.data,
-                  onChanged: widget.onChanged,
+            () async {
+              if (!await requirePremium(c) || !c.mounted) return;
+              await Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) => DataTransferPage(
+                    data: widget.data,
+                    onChanged: widget.onChanged,
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
           Card(
             child: ListTile(
@@ -10348,6 +10697,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   );
 
   Future<SymptomExplanation?> _requestAiAssessment() async {
+    if (!SubscriptionService.instance.hasPremium) return null;
     final member = widget.data.members
         .where((item) => item.id == widget.memberId)
         .firstOrNull;
@@ -10468,6 +10818,38 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   }
 
   Widget _aiCard(BuildContext c) {
+    if (!SubscriptionService.instance.hasPremium) {
+      return card(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.workspace_premium_rounded, color: green),
+                SizedBox(width: 8),
+                Text('Premium AI', style: TextStyle(fontWeight: FontWeight.w900)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              tx(
+                c,
+                'Saugumo patikra atlikta, tačiau išplėstas AI paaiškinimas priklauso „Premium“ planui.',
+                'The safety check is complete, but the extended AI explanation requires Premium.',
+              ),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              onPressed: () => Navigator.push(
+                c,
+                MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+              ),
+              child: Text(tx(c, 'Peržiūrėti planus', 'View plans')),
+            ),
+          ],
+        ),
+      );
+    }
     if (!aiConsent) {
       return card(
         Text(

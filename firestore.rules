@@ -28,8 +28,17 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'accounts']);
     }
 
-    match /users/{userId}/{document=**} {
+    match /users/{userId}/medibox/{document} {
       allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    match /users/{userId}/settings/{document} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    match /users/{userId}/subscription/{document} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      // Plans are changed only in Firebase Console or by a trusted payment
+      // backend. The mobile app must never grant Premium to itself.
+      allow write: if false;
     }
     match /households/{householdpk} {
       allow create: if signedIn()

@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import '../models/models.dart';
 import 'firebase_leaflet_service.dart';
 import 'store.dart';
+import 'subscription_service.dart';
 
 enum CloudSyncState { signedOut, syncing, synced, offline, error }
 
@@ -53,6 +54,7 @@ class CloudSyncService {
 
   Future<void> initialize() async {
     await FirebaseLeafletService.initialize();
+    await SubscriptionService.instance.initialize();
     final config = jsonDecode(
       await rootBundle.loadString('config/google-services.json'),
     );
