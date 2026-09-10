@@ -10,7 +10,7 @@ class AppUpdate {
 }
 
 class AppUpdateService {
-  static const currentVersion = '0.20.2';
+  static const currentVersion = '0.20.3';
   static const _latestReleaseUrl =
       'https://api.github.com/repos/mbilaz-ag/medibox-app/releases/latest';
 
