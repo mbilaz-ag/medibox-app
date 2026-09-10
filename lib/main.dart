@@ -1124,6 +1124,19 @@ class RoleAvatar extends StatelessWidget {
 class _Shell extends State<Shell> {
   int index = 0;
   String selectedMemberId = '';
+  DateTime? calendarInitialDate;
+  String calendarInitialMemberId = '';
+  int calendarRequestVersion = 0;
+
+  void _openCalendar(DateTime date, String memberId) {
+    setState(() {
+      calendarInitialDate = date;
+      calendarInitialMemberId = memberId;
+      calendarRequestVersion++;
+      index = 4;
+    });
+  }
+
   @override
   Widget build(c) {
     final d = widget.data;
@@ -1133,11 +1146,18 @@ class _Shell extends State<Shell> {
         onChanged: widget.onChanged,
         memberId: selectedMemberId,
         onMemberChanged: (value) => setState(() => selectedMemberId = value),
+        onOpenCalendar: _openCalendar,
       ),
       CabinetPage(data: d, onChanged: widget.onChanged),
       SymptomsPage(data: d, onChanged: widget.onChanged),
       FamilyPage(data: d, onChanged: widget.onChanged),
-      HealthCalendarPage(data: d, onChanged: widget.onChanged),
+      HealthCalendarPage(
+        key: ValueKey('calendar-$calendarRequestVersion'),
+        data: d,
+        onChanged: widget.onChanged,
+        initialDate: calendarInitialDate,
+        initialMemberId: calendarInitialMemberId,
+      ),
     ];
     return Scaffold(
       backgroundColor: const Color(0xfff6fbfa),
@@ -1223,12 +1243,14 @@ class HomePage extends StatelessWidget {
   final VoidCallback onChanged;
   final String memberId;
   final ValueChanged<String> onMemberChanged;
+  final void Function(DateTime date, String memberId) onOpenCalendar;
   const HomePage({
     super.key,
     required this.data,
     required this.onChanged,
     this.memberId = '',
     required this.onMemberChanged,
+    required this.onOpenCalendar,
   });
 
   @override
@@ -1648,21 +1670,15 @@ class HomePage extends StatelessWidget {
                       if (sameDayAppointments.length > 1)
                         tx(
                           c,
-                          'Dar ${sameDayAppointments.length - 1} ${sameDayAppointments.length == 2 ? 'vizitas' : 'vizitai'} šią dieną',
-                          '${sameDayAppointments.length - 1} more on this day',
+                          'Rodyti visus ${sameDayAppointments.length} vizitus',
+                          'View all ${sameDayAppointments.length} appointments',
                         ),
                     ].where((value) => value.isNotEmpty).join('\n'),
                   ),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(
-                    c,
-                    MaterialPageRoute(
-                      builder: (_) => AppointmentEditor(
-                        data: data,
-                        appointment: nextAppointment,
-                        onChanged: onChanged,
-                      ),
-                    ),
+                  onTap: () => onOpenCalendar(
+                    DateTime.tryParse(nextAppointment.date) ?? now,
+                    memberId,
                   ),
                 ),
               ),
@@ -5856,11 +5872,13 @@ class HealthCalendarPage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
   final DateTime? initialDate;
+  final String initialMemberId;
   const HealthCalendarPage({
     super.key,
     required this.data,
     required this.onChanged,
     this.initialDate,
+    this.initialMemberId = '',
   });
   @override
   State<HealthCalendarPage> createState() => _HealthCalendarPageState();
@@ -5868,12 +5886,13 @@ class HealthCalendarPage extends StatefulWidget {
 
 class _HealthCalendarPageState extends State<HealthCalendarPage> {
   late DateTime selectedDay;
-  String memberId = '';
+  late String memberId;
 
   @override
   void initState() {
     super.initState();
     selectedDay = widget.initialDate ?? DateTime.now();
+    memberId = widget.initialMemberId;
   }
 
   @override
