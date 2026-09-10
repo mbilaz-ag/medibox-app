@@ -1307,7 +1307,7 @@ class HomePage extends StatelessWidget {
           ),
         ),
         ListView(
-          padding: scrollPagePadding(context, horizontal: 16),
+          padding: scrollPagePadding(c, horizontal: 16),
           children: [
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
