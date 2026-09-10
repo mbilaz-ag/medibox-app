@@ -8721,7 +8721,7 @@ class SubscriptionPage extends StatelessWidget {
                   Text(
                     tx(
                       context,
-                      'Kol mokėjimai neprijungti, planą administratorius pakeičia rankiniu būdu „Firebase“. Pakeitimas programėlėje atsiranda automatiškai.',
+                      'Kol mokėjimai neprijungti, planą administratorius pakeičia rankiniu būdu „Firebase“. Pakeitimas programėlėje atsiranda automatiškai.\n\nDėl Premium plano kreipkitės: andrius.grudinskas@gmail.com',
                       'Until payments are connected, an administrator changes the plan manually in Firebase. The change appears automatically in the app.',
                     ),
                   ),
