@@ -30,6 +30,36 @@ void main() {
     expect(data.preferredHomeMemberId, isEmpty);
   });
 
+  test('missing account link is safely suggested from one exact name match', () {
+    final data = AppData(
+      meds: [],
+      members: [
+        Member(id: 'andrius', name: 'Andrius', relation: 'self'),
+        Member(id: 'indre', name: 'Indrė', relation: 'partner'),
+      ],
+      reminders: [],
+      profile: UserProfile(name: 'Andrius'),
+      householdId: 'home',
+    );
+
+    expect(data.suggestedAccountMemberId(''), 'andrius');
+  });
+
+  test('missing account link is not guessed when names are ambiguous', () {
+    final data = AppData(
+      meds: [],
+      members: [
+        Member(id: 'first', name: 'Jonas', relation: 'member'),
+        Member(id: 'second', name: 'Jonas', relation: 'member'),
+      ],
+      reminders: [],
+      profile: UserProfile(name: 'Jonas'),
+      householdId: 'home',
+    );
+
+    expect(data.suggestedAccountMemberId('Jonas'), isEmpty);
+  });
+
   test('unconfirmed medicine reminder repetition is enabled by default', () {
     final data = AppData(
       meds: [],

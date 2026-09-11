@@ -625,4 +625,21 @@ class AppData {
     }
     return '';
   }
+
+  /// Safely suggests a member for an older account that has no persisted
+  /// account-to-member link. A suggestion is returned only for one exact name
+  /// match, so another household member is never guessed as the current user.
+  String suggestedAccountMemberId(String accountName) {
+    if (preferredHomeMemberId.isNotEmpty) return preferredHomeMemberId;
+    String normalized(String value) => value.trim().toLowerCase();
+    final names = <String>{
+      normalized(accountName),
+      normalized(profile.name),
+    }..remove('');
+    if (names.isEmpty) return '';
+    final matches = members
+        .where((member) => names.contains(normalized(member.name)))
+        .toList();
+    return matches.length == 1 ? matches.single.id : '';
+  }
 }

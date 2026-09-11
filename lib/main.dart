@@ -353,6 +353,7 @@ class _App extends State<App> with WidgetsBindingObserver {
   bool launchAccepted = false;
   bool authenticating = false;
   bool _reloadingNotificationActions = false;
+  bool _memberLinkPromptVisible = false;
   final navigatorKey = GlobalKey<NavigatorState>();
 
   Future<void> _finishOpening(AppData current) async {
@@ -365,7 +366,99 @@ class _App extends State<App> with WidgetsBindingObserver {
     }
     if (mounted) {
       setState(() => launchAccepted = true);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkForUpdate();
+        _promptForAccountMember();
+      });
+    }
+  }
+
+  Future<void> _promptForAccountMember() async {
+    final current = data;
+    final context = navigatorKey.currentContext;
+    if (!mounted ||
+        !launchAccepted ||
+        context == null ||
+        _memberLinkPromptVisible ||
+        CloudSyncService.instance.user == null ||
+        CloudSyncService.instance.state == CloudSyncState.syncing ||
+        current == null ||
+        current.householdId.isEmpty ||
+        current.members.isEmpty ||
+        current.preferredHomeMemberId.isNotEmpty) {
+      return;
+    }
+    _memberLinkPromptVisible = true;
+    try {
+      var selected = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: SimpleDialog(
+            title: Text(
+              tx(
+                dialogContext,
+                'Kuris šeimos narys esate?',
+                'Which family member are you?',
+              ),
+            ),
+            children: [
+              ...current.members.map(
+                (member) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(dialogContext, member.id),
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: CircleAvatar(
+                      backgroundColor: mint,
+                      child: Text(
+                        _memberEmoji(member.gender, member.ageGroup),
+                      ),
+                    ),
+                    title: Text(member.name),
+                  ),
+                ),
+              ),
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(dialogContext, '__new__'),
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.person_add_alt_1, color: green),
+                  title: Text(
+                    tx(
+                      dialogContext,
+                      'Manęs sąraše nėra',
+                      'I am not in the list',
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (!mounted || selected == null) return;
+      if (selected == '__new__') {
+        selected = await Navigator.push<String>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => MemberEditor(
+              data: current,
+              initialRelation: 'member',
+              onChanged: changed,
+            ),
+          ),
+        );
+      }
+      if (selected == null || selected.isEmpty) return;
+      await CloudSyncService.instance.linkCurrentAccountToMember(
+        current,
+        selected,
+      );
+      await ReminderNotifications.scheduleAll(current);
+      if (mounted) setState(() {});
+    } finally {
+      _memberLinkPromptVisible = false;
     }
   }
 
@@ -464,13 +557,25 @@ class _App extends State<App> with WidgetsBindingObserver {
       ReminderNotifications.onAction = _handleReminderAction;
       ReminderNotifications.scheduleAll(v);
       if (mounted) setState(() => data = v);
-      CloudSyncService.instance.resume(
+      unawaited(CloudSyncService.instance.resume(
         v,
         onRemoteApplied: () async {
           await ReminderNotifications.scheduleAll(v);
-          if (mounted) setState(() {});
+          if (mounted) {
+            setState(() {});
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _promptForAccountMember(),
+            );
+          }
         },
-      );
+      ).then((_) {
+        if (mounted) {
+          setState(() {});
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _promptForAccountMember(),
+          );
+        }
+      }));
     });
   }
 
@@ -1070,7 +1175,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
               try {
                 await CloudSyncService.instance.signIn(widget.data, onRemoteApplied: () async => widget.onChanged());
                 _reloadProfileControllers();
-                if (mounted) setState(() => step = 3);
+                if (widget.data.preferredHomeMemberId.isNotEmpty) {
+                  _finish();
+                } else if (mounted) {
+                  setState(() => step = 3);
+                }
               } catch (e) {
                 if (mounted) setState(() => error = CloudSyncService.instance.readableError(e));
               } finally {
@@ -1220,6 +1329,16 @@ class _OnboardingPageState extends State<OnboardingPage> {
           },
         ),
       ])),
+      if (CloudSyncService.instance.user != null) ...[
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: _finish,
+          icon: const Icon(Icons.skip_next_rounded),
+          label: Text(
+            tx(context, 'Praleisti ir tęsti', 'Skip and continue'),
+          ),
+        ),
+      ],
     ],
   );
 
@@ -5858,7 +5977,7 @@ class _MemberEditor extends State<MemberEditor> {
             }
             if (widget.member == null) widget.data.members.add(m);
             widget.onChanged();
-            Navigator.pop(c);
+            Navigator.pop(c, m.id);
           },
           child: Text(tx(c, 'Išsaugoti', 'Save')),
         ),
