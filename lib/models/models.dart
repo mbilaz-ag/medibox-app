@@ -44,6 +44,7 @@ class Med {
       cloudImageVersion,
       manufacturer,
       dosageForm,
+      stockUnit,
       batchNumber,
       barcode,
       storageLocation,
@@ -96,6 +97,7 @@ class Med {
     this.cloudImageVersion = '',
     this.manufacturer = '',
     this.dosageForm = '',
+    this.stockUnit = 'vnt.',
     this.batchNumber = '',
     this.barcode = '',
     this.storageLocation = '',
@@ -162,6 +164,7 @@ class Med {
     'cloudImageVersion': cloudImageVersion,
     'manufacturer': manufacturer,
     'dosageForm': dosageForm,
+    'stockUnit': stockUnit,
     'batchNumber': batchNumber,
     'barcode': barcode,
     'storageLocation': storageLocation,
@@ -212,6 +215,7 @@ class Med {
     cloudImageVersion: '${j['cloudImageVersion'] ?? ''}',
     manufacturer: '${j['manufacturer'] ?? ''}',
     dosageForm: '${j['dosageForm'] ?? ''}',
+    stockUnit: '${j['stockUnit'] ?? 'vnt.'}',
     batchNumber: '${j['batchNumber'] ?? ''}',
     barcode: '${j['barcode'] ?? ''}',
     storageLocation: '${j['storageLocation'] ?? ''}',
@@ -575,6 +579,8 @@ class AppData {
   bool permissionsChoiceMade;
   bool cameraConsentGranted;
   bool medicationNotificationsGranted;
+  bool repeatUnconfirmedMedicationReminders;
+  bool loudMedicationReminders;
   bool appointmentNotificationsGranted;
   bool cameraPermissionAsked;
   String householdId;
@@ -596,6 +602,8 @@ class AppData {
     this.permissionsChoiceMade = false,
     this.cameraConsentGranted = false,
     this.medicationNotificationsGranted = false,
+    this.repeatUnconfirmedMedicationReminders = true,
+    this.loudMedicationReminders = false,
     this.appointmentNotificationsGranted = false,
     this.cameraPermissionAsked = false,
     this.householdId = '',
@@ -604,4 +612,34 @@ class AppData {
     this.linkedMemberId = '',
   }) : shopping = shopping ?? [],
        appointments = appointments ?? [];
+
+  /// The member this account should show when the home page first opens.
+  String get preferredHomeMemberId {
+    if (linkedMemberId.isNotEmpty &&
+        members.any((member) => member.id == linkedMemberId)) {
+      return linkedMemberId;
+    }
+    if (householdId.isEmpty) {
+      final own = members.where((member) => member.relation == 'self');
+      if (own.length == 1) return own.first.id;
+    }
+    return '';
+  }
+
+  /// Safely suggests a member for an older account that has no persisted
+  /// account-to-member link. A suggestion is returned only for one exact name
+  /// match, so another household member is never guessed as the current user.
+  String suggestedAccountMemberId(String accountName) {
+    if (preferredHomeMemberId.isNotEmpty) return preferredHomeMemberId;
+    String normalized(String value) => value.trim().toLowerCase();
+    final names = <String>{
+      normalized(accountName),
+      normalized(profile.name),
+    }..remove('');
+    if (names.isEmpty) return '';
+    final matches = members
+        .where((member) => names.contains(normalized(member.name)))
+        .toList();
+    return matches.length == 1 ? matches.single.id : '';
+  }
 }

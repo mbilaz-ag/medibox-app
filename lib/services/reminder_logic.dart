@@ -1,5 +1,17 @@
 import '../models/models.dart';
 
+const unconfirmedReminderInterval = Duration(minutes: 30);
+const unconfirmedReminderWindow = Duration(hours: 24);
+
+List<DateTime> unconfirmedReminderTimes(DateTime occurrence) {
+  final count = unconfirmedReminderWindow.inMinutes ~/
+      unconfirmedReminderInterval.inMinutes;
+  return [
+    for (var index = 1; index <= count; index++)
+      occurrence.add(unconfirmedReminderInterval * index),
+  ];
+}
+
 enum DoseStatus { upcoming, waiting, late, taken, skipped, missed }
 
 DateTime? reminderDateTime(Reminder reminder, DateTime day) {

@@ -2,6 +2,75 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:medibox/models/models.dart';
 
 void main() {
+  test('home page prefers the member linked to this account', () {
+    final data = AppData(
+      meds: [],
+      members: [
+        Member(id: 'parent', name: 'Mama', relation: 'family'),
+        Member(id: 'child', name: 'Jonas', relation: 'child'),
+      ],
+      reminders: [],
+      profile: UserProfile(),
+      householdId: 'home',
+      linkedMemberId: 'child',
+    );
+
+    expect(data.preferredHomeMemberId, 'child');
+  });
+
+  test('shared home does not guess another member when account link is absent', () {
+    final data = AppData(
+      meds: [],
+      members: [Member(id: 'owner', name: 'Mama', relation: 'self')],
+      reminders: [],
+      profile: UserProfile(),
+      householdId: 'home',
+    );
+
+    expect(data.preferredHomeMemberId, isEmpty);
+  });
+
+  test('missing account link is safely suggested from one exact name match', () {
+    final data = AppData(
+      meds: [],
+      members: [
+        Member(id: 'andrius', name: 'Andrius', relation: 'self'),
+        Member(id: 'indre', name: 'Indrė', relation: 'partner'),
+      ],
+      reminders: [],
+      profile: UserProfile(name: 'Andrius'),
+      householdId: 'home',
+    );
+
+    expect(data.suggestedAccountMemberId(''), 'andrius');
+  });
+
+  test('missing account link is not guessed when names are ambiguous', () {
+    final data = AppData(
+      meds: [],
+      members: [
+        Member(id: 'first', name: 'Jonas', relation: 'member'),
+        Member(id: 'second', name: 'Jonas', relation: 'member'),
+      ],
+      reminders: [],
+      profile: UserProfile(name: 'Jonas'),
+      householdId: 'home',
+    );
+
+    expect(data.suggestedAccountMemberId('Jonas'), isEmpty);
+  });
+
+  test('unconfirmed medicine reminder repetition is enabled by default', () {
+    final data = AppData(
+      meds: [],
+      members: [],
+      reminders: [],
+      profile: UserProfile(),
+    );
+    expect(data.repeatUnconfirmedMedicationReminders, isTrue);
+    expect(data.loudMedicationReminders, isFalse);
+  });
+
   test('member and reminder survive JSON round trip', () {
     final member = Member(
       id: 'm1',
@@ -43,12 +112,14 @@ void main() {
     final medicine = Med(
       id: 'm1', name: 'Vaistas', substance: '', strength: '', purpose: '',
       category: '', expiry: '2028-01', stock: 20, lowStockThreshold: 7,
+      stockUnit: 'ml',
       prescription: true,
       prescriptionValidUntil: '2026-10-01',
       treatmentUntil: '2026-10-15',
     );
     final restoredMedicine = Med.fromJson(medicine.toJson());
     expect(restoredMedicine.lowStockThreshold, 7);
+    expect(restoredMedicine.stockUnit, 'ml');
     expect(restoredMedicine.prescriptionValidUntil, '2026-10-01');
     expect(restoredMedicine.treatmentUntil, '2026-10-15');
     final appointment = HealthAppointment(

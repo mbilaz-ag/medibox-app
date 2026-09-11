@@ -72,8 +72,8 @@ jobs:
           python3 tool/prepare_platforms.py "$RUNNER_TEMP/medibox-native"
 
       - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - run: flutter analyze lib test
+      - run: flutter test test
 
       - name: Configure archive and export
         run: |

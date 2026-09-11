@@ -31,8 +31,8 @@ jobs:
           flutter create --no-pub --platforms=android,ios --project-name medibox --org lt.medibox "$RUNNER_TEMP/medibox-native"
           python3 tool/prepare_platforms.py "$RUNNER_TEMP/medibox-native"
       - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - run: flutter analyze lib test
+      - run: flutter test test
       - name: Build signed Android App Bundle
         env:
           MEDIBOX_KEYSTORE_PASSWORD: ${{ secrets.MEDIBOX_KEYSTORE_PASSWORD }}

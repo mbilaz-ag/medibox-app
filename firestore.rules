@@ -2,6 +2,13 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email in [
+          'andrius.grudinskas@gmail.com',
+          'mbilaz@gmail.com'
+        ];
+    }
     function household(id) {
       return get(/databases/$(database)/documents/households/$(id)).data;
     }
@@ -28,8 +35,42 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids', 'accounts']);
     }
 
-    match /users/{userId}/{document=**} {
+    match /users/{userId}/medibox/{document} {
       allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    match /users/{userId}/settings/{document} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    match /users/{userId}/subscription/{document} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+    match /userProfiles/{userId} {
+      allow read: if signedIn()
+        && (request.auth.uid == userId || isAdmin());
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoUrl', 'isAnonymous',
+          'providers', 'createdAt', 'lastSeenAt'
+        ]);
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'displayName', 'photoUrl', 'isAnonymous',
+          'providers', 'lastSeenAt'
+        ]);
+      allow delete: if false;
+    }
+    match /premiumRequests/{userId} {
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow read, update: if isAdmin();
+      allow delete: if false;
     }
     match /households/{householdpk} {
       allow create: if signedIn()

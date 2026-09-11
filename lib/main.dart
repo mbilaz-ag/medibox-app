@@ -31,12 +31,15 @@ import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
 import 'widgets/leaflet_import_page.dart' show LeafletRecordCard;
+import 'widgets/medicine_price_card.dart';
 import 'services/firebase_leaflet_service.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/app_update_service.dart';
+import 'services/subscription_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppUpdateService.initialize();
   await ReminderNotifications.initialize();
   runApp(const App());
 }
@@ -65,8 +68,63 @@ String doseUnitLabel(BuildContext context, String unit) {
     'tabletė' => 'tablet',
     'kapsulė' => 'capsule',
     'dozė' => 'dose',
+    'tūbelė' => 'tube',
+    'įpurškimas' => 'spray',
+    'lašas' => 'drop',
     _ => unit,
   };
+}
+
+const medicineQuantityUnits = [
+  'vnt.',
+  'tabletė',
+  'kapsulė',
+  'ml',
+  'g',
+  'mg',
+  'dozė',
+  'tūbelė',
+  'įpurškimas',
+  'lašas',
+];
+
+String suggestedMedicineQuantityUnit(String dosageForm) {
+  final value = dosageForm.toLowerCase();
+  if (value.contains('tūbel')) return 'tūbelė';
+  if (value.contains('tablet')) return 'tabletė';
+  if (value.contains('kapsul')) return 'kapsulė';
+  if (value.contains('laš')) return 'lašas';
+  if (value.contains('purš') || value.contains('aerozol')) return 'įpurškimas';
+  if (value.contains('tirpal') ||
+      value.contains('sirup') ||
+      value.contains('suspens') ||
+      value.contains('skyst')) {
+    return 'ml';
+  }
+  if (value.contains('krem') ||
+      value.contains('tepal') ||
+      value.contains('gel')) {
+    return 'g';
+  }
+  return 'vnt.';
+}
+
+String subscriptionPlanLabel(BuildContext context, SubscriptionPlan plan) =>
+    switch (plan) {
+      SubscriptionPlan.free => 'Free',
+      SubscriptionPlan.premiumMonthly =>
+        tx(context, 'Premium mėnesinis', 'Premium monthly'),
+      SubscriptionPlan.premiumYearly =>
+        tx(context, 'Premium metinis', 'Premium yearly'),
+    };
+
+Future<bool> requirePremium(BuildContext context) async {
+  if (SubscriptionService.instance.hasPremium) return true;
+  await Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+  );
+  return SubscriptionService.instance.hasPremium;
 }
 
 /// Keeps the final control above Android's gesture/navigation area on long
@@ -134,6 +192,8 @@ Future<bool> _showPermissionsCenter(
 }) async {
   var camera = data.cameraConsentGranted;
   var medicineNotifications = data.medicationNotificationsGranted;
+  var repeatUnconfirmed = data.repeatUnconfirmedMedicationReminders;
+  var loudMedicationReminders = data.loudMedicationReminders;
   var appointmentNotifications = data.appointmentNotificationsGranted;
   var ai = data.aiConsentGranted;
   final confirmed = await showDialog<bool>(
@@ -167,6 +227,44 @@ Future<bool> _showPermissionsCenter(
                 title: Text(tx(dialogContext, 'Vaistų priminimai', 'Medicine reminders')),
                 subtitle: Text(tx(dialogContext, 'Gauti pranešimus apie vaistą, dozę ir vartojimo laiką', 'Receive medicine, dose and schedule notifications')),
                 onChanged: (value) => setDialogState(() => medicineNotifications = value),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.notification_important_outlined),
+                value: medicineNotifications && repeatUnconfirmed,
+                title: Text(tx(
+                  dialogContext,
+                  'Kartoti nepatvirtintą priminimą',
+                  'Repeat unconfirmed reminder',
+                )),
+                subtitle: Text(tx(
+                  dialogContext,
+                  'Jei nepasirinktas joks veiksmas, kartoti kas 30 min. iki reakcijos (ne ilgiau kaip 24 val.)',
+                  'If no action is selected, repeat every 30 min. until you respond (up to 24 hours)',
+                )),
+                onChanged: medicineNotifications
+                    ? (value) => setDialogState(() => repeatUnconfirmed = value)
+                    : null,
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.alarm_on_rounded),
+                value: medicineNotifications && loudMedicationReminders,
+                title: Text(tx(
+                  dialogContext,
+                  'Maksimalaus garsumo priminimai',
+                  'Maximum alert reminders',
+                )),
+                subtitle: Text(tx(
+                  dialogContext,
+                  'Žadintuvo garsas, stipri vibracija ir perspėjimas virš užrakinto ekrano. „Netrukdyti“ režimui reikės atskiro telefono leidimo.',
+                  'Alarm sound, strong vibration and an alert over the lock screen. Bypassing Do Not Disturb requires a separate phone permission.',
+                )),
+                onChanged: medicineNotifications
+                    ? (value) => setDialogState(
+                        () => loudMedicationReminders = value,
+                      )
+                    : null,
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -209,6 +307,9 @@ Future<bool> _showPermissionsCenter(
     ..aiConsentGranted = ai
     ..cameraConsentGranted = camera
     ..medicationNotificationsGranted = medicineNotifications
+    ..repeatUnconfirmedMedicationReminders = repeatUnconfirmed
+    ..loudMedicationReminders =
+        medicineNotifications && loudMedicationReminders
     ..appointmentNotificationsGranted = appointmentNotifications;
 
   if (camera) {
@@ -218,6 +319,9 @@ Future<bool> _showPermissionsCenter(
   }
   if (medicineNotifications || appointmentNotifications) {
     await ReminderNotifications.requestPermissions();
+  }
+  if (medicineNotifications && loudMedicationReminders) {
+    await ReminderNotifications.requestMaximumAlertPermissions();
   }
   await Store.save(data);
   await ReminderNotifications.scheduleAll(data);
@@ -244,10 +348,12 @@ Future<bool> _cameraAvailable(BuildContext context, AppData data) async {
   return false;
 }
 
-class _App extends State<App> {
+class _App extends State<App> with WidgetsBindingObserver {
   AppData? data;
   bool launchAccepted = false;
   bool authenticating = false;
+  bool _reloadingNotificationActions = false;
+  bool _memberLinkPromptVisible = false;
   final navigatorKey = GlobalKey<NavigatorState>();
 
   Future<void> _finishOpening(AppData current) async {
@@ -260,7 +366,99 @@ class _App extends State<App> {
     }
     if (mounted) {
       setState(() => launchAccepted = true);
-      WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkForUpdate();
+        _promptForAccountMember();
+      });
+    }
+  }
+
+  Future<void> _promptForAccountMember() async {
+    final current = data;
+    final context = navigatorKey.currentContext;
+    if (!mounted ||
+        !launchAccepted ||
+        context == null ||
+        _memberLinkPromptVisible ||
+        CloudSyncService.instance.user == null ||
+        CloudSyncService.instance.state == CloudSyncState.syncing ||
+        current == null ||
+        current.householdId.isEmpty ||
+        current.members.isEmpty ||
+        current.preferredHomeMemberId.isNotEmpty) {
+      return;
+    }
+    _memberLinkPromptVisible = true;
+    try {
+      var selected = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: SimpleDialog(
+            title: Text(
+              tx(
+                dialogContext,
+                'Kuris šeimos narys esate?',
+                'Which family member are you?',
+              ),
+            ),
+            children: [
+              ...current.members.map(
+                (member) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(dialogContext, member.id),
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: CircleAvatar(
+                      backgroundColor: mint,
+                      child: Text(
+                        _memberEmoji(member.gender, member.ageGroup),
+                      ),
+                    ),
+                    title: Text(member.name),
+                  ),
+                ),
+              ),
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(dialogContext, '__new__'),
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.person_add_alt_1, color: green),
+                  title: Text(
+                    tx(
+                      dialogContext,
+                      'Manęs sąraše nėra',
+                      'I am not in the list',
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (!mounted || selected == null) return;
+      if (selected == '__new__') {
+        selected = await Navigator.push<String>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => MemberEditor(
+              data: current,
+              initialRelation: 'member',
+              onChanged: changed,
+            ),
+          ),
+        );
+      }
+      if (selected == null || selected.isEmpty) return;
+      await CloudSyncService.instance.linkCurrentAccountToMember(
+        current,
+        selected,
+      );
+      await ReminderNotifications.scheduleAll(current);
+      if (mounted) setState(() {});
+    } finally {
+      _memberLinkPromptVisible = false;
     }
   }
 
@@ -350,6 +548,7 @@ class _App extends State<App> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     Future.wait([
       Store.load(),
       Future<void>.delayed(const Duration(milliseconds: 1400)),
@@ -358,14 +557,58 @@ class _App extends State<App> {
       ReminderNotifications.onAction = _handleReminderAction;
       ReminderNotifications.scheduleAll(v);
       if (mounted) setState(() => data = v);
-      CloudSyncService.instance.resume(
+      unawaited(CloudSyncService.instance.resume(
         v,
         onRemoteApplied: () async {
           await ReminderNotifications.scheduleAll(v);
-          if (mounted) setState(() {});
+          if (mounted) {
+            setState(() {});
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _promptForAccountMember(),
+            );
+          }
         },
-      );
+      ).then((_) {
+        if (mounted) {
+          setState(() {});
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _promptForAccountMember(),
+          );
+        }
+      }));
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_reloadNotificationActions());
+    }
+  }
+
+  Future<void> _reloadNotificationActions() async {
+    final current = data;
+    if (current == null || _reloadingNotificationActions) return;
+    _reloadingNotificationActions = true;
+    try {
+      // Give the background notification isolate time to finish its local
+      // write before refreshing the in-memory reminder history.
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final stored = await Store.load();
+      current.meds = stored.meds;
+      current.reminders = stored.reminders;
+      CloudSyncService.instance.queueUpload(current);
+      await ReminderNotifications.scheduleAll(current);
+      if (mounted) setState(() {});
+    } finally {
+      _reloadingNotificationActions = false;
+    }
   }
 
   Future<void> _handleReminderAction(
@@ -387,7 +630,13 @@ class _App extends State<App> {
     } else if (action == 'snooze') {
       await ReminderNotifications.snooze(reminder, current, occurrence);
     }
+    await Store.recordPendingReminderAction(
+      action,
+      reminder.id,
+      occurrence,
+    );
     await Store.save(current);
+    CloudSyncService.instance.queueUpload(current);
     if (mounted) setState(() {});
   }
 
@@ -926,7 +1175,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
               try {
                 await CloudSyncService.instance.signIn(widget.data, onRemoteApplied: () async => widget.onChanged());
                 _reloadProfileControllers();
-                if (mounted) setState(() => step = 3);
+                if (widget.data.preferredHomeMemberId.isNotEmpty) {
+                  _finish();
+                } else if (mounted) {
+                  setState(() => step = 3);
+                }
               } catch (e) {
                 if (mounted) setState(() => error = CloudSyncService.instance.readableError(e));
               } finally {
@@ -1032,6 +1285,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
       const SizedBox(height: 8),
       FilledButton.icon(
         onPressed: () async {
+          if (!await requirePremium(context) || !context.mounted) return;
           await Navigator.push(context, MaterialPageRoute(builder: (_) => MemberEditor(data: widget.data, initialRelation: 'child', onChanged: widget.onChanged)));
           if (mounted) setState(() {});
         },
@@ -1065,6 +1319,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
           subtitle: Text(tx(context, 'Sukurti namų ūkį arba įvesti kvietimo kodą', 'Create a household or enter an invite code')),
           trailing: const Icon(Icons.chevron_right),
           onTap: () async {
+            if (!await requirePremium(context) || !context.mounted) return;
             if (CloudSyncService.instance.user == null) {
               setState(() => step = 2);
               return;
@@ -1074,6 +1329,16 @@ class _OnboardingPageState extends State<OnboardingPage> {
           },
         ),
       ])),
+      if (CloudSyncService.instance.user != null) ...[
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: _finish,
+          icon: const Icon(Icons.skip_next_rounded),
+          label: Text(
+            tx(context, 'Praleisti ir tęsti', 'Skip and continue'),
+          ),
+        ),
+      ],
     ],
   );
 
@@ -1123,10 +1388,35 @@ class RoleAvatar extends StatelessWidget {
 
 class _Shell extends State<Shell> {
   int index = 0;
-  String selectedMemberId = '';
+  late String selectedMemberId;
+  bool memberSelectionChanged = false;
   DateTime? calendarInitialDate;
   String calendarInitialMemberId = '';
   int calendarRequestVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    selectedMemberId = widget.data.preferredHomeMemberId;
+  }
+
+  @override
+  void didUpdateWidget(covariant Shell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final selectionStillExists = selectedMemberId.isEmpty ||
+        widget.data.members.any((member) => member.id == selectedMemberId);
+    if (!memberSelectionChanged || !selectionStillExists) {
+      selectedMemberId = widget.data.preferredHomeMemberId;
+      memberSelectionChanged = false;
+    }
+  }
+
+  void _selectHomeMember(String value) {
+    setState(() {
+      selectedMemberId = value;
+      memberSelectionChanged = true;
+    });
+  }
 
   void _openCalendar(DateTime date, String memberId) {
     setState(() {
@@ -1145,7 +1435,7 @@ class _Shell extends State<Shell> {
         data: d,
         onChanged: widget.onChanged,
         memberId: selectedMemberId,
-        onMemberChanged: (value) => setState(() => selectedMemberId = value),
+        onMemberChanged: _selectHomeMember,
         onOpenCalendar: _openCalendar,
       ),
       CabinetPage(data: d, onChanged: widget.onChanged),
@@ -1167,7 +1457,10 @@ class _Shell extends State<Shell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
-        onDestinationSelected: (v) => setState(() => index = v),
+        onDestinationSelected: (v) async {
+          if (v == 3 && !await requirePremium(c)) return;
+          if (mounted) setState(() => index = v);
+        },
         destinations: [
           NavigationDestination(
             icon: const Icon(Icons.home_outlined),
@@ -1257,6 +1550,11 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext c) {
     final now = DateTime.now();
     final today = dateKey(now);
+    final homeMembers = [...data.members]..sort((a, b) {
+      if (a.id == data.linkedMemberId) return -1;
+      if (b.id == data.linkedMemberId) return 1;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
     final active =
         data.reminders
             .where(
@@ -1399,24 +1697,31 @@ class HomePage extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    ChoiceChip(
-                      label: Text(tx(c, 'Visa šeima', 'Whole family')),
-                      selected: memberId.isEmpty,
-                      onSelected: (_) => onMemberChanged(''),
-                    ),
-                    const SizedBox(width: 7),
-                    ...data.members.map(
+                    ...homeMembers.map(
                       (member) => Padding(
                         padding: const EdgeInsets.only(right: 7),
                         child: ChoiceChip(
                           avatar: Text(
                             _memberEmoji(member.gender, member.ageGroup),
                           ),
-                          label: Text(member.name),
+                          label: Text(
+                            member.id == data.linkedMemberId
+                                ? tx(
+                                    c,
+                                    '${member.name} (aš)',
+                                    '${member.name} (me)',
+                                  )
+                                : member.name,
+                          ),
                           selected: memberId == member.id,
                           onSelected: (_) => onMemberChanged(member.id),
                         ),
                       ),
+                    ),
+                    ChoiceChip(
+                      label: Text(tx(c, 'Visa šeima', 'Whole family')),
+                      selected: memberId.isEmpty,
+                      onSelected: (_) => onMemberChanged(''),
                     ),
                   ],
                 ),
@@ -1905,8 +2210,8 @@ Widget _medicineStatusCard({
               ? _expiryDetail(context, medicine.expiry, days)
               : tx(
                   context,
-                  'liko ${quantityLabel(medicine.stock)} vnt.',
-                  '${quantityLabel(medicine.stock)} remaining',
+                  'liko ${quantityLabel(medicine.stock)} ${doseUnitLabel(context, medicine.stockUnit)}',
+                  '${quantityLabel(medicine.stock)} ${doseUnitLabel(context, medicine.stockUnit)} remaining',
                 );
           return InkWell(
             onTap: onMedicineTap == null ? null : () => onMedicineTap(medicine),
@@ -1968,12 +2273,15 @@ Widget _familyStatusCard(
   VoidCallback onChanged,
 ) => InkWell(
   borderRadius: BorderRadius.circular(16),
-  onTap: () => Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => FamilyPage(data: data, onChanged: onChanged),
-    ),
-  ),
+  onTap: () async {
+    if (!await requirePremium(context) || !context.mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FamilyPage(data: data, onChanged: onChanged),
+      ),
+    );
+  },
   child: Container(
     height: 82,
     padding: const EdgeInsets.fromLTRB(14, 8, 10, 8),
@@ -2501,8 +2809,8 @@ class _CabinetPageState extends State<CabinetPage> {
                                   Icons.inventory_2_outlined,
                                   tx(
                                     c,
-                                    '${quantityLabel(m.stock)} vnt.',
-                                    '${quantityLabel(m.stock)} left',
+                                    '${quantityLabel(m.stock)} ${doseUnitLabel(c, m.stockUnit)}',
+                                    '${quantityLabel(m.stock)} ${doseUnitLabel(c, m.stockUnit)} left',
                                   ),
                                   green,
                                 ),
@@ -2651,6 +2959,10 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
   }
 
   Future<void> ask([String? suggested]) async {
+    if (!SubscriptionService.instance.hasPremium) {
+      await requirePremium(context);
+      return;
+    }
     final value = (suggested ?? question.text).trim().isEmpty
         ? tx(
             context,
@@ -2664,7 +2976,9 @@ class _MedicineAiPageState extends State<MedicineAiPage> {
     if (suggested == null) question.text = value;
     setState(() { busy = true; error = ''; answer = null; });
     try {
-      if (widget.data.aiConsentGranted && AiMedicineProfileService.needsInformation(widget.medicine)) {
+      if (widget.data.aiConsentGranted &&
+          SubscriptionService.instance.hasPremium &&
+          AiMedicineProfileService.needsInformation(widget.medicine)) {
         try {
           if (await AiMedicineProfileService.populate(widget.medicine)) await Store.save(widget.data);
         } catch (_) { /* The advisor may still answer from available data. */ }
@@ -2792,7 +3106,9 @@ class _MedicinePageState extends State<MedicinePage> {
   @override
   void initState() {
     super.initState();
-    if (data.aiConsentGranted && AiMedicineProfileService.needsInformation(med)) {
+    if (data.aiConsentGranted &&
+        SubscriptionService.instance.hasPremium &&
+        AiMedicineProfileService.needsInformation(med)) {
       filling = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _fillInformation());
     }
@@ -2930,7 +3246,9 @@ class _MedicinePageState extends State<MedicinePage> {
                   const SizedBox(height: 8),
                   FilledButton.tonalIcon(
                     onPressed: data.aiConsentGranted
-                        ? () => Navigator.push(
+                        ? () async {
+                            if (!await requirePremium(c) || !c.mounted) return;
+                            await Navigator.push(
                               c,
                               MaterialPageRoute(
                                 builder: (_) => MedicineAiPage(
@@ -2940,7 +3258,8 @@ class _MedicinePageState extends State<MedicinePage> {
                                       'Paaiškink šį vaistą: kam jis skirtas, kaip vartojamas ir į ką svarbiausia atkreipti dėmesį.',
                                 ),
                               ),
-                            )
+                            );
+                          }
                         : null,
                     icon: const Icon(Icons.auto_awesome),
                     label: Text(
@@ -2995,6 +3314,7 @@ class _MedicinePageState extends State<MedicinePage> {
                       ],
                     ),
                   ),
+                  MedicinePriceCard(medicine: med),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -3080,7 +3400,7 @@ class _MedicinePageState extends State<MedicinePage> {
                     Column(
                       children: [
                         Text(
-                          '${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}',
+                          '${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)} ${doseUnitLabel(c, med.stockUnit)}',
                         ),
                         Text(
                           '${tx(c, 'Perspėjimo riba', 'Warning threshold')}: ${quantityLabel(med.lowStockThreshold)}',
@@ -3763,7 +4083,7 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
         card(
           Text(
             '${widget.medicine.name} ${widget.medicine.strength}\n'
-            '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)}',
+            '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)} ${doseUnitLabel(context, widget.medicine.stockUnit)}',
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
         ),
@@ -3785,7 +4105,7 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
                 child: Icon(Icons.inventory_2_outlined, color: green),
               ),
               title: Text(
-                '${quantityLabel(item.quantity)} ${tx(context, 'vnt.', 'units')}',
+                '${quantityLabel(item.quantity)} ${doseUnitLabel(context, widget.medicine.stockUnit)}',
               ),
               subtitle: Text(
                 [
@@ -3961,6 +4281,11 @@ class _MedicineEditor extends State<MedicineEditor> {
       (widget.registryMedicine?.prescriptionStatus.toLowerCase() ==
           'receptinis');
   late bool doseRuleVerified = widget.medicine?.doseRuleVerified ?? false;
+  late String stockUnit =
+      widget.medicine?.stockUnit ??
+      suggestedMedicineQuantityUnit(
+        widget.registryMedicine?.dosageForm ?? '',
+      );
   late final Set<String> selectedCategories = {
     ..._splitCategories(widget.medicine?.category ?? ''),
     if (widget.medicine == null)
@@ -4002,7 +4327,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     if (_registryMedicine == null && existing != null && existing.registryVerified) {
       _registryMedicine = AiMedicineProfileService.identity(existing);
     }
-    if (widget.data.aiConsentGranted && _registryMedicine != null &&
+    if (widget.data.aiConsentGranted &&
+        SubscriptionService.instance.hasPremium &&
+        _registryMedicine != null &&
         (existing == null || AiMedicineProfileService.needsInformation(existing))) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _autoFillProfile(_registryMedicine!);
@@ -4118,6 +4445,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     strength.text = medicine.strength;
     manufacturer.text = medicine.registrant;
     dosageForm.text = medicine.dosageForm;
+    if (widget.medicine == null) {
+      stockUnit = suggestedMedicineQuantityUnit(medicine.dosageForm);
+    }
     packageSize.text = medicine.packageDescription;
     prescription = medicine.prescriptionStatus.toLowerCase() == 'receptinis';
     if (dosage.text.trim().isEmpty && medicine.administrationRoute.isNotEmpty) {
@@ -4135,7 +4465,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     _registryMedicine = medicine;
     _applyingVvkt = false;
     if (mounted) setState(() {});
-    if (widget.data.aiConsentGranted) _autoFillProfile(medicine);
+    if (widget.data.aiConsentGranted && SubscriptionService.instance.hasPremium) {
+      _autoFillProfile(medicine);
+    }
   }
 
   Future<void> _autoFillProfile(VvktMedicine medicine) async {
@@ -4701,7 +5033,33 @@ class _MedicineEditor extends State<MedicineEditor> {
           'Vaisto turi užtekti iki YYYY-MM-DD',
           'Medicine should last until YYYY-MM-DD',
         ),
-        field(c, stock, 'Kiekis', 'Quantity', number: true),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: field(c, stock, 'Kiekis', 'Quantity', number: true),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                key: ValueKey(stockUnit),
+                initialValue: stockUnit,
+                decoration: InputDecoration(
+                  labelText: tx(c, 'Likučio vienetas', 'Stock unit'),
+                ),
+                items: medicineQuantityUnits
+                    .map(
+                      (unit) => DropdownMenuItem(
+                        value: unit,
+                        child: Text(doseUnitLabel(c, unit)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) => setState(() => stockUnit = value!),
+              ),
+            ),
+          ],
+        ),
         field(
           c,
           lowStockThreshold,
@@ -4798,6 +5156,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                   prescriptionValidUntil: prescriptionValidUntil.text.trim(),
                   treatmentUntil: treatmentUntil.text.trim(),
                   stock: parsedStock,
+                  stockUnit: stockUnit,
                   lowStockThreshold: parsedThreshold,
                   prescription: prescription,
                   leaflet: leaflet.text.trim(),
@@ -4880,6 +5239,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..prescriptionValidUntil = prescriptionValidUntil.text.trim()
                 ..treatmentUntil = treatmentUntil.text.trim()
                 ..stock = parsedStock
+                ..stockUnit = stockUnit
                 ..lowStockThreshold = parsedThreshold
                 ..prescription = prescription
                 ..batchNumber = batchNumber.text.trim()
@@ -5051,12 +5411,15 @@ class FamilyPage extends StatelessWidget {
         ],
         const SizedBox(height: 8),
         FilledButton.icon(
-          onPressed: () => Navigator.push(
-            c,
-            MaterialPageRoute(
-              builder: (_) => MemberEditor(data: data, onChanged: onChanged),
-            ),
-          ),
+          onPressed: () async {
+            if (!await requirePremium(c) || !c.mounted) return;
+            await Navigator.push(
+              c,
+              MaterialPageRoute(
+                builder: (_) => MemberEditor(data: data, onChanged: onChanged),
+              ),
+            );
+          },
           icon: const Icon(Icons.person_add),
           label: Text(tx(c, 'Pridėti šeimos narį', 'Add family member')),
         ),
@@ -5105,13 +5468,16 @@ Widget _familyMemberCard(
       '${tx(c, '$medicineCount vaistai', '$medicineCount medicines')}',
     ),
     trailing: const Icon(Icons.chevron_right),
-    onTap: () => Navigator.push(
-      c,
-      MaterialPageRoute(
-        builder: (_) =>
-            MemberEditor(data: data, member: member, onChanged: onChanged),
-      ),
-    ),
+    onTap: () async {
+      if (!await requirePremium(c) || !c.mounted) return;
+      await Navigator.push(
+        c,
+        MaterialPageRoute(
+          builder: (_) =>
+              MemberEditor(data: data, member: member, onChanged: onChanged),
+        ),
+      );
+    },
   ),
   );
 }
@@ -5611,7 +5977,7 @@ class _MemberEditor extends State<MemberEditor> {
             }
             if (widget.member == null) widget.data.members.add(m);
             widget.onChanged();
-            Navigator.pop(c);
+            Navigator.pop(c, m.id);
           },
           child: Text(tx(c, 'Išsaugoti', 'Save')),
         ),
@@ -6183,21 +6549,70 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
             );
           }
           final item = event.$3 as Reminder;
+          final taken = item.takenDates.contains(key);
+          final today = DateTime.now();
+          final selectedDate = DateTime(
+            selectedDay.year,
+            selectedDay.month,
+            selectedDay.day,
+          );
+          final canMarkTaken = !selectedDate.isAfter(
+            DateTime(today.year, today.month, today.day),
+          );
+          final parts = item.time.split(':');
+          final occurrence = DateTime(
+            selectedDay.year,
+            selectedDay.month,
+            selectedDay.day,
+            int.tryParse(parts.firstOrNull ?? '') ?? 0,
+            int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0,
+          );
           return Card(
             child: ListTile(
               leading: Icon(
-                item.takenDates.contains(key)
-                    ? Icons.check_circle
-                    : Icons.medication_outlined,
-                color: item.takenDates.contains(key)
-                    ? green
-                    : const Color(0xffff9f1c),
+                taken ? Icons.check_circle : Icons.medication_outlined,
+                color: taken ? green : const Color(0xffff9f1c),
               ),
               title: Text(
                 '${item.time} • ${item.title}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: Text(_who(widget.data, item, tx(context, 'Aš', 'Me'))),
+              subtitle: Text(
+                [
+                  _who(widget.data, item, tx(context, 'Aš', 'Me')),
+                  '${quantityLabel(item.quantityPerDose)} ${doseUnitLabel(context, item.doseUnit)}',
+                ].where((value) => value.isNotEmpty).join(' • '),
+              ),
+              trailing: canMarkTaken
+                  ? IconButton(
+                      tooltip: taken
+                          ? tx(
+                              context,
+                              'Atšaukti suvartojimą',
+                              'Undo consumption',
+                            )
+                          : tx(
+                              context,
+                              'Pažymėti suvartojimą',
+                              'Mark as taken',
+                            ),
+                      onPressed: () {
+                        if (taken) {
+                          undoDoseTaken(widget.data, item, occurrence);
+                        } else {
+                          markDoseTaken(widget.data, item, occurrence);
+                        }
+                        widget.onChanged();
+                        setState(() {});
+                      },
+                      icon: Icon(
+                        taken
+                            ? Icons.check_circle
+                            : Icons.radio_button_unchecked,
+                        color: taken ? green : const Color(0xff7b8ba1),
+                      ),
+                    )
+                  : null,
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -6743,6 +7158,20 @@ class _ReminderEditor extends State<ReminderEditor> {
     return widget.data.members.firstOrNull?.id ?? '';
   }
 
+  Med? get selectedMedicine =>
+      widget.data.meds.where((medicine) => medicine.id == medId).firstOrNull;
+
+  String _initialDoseUnit() {
+    final existing = widget.reminder;
+    final requested = existing?.medId ?? widget.initialMedId;
+    return widget.data.meds
+            .where((medicine) => medicine.id == requested)
+            .map((medicine) => medicine.stockUnit)
+            .firstOrNull ??
+        existing?.doseUnit ??
+        'vnt.';
+  }
+
   late final titleC = TextEditingController(text: widget.reminder?.title ?? ''),
       dose = TextEditingController(text: widget.reminder?.dose ?? ''),
       quantity = TextEditingController(
@@ -6758,7 +7187,7 @@ class _ReminderEditor extends State<ReminderEditor> {
   late String medId = widget.reminder?.medId ?? widget.initialMedId,
       memberId = _initialMemberId(),
       time = widget.reminder?.time ?? '08:00';
-  late String doseUnit = widget.reminder?.doseUnit ?? 'vnt.';
+  late String doseUnit = _initialDoseUnit();
   late List<int> days = [
     ...(widget.reminder?.weekdays ?? [1, 2, 3, 4, 5, 6, 7]),
   ];
@@ -6823,7 +7252,11 @@ class _ReminderEditor extends State<ReminderEditor> {
             ),
           ],
           onChanged: (v) {
-            setState(() => medId = v!);
+            setState(() {
+              medId = v!;
+              final medicine = selectedMedicine;
+              if (medicine != null) doseUnit = medicine.stockUnit;
+            });
             if (medId.isNotEmpty) {
               final medicine = widget.data.meds.firstWhere(
                 (x) => x.id == medId,
@@ -6950,11 +7383,12 @@ class _ReminderEditor extends State<ReminderEditor> {
             const SizedBox(width: 10),
             Expanded(
               child: DropdownButtonFormField<String>(
+                key: ValueKey('$medId-$doseUnit'),
                 initialValue: doseUnit,
                 decoration: InputDecoration(
                   labelText: tx(c, 'Vienetas', 'Unit'),
                 ),
-                items: const ['vnt.', 'tabletė', 'kapsulė', 'ml', 'dozė']
+                items: medicineQuantityUnits
                     .map(
                       (unit) => DropdownMenuItem(
                         value: unit,
@@ -6962,11 +7396,25 @@ class _ReminderEditor extends State<ReminderEditor> {
                       ),
                     )
                     .toList(),
-                onChanged: (value) => setState(() => doseUnit = value!),
+                onChanged: selectedMedicine == null
+                    ? (value) => setState(() => doseUnit = value!)
+                    : null,
               ),
             ),
           ],
         ),
+        if (selectedMedicine != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              tx(
+                c,
+                'Pažymėjus suvartojimą, pasirinktas kiekis bus atimtas iš „${selectedMedicine!.name}“ likučio (${doseUnitLabel(c, selectedMedicine!.stockUnit)}).',
+                'When marked as taken, the selected amount will be deducted from “${selectedMedicine!.name}” stock (${doseUnitLabel(c, selectedMedicine!.stockUnit)}).',
+              ),
+              style: const TextStyle(color: Color(0xff526874)),
+            ),
+          ),
         const SizedBox(height: 12),
         field(
           c,
@@ -7014,7 +7462,7 @@ class _ReminderEditor extends State<ReminderEditor> {
             r.memberId = memberId;
             r.time = time;
             r.dose = dose.text.trim();
-            r.doseUnit = doseUnit;
+            r.doseUnit = selectedMedicine?.stockUnit ?? doseUnit;
             r.quantityPerDose = amount;
             r.instructions = instructions.text.trim();
             r.startDate = startDate.text.trim();
@@ -7859,12 +8307,12 @@ class _DoctorSummaryPageState extends State<DoctorSummaryPage> {
                     subtitle: Text(
                       tx(
                         c,
-                        'Likutis: ${quantityLabel(medicine.stock)} vnt.',
-                        'Stock: ${quantityLabel(medicine.stock)} units',
+                        'Likutis: ${quantityLabel(medicine.stock)} ${doseUnitLabel(c, medicine.stockUnit)}',
+                        'Stock: ${quantityLabel(medicine.stock)} ${doseUnitLabel(c, medicine.stockUnit)}',
                       ),
                     ),
                     trailing: Text(
-                      '${quantityLabel(_consumedMedicineAmount(data, household ? '' : memberId, medicine.id, periodDays))} ${tx(c, 'vnt.', 'units')}',
+                      '${quantityLabel(_consumedMedicineAmount(data, household ? '' : memberId, medicine.id, periodDays))} ${doseUnitLabel(c, medicine.stockUnit)}',
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                   ),
@@ -8308,6 +8756,12 @@ class _CloudAccountPageState extends State<CloudAccountPage> {
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: busy ? null : () async {
+                // Existing household members must always be able to manage or
+                // leave the household, even after Premium expires.
+                if (widget.data.householdId.isEmpty &&
+                    (!await requirePremium(context) || !context.mounted)) {
+                  return;
+                }
                 await Navigator.push(context, MaterialPageRoute(builder: (_) => HouseholdSettingsPage(data: widget.data, onChanged: widget.onChanged)));
                 if (mounted) setState(() {});
               },
@@ -8513,6 +8967,384 @@ class _HouseholdSettingsPageState extends State<HouseholdSettingsPage> {
   ];
 }
 
+class SubscriptionPage extends StatelessWidget {
+  const SubscriptionPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(tx(context, 'Planai', 'Plans'))),
+    body: AnimatedBuilder(
+      animation: SubscriptionService.instance,
+      builder: (context, _) {
+        final service = SubscriptionService.instance;
+        final entitlement = service.entitlement;
+        final plan = entitlement.effectivePlan;
+        final user = CloudSyncService.instance.user;
+        final validUntil = entitlement.validUntil;
+        return ListView(
+          padding: scrollPagePadding(context),
+          children: [
+            card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: plan == SubscriptionPlan.free
+                            ? const Color(0xffeef3f2)
+                            : mint,
+                        child: Icon(
+                          Icons.workspace_premium_rounded,
+                          color: plan == SubscriptionPlan.free
+                              ? Colors.grey
+                              : green,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              tx(context, 'Dabartinis planas', 'Current plan'),
+                              style: const TextStyle(color: Color(0xff526874)),
+                            ),
+                            Text(
+                              service.loading
+                                  ? tx(context, 'Tikrinama…', 'Checking…')
+                                  : subscriptionPlanLabel(context, plan),
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w900,
+                                color: navy,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: tx(context, 'Atnaujinti', 'Refresh'),
+                        onPressed: service.loading ? null : service.refresh,
+                        icon: const Icon(Icons.refresh_rounded),
+                      ),
+                    ],
+                  ),
+                  if (validUntil != null && entitlement.plan != SubscriptionPlan.free) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '${tx(context, 'Galioja iki', 'Valid until')}: '
+                      '${DateFormat.yMMMd(Localizations.localeOf(context).languageCode).format(validUntil.toLocal())}',
+                    ),
+                  ],
+                  if (user == null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      tx(
+                        context,
+                        'Prisijunkite su „Google“, kad planas būtų susietas su jūsų paskyra.',
+                        'Sign in with Google to link the plan to your account.',
+                      ),
+                    ),
+                  ],
+                  if (service.message.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      tx(
+                        context,
+                        'Plano patikrinti nepavyko. Saugumo sumetimais taikomas „Free“ planas.',
+                        'The plan could not be checked. Free is applied for security.',
+                      ),
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _subscriptionPlanCard(
+              context,
+              title: 'Free',
+              price: '0 €',
+              selected: plan == SubscriptionPlan.free,
+              features: [
+                tx(context, 'Asmeninė vaistinėlė', 'Personal medicine cabinet'),
+                tx(context, 'Vaistų ir vizitų priminimai', 'Medicine and appointment reminders'),
+                tx(context, 'Kalendorius, likučiai ir galiojimas', 'Calendar, stock and expiry'),
+                tx(context, 'Vienas asmeninis profilis', 'One personal profile'),
+              ],
+            ),
+            _subscriptionPlanCard(
+              context,
+              title: tx(context, 'Premium mėnesinis', 'Premium monthly'),
+              price: tx(context, '1,99 € / mėn.', '€1.99 / month'),
+              selected: plan == SubscriptionPlan.premiumMonthly,
+              features: _premiumFeatures(context),
+            ),
+            _subscriptionPlanCard(
+              context,
+              title: tx(context, 'Premium metinis', 'Premium yearly'),
+              price: tx(context, '19,99 € / metus', '€19.99 / year'),
+              selected: plan == SubscriptionPlan.premiumYearly,
+              badge: tx(context, '2 mėn. nemokamai', '2 months free'),
+              features: _premiumFeatures(context),
+            ),
+            const SizedBox(height: 8),
+            if (entitlement.hasPremium)
+              card(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tx(context, 'Premium aktyvus', 'Premium is active'),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                        color: navy,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      tx(
+                        context,
+                        'Jūsų planas jau aktyvuotas. Dėl plano pakeitimo ar nutraukimo kreipkitės: andrius.grudinskas@gmail.com',
+                        'Your plan is already active. To change or cancel it, contact: andrius.grudinskas@gmail.com',
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              card(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tx(context, 'Aktyvavimas', 'Activation'),
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: navy,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    tx(
+                      context,
+                      'Norite Premium plano? Kreipkitės:',
+                      'Want a Premium plan? Contact:',
+                    ),
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: navy),
+                  ),
+                  const SizedBox(height: 4),
+                  const SelectableText('andrius.grudinskas@gmail.com'),
+                  if (service.premiumRequestPending) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Icon(Icons.schedule_rounded, color: green),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            tx(
+                              context,
+                              'Jūsų Premium užklausa laukia patvirtinimo.',
+                              'Your Premium request is awaiting approval.',
+                            ),
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (user != null) ...[
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: () async {
+                        final choice = await _showPremiumRequestDialog(context);
+                        if (choice == null || !context.mounted) return;
+                        try {
+                          await SubscriptionService.instance.requestPremium(choice);
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context, 'Užklausa išsiųsta.', 'Request sent.'))));
+                        } catch (_) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context, 'Nepavyko išsiųsti užklausos.', 'Could not send request.'))));
+                        }
+                      },
+                      icon: const Icon(Icons.workspace_premium_rounded),
+                      label: Text(tx(context, 'Noriu Premium', 'I want Premium')),
+                    ),
+                  ] else ...[
+                    const SizedBox(height: 12),
+                    Text(tx(context, 'Norėdami pateikti užklausą, prisijunkite su „Google“.', 'Sign in with Google to send a request.')),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+Future<SubscriptionPlan?> _showPremiumRequestDialog(BuildContext context) {
+  var plan = SubscriptionPlan.premiumMonthly;
+  var accepted = false;
+  return showDialog<SubscriptionPlan>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: Text(tx(context, 'Premium užklausa', 'Premium request')),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                RadioGroup<SubscriptionPlan>(
+                  groupValue: plan,
+                  onChanged: (value) {
+                    if (value != null) setState(() => plan = value);
+                  },
+                  child: Column(
+                    children: [
+                      RadioListTile<SubscriptionPlan>(
+                        value: SubscriptionPlan.premiumMonthly,
+                        title: Text(tx(context, 'Mėnesinis – 1,99 €', 'Monthly – €1.99')),
+                      ),
+                      RadioListTile<SubscriptionPlan>(
+                        value: SubscriptionPlan.premiumYearly,
+                        title: Text(tx(context, 'Metinis – 19,99 €', 'Annual – €19.99')),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(),
+                Text(
+                  tx(context, 'Pirkimo ir naudojimo sąlygos', 'Purchase and usage terms'),
+                  style: const TextStyle(fontWeight: FontWeight.w900, color: navy),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  tx(
+                    context,
+                    'Užklausos pateikimas pats savaime pinigų nenuskaito. Mokėjimas ir aktyvavimo data suderinami el. paštu. Planas automatiškai nepratęsiamas. Premium pradedamas teikti iškart po patvirtinimo ir galioja iki nurodytos datos. Nutraukus planą anksčiau, sumokėta suma paprastai negrąžinama, išskyrus atvejus, kai grąžinimą numato privalomi teisės aktai arba paslauga neatitinka reikalavimų. Įstatymuose nustatytos vartotojo teisės nėra ribojamos.',
+                    'Submitting a request does not charge you. Payment and the activation date are arranged by email. The plan does not renew automatically. Premium starts immediately after approval and remains valid until the stated date. If cancelled early, amounts paid are generally non-refundable, except where mandatory law requires a refund or the service is non-conforming. Statutory consumer rights are not limited.',
+                  ),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: accepted,
+                  onChanged: (value) => setState(() => accepted = value ?? false),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: Text(
+                    tx(
+                      context,
+                      'Perskaičiau, sutinku su sąlygomis ir prašau pradėti teikti paslaugą iškart po patvirtinimo.',
+                      'I have read and accept the terms and request that the service begin immediately after approval.',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(tx(context, 'Atšaukti', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: accepted ? () => Navigator.pop(dialogContext, plan) : null,
+            child: Text(tx(context, 'Siųsti užklausą', 'Send request')),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+List<String> _premiumFeatures(BuildContext context) => [
+  tx(context, 'Viskas, kas yra „Free“ plane', 'Everything in Free'),
+  tx(context, 'Šeimos nariai ir bendrinamas namų ūkis', 'Family members and household sharing'),
+  tx(context, 'AI vaistų ir simptomų paaiškinimai', 'AI medicine and symptom explanations'),
+  tx(context, 'Gydytojo suvestinė ir išplėstos ataskaitos', 'Doctor summary and advanced reports'),
+  tx(context, 'Atsarginė kopija ir duomenų eksportas', 'Backup and data export'),
+];
+
+Widget _subscriptionPlanCard(
+  BuildContext context, {
+  required String title,
+  required String price,
+  required bool selected,
+  required List<String> features,
+  String badge = '',
+}) => Card(
+  color: selected ? mint : Colors.white,
+  shape: RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(18),
+    side: BorderSide(
+      color: selected ? green : const Color(0xffe0eeeb),
+      width: selected ? 2 : 1,
+    ),
+  ),
+  child: Padding(
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  color: navy,
+                ),
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_circle_rounded, color: green),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(price, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+        if (badge.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: const Color(0xffffedca),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              child: Text(badge, style: const TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
+        ],
+        const Divider(height: 24),
+        ...features.map(
+          (feature) => Padding(
+            padding: const EdgeInsets.only(bottom: 7),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.check_rounded, color: green, size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text(feature)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
 class ProfilePage extends StatefulWidget {
   final AppData data;
   final VoidCallback onChanged;
@@ -8575,6 +9407,42 @@ class _ProfilePage extends State<ProfilePage> {
                 subtitle: Text(CloudSyncService.instance.user!.email!),
               ),
             ),
+          AnimatedBuilder(
+            animation: SubscriptionService.instance,
+            builder: (context, _) {
+              final service = SubscriptionService.instance;
+              final plan = service.entitlement.effectivePlan;
+              return Card(
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: plan == SubscriptionPlan.free
+                        ? const Color(0xffeef3f2)
+                        : mint,
+                    child: Icon(
+                      plan == SubscriptionPlan.free
+                          ? Icons.workspace_premium_outlined
+                          : Icons.workspace_premium_rounded,
+                      color: plan == SubscriptionPlan.free ? Colors.grey : green,
+                    ),
+                  ),
+                  title: Text(
+                    tx(context, 'Mano planas', 'My plan'),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: Text(
+                    service.loading
+                        ? tx(context, 'Tikrinama…', 'Checking…')
+                        : subscriptionPlanLabel(context, plan),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                  ),
+                ),
+              );
+            },
+          ),
           field(c, phone, 'Telefonas', 'Phone'),
           field(c, email, 'Kontaktinis el. paštas', 'Contact email'),
           const SizedBox(height: 14),
@@ -8695,12 +9563,15 @@ class _ProfilePage extends State<ProfilePage> {
             Icons.medical_information_outlined,
             'Santrauka gydytojui',
             'Doctor summary',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DoctorSummaryPage(data: widget.data),
-              ),
-            ),
+            () async {
+              if (!await requirePremium(c) || !c.mounted) return;
+              await Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) => DoctorSummaryPage(data: widget.data),
+                ),
+              );
+            },
           ),
           _profileToolTile(
             c,
@@ -8719,15 +9590,18 @@ class _ProfilePage extends State<ProfilePage> {
             Icons.backup_outlined,
             'Atsarginė kopija',
             'Backup and restore',
-            () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) => DataTransferPage(
-                  data: widget.data,
-                  onChanged: widget.onChanged,
+            () async {
+              if (!await requirePremium(c) || !c.mounted) return;
+              await Navigator.push(
+                c,
+                MaterialPageRoute(
+                  builder: (_) => DataTransferPage(
+                    data: widget.data,
+                    onChanged: widget.onChanged,
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
           Card(
             child: ListTile(
@@ -8795,7 +9669,7 @@ class _ProfilePage extends State<ProfilePage> {
                 tx(c, 'Programėlės atnaujinimas', 'App update'),
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: const Text(
+              subtitle: Text(
                 'MediBox ${AppUpdateService.currentVersion}',
               ),
               trailing: const Icon(Icons.refresh_rounded),
@@ -10328,6 +11202,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   );
 
   Future<SymptomExplanation?> _requestAiAssessment() async {
+    if (!SubscriptionService.instance.hasPremium) return null;
     final member = widget.data.members
         .where((item) => item.id == widget.memberId)
         .firstOrNull;
@@ -10448,6 +11323,38 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
   }
 
   Widget _aiCard(BuildContext c) {
+    if (!SubscriptionService.instance.hasPremium) {
+      return card(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.workspace_premium_rounded, color: green),
+                SizedBox(width: 8),
+                Text('Premium AI', style: TextStyle(fontWeight: FontWeight.w900)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              tx(
+                c,
+                'Saugumo patikra atlikta, tačiau išplėstas AI paaiškinimas priklauso „Premium“ planui.',
+                'The safety check is complete, but the extended AI explanation requires Premium.',
+              ),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              onPressed: () => Navigator.push(
+                c,
+                MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+              ),
+              child: Text(tx(c, 'Peržiūrėti planus', 'View plans')),
+            ),
+          ],
+        ),
+      );
+    }
     if (!aiConsent) {
       return card(
         Text(
@@ -11000,7 +11907,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
               subtitle: Text(
                 '$source • ${medicine.substance}\n'
                 '${_matchReason(c, widget.category)}\n$doseLine\n'
-                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}',
+                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)} ${doseUnitLabel(c, medicine.stockUnit)}',
               ),
               isThreeLine: false,
               trailing: const Icon(Icons.chevron_right),

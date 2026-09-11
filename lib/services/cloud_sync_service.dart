@@ -11,7 +11,9 @@ import 'package:flutter/foundation.dart';
 
 import '../models/models.dart';
 import 'firebase_leaflet_service.dart';
+import 'reminder_logic.dart';
 import 'store.dart';
+import 'subscription_service.dart';
 
 enum CloudSyncState { signedOut, syncing, synced, offline, error }
 
@@ -53,6 +55,7 @@ class CloudSyncService {
 
   Future<void> initialize() async {
     await FirebaseLeafletService.initialize();
+    await SubscriptionService.instance.initialize();
     final config = jsonDecode(
       await rootBundle.loadString('config/google-services.json'),
     );
@@ -148,7 +151,8 @@ class CloudSyncService {
       data
         ..householdId = ''
         ..householdName = ''
-        ..householdRole = '';
+        ..householdRole = ''
+        ..linkedMemberId = '';
       return;
     }
     data
@@ -173,10 +177,12 @@ class CloudSyncService {
     }
     final reference = _activeDocument(data);
     final remote = await reference.get();
+    final pendingActions = await Store.loadPendingReminderActions();
     if (remote.exists && remote.data()?['payload'] is Map) {
       final payload = Map<String, dynamic>.from(remote.data()!['payload'] as Map);
       if (Store.containsPersonalContent(data) && data.householdId.isEmpty) {
         _mergeRemoteIntoLocal(data, payload);
+        _applyPendingReminderActions(data, pendingActions);
         await _uploadNow(data);
       } else {
         Store.applyCloudPayload(
@@ -184,12 +190,16 @@ class CloudSyncService {
           payload,
           applyProfile: data.householdId.isEmpty,
         );
+        _applyPendingReminderActions(data, pendingActions);
         await Store.save(data);
         await onRemoteApplied();
+        if (pendingActions.isNotEmpty) await _uploadNow(data);
       }
     } else {
+      _applyPendingReminderActions(data, pendingActions);
       await _uploadNow(data);
     }
+    await _repairMissingMemberLink(current, data);
     await _listen(data, onRemoteApplied);
     state = CloudSyncState.synced;
   }
@@ -256,6 +266,8 @@ class CloudSyncService {
       _uploadAgain = true;
       return;
     }
+    final pendingActions = await Store.loadPendingReminderActions();
+    _applyPendingReminderActions(data, pendingActions);
     _uploading = true;
     state = CloudSyncState.syncing;
     try {
@@ -274,6 +286,7 @@ class CloudSyncService {
         await _syncHouseholdAccountNames(data);
       }
       await Store.save(data);
+      await Store.clearPendingReminderActions();
       state = CloudSyncState.synced;
       message = '';
     } catch (error) {
@@ -324,6 +337,47 @@ class CloudSyncService {
         'writer': _writer,
       });
     }
+  }
+
+  Future<void> _repairMissingMemberLink(User current, AppData data) async {
+    if (data.householdId.isEmpty ||
+        data.members.any((member) => member.id == data.linkedMemberId)) {
+      return;
+    }
+    final suggested = data.suggestedAccountMemberId(
+      current.displayName ?? '',
+    );
+    if (suggested.isNotEmpty) {
+      await linkCurrentAccountToMember(data, suggested);
+    }
+  }
+
+  Future<void> linkCurrentAccountToMember(
+    AppData data,
+    String memberId,
+  ) async {
+    final current = user;
+    if (current == null) throw StateError('signed_out');
+    final member = data.members
+        .where((item) => item.id == memberId)
+        .firstOrNull;
+    if (member == null) throw StateError('member_missing');
+    data.linkedMemberId = member.id;
+    data.profile.name = member.name;
+    if (data.householdId.isNotEmpty) {
+      await _membershipDocument(current.uid).set({
+        'householdId': data.householdId,
+        'householdName': data.householdName,
+        'role': data.householdRole,
+        'linkedMemberId': member.id,
+      }, SetOptions(merge: true));
+      await _householdDocument(data.householdId).update({
+        'accounts.${current.uid}.name': member.name,
+        'accounts.${current.uid}.email': current.email ?? '',
+        'accounts.${current.uid}.linkedMemberId': member.id,
+      });
+    }
+    await Store.save(data);
   }
 
   Future<HouseholdInfo> createHousehold(
@@ -627,6 +681,26 @@ class CloudSyncService {
     );
     Store.applyCloudPayload(remote, payload);
     _mergeAppData(local, remote);
+  }
+
+  void _applyPendingReminderActions(
+    AppData data,
+    List<Map<String, String>> actions,
+  ) {
+    for (final item in actions) {
+      final reminderId = item['reminderId'];
+      final occurrence = DateTime.tryParse(item['occurrence'] ?? '');
+      if (reminderId == null || occurrence == null) continue;
+      final matches = data.reminders.where(
+        (reminder) => reminder.id == reminderId,
+      );
+      if (matches.isEmpty) continue;
+      if (item['action'] == 'taken') {
+        markDoseTaken(data, matches.first, occurrence);
+      } else if (item['action'] == 'skip') {
+        markDoseSkipped(matches.first, occurrence);
+      }
+    }
   }
 
   void _mergePayloadIntoLocal(AppData local, Map<String, dynamic> payload) {
