@@ -89,12 +89,19 @@ class MedicineLeafletLookup {
     final results = html.parse(await _get(search));
     final identity = normalize('${medicine.name}${medicine.strength}${medicine.dosageForm}');
     final matches = <String>{};
-    for (final link in results.querySelectorAll('.card__title a[href]')) {
+    // Vaistai.lt has used both card__title and generic product links. Match
+    // against the exact medicine identity instead of depending on presentation.
+    for (final link in results.querySelectorAll('a[href]')) {
       final title = normalize(link.text);
       // 40 mg must not match 240 mg or 40 mg/ml; form must also match.
       if (title != identity && !title.startsWith('${identity}n')) continue;
       final uri = search.resolve(link.attributes['href']!);
-      if (uri.scheme == 'https' && uri.host == 'vaistai.lt') matches.add(uri.toString());
+      if (uri.scheme == 'https' &&
+          uri.host == 'vaistai.lt' &&
+          uri.path.endsWith('.html') &&
+          !uri.path.startsWith('/paieska/')) {
+        matches.add(uri.replace(query: '', fragment: '').toString());
+      }
     }
     if (matches.length != 1) throw const FormatException('No unique exact leaflet');
     final url = matches.single;

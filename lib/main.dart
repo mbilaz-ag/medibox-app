@@ -31,6 +31,7 @@ import 'services/dose_guidance.dart';
 import 'widgets/body_map.dart';
 import 'models/leaflet_draft.dart';
 import 'widgets/leaflet_import_page.dart' show LeafletRecordCard;
+import 'widgets/medicine_price_card.dart';
 import 'services/firebase_leaflet_service.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/app_update_service.dart';
@@ -3157,6 +3158,7 @@ class _MedicinePageState extends State<MedicinePage> {
                       ],
                     ),
                   ),
+                  MedicinePriceCard(medicine: med),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
