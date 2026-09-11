@@ -49,6 +49,24 @@ if 'android.permission.RECEIVE_BOOT_COMPLETED' not in text:
         '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n    <application',
         1,
     )
+if 'android.permission.ACCESS_NOTIFICATION_POLICY' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY"/>\n    <application',
+        1,
+    )
+if 'android.permission.USE_FULL_SCREEN_INTENT' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>\n    <application',
+        1,
+    )
+if 'android:showWhenLocked=' not in text:
+    text = text.replace(
+        '<activity',
+        '<activity\n            android:showWhenLocked="true"\n            android:turnScreenOn="true"',
+        1,
+    )
 if 'ScheduledNotificationReceiver' not in text:
     receivers = '''
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />

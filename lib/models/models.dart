@@ -580,6 +580,7 @@ class AppData {
   bool cameraConsentGranted;
   bool medicationNotificationsGranted;
   bool repeatUnconfirmedMedicationReminders;
+  bool loudMedicationReminders;
   bool appointmentNotificationsGranted;
   bool cameraPermissionAsked;
   String householdId;
@@ -602,6 +603,7 @@ class AppData {
     this.cameraConsentGranted = false,
     this.medicationNotificationsGranted = false,
     this.repeatUnconfirmedMedicationReminders = true,
+    this.loudMedicationReminders = false,
     this.appointmentNotificationsGranted = false,
     this.cameraPermissionAsked = false,
     this.householdId = '',

@@ -23,6 +23,8 @@ class Store {
       'medibox_medication_notifications_consent_v2';
   static const _repeatUnconfirmedMedicationReminders =
       'medibox_repeat_unconfirmed_medication_reminders_v1';
+  static const _loudMedicationReminders =
+      'medibox_loud_medication_reminders_v1';
   static const _appointmentNotifications =
       'medibox_appointment_notifications_consent_v2';
   static const _householdId = 'medibox_household_id_v1';
@@ -76,6 +78,7 @@ class Store {
           p.getBool(_medicationNotifications) ?? false,
       repeatUnconfirmedMedicationReminders:
           p.getBool(_repeatUnconfirmedMedicationReminders) ?? true,
+      loudMedicationReminders: p.getBool(_loudMedicationReminders) ?? false,
       appointmentNotificationsGranted:
           p.getBool(_appointmentNotifications) ?? false,
       cameraPermissionAsked: p.getBool(_cameraPermissionAsked) ?? false,
@@ -122,6 +125,7 @@ class Store {
         _repeatUnconfirmedMedicationReminders,
         d.repeatUnconfirmedMedicationReminders,
       ),
+      p.setBool(_loudMedicationReminders, d.loudMedicationReminders),
       p.setBool(
         _appointmentNotifications,
         d.appointmentNotificationsGranted,

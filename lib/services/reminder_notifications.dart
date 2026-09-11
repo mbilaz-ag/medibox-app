@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -25,6 +26,7 @@ class ReminderNotifications {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static ReminderActionHandler? onAction;
   static bool _initialized = false;
+  static bool _notificationPolicyAccess = false;
   static const _maxRepeatIndex = 48;
 
   // Leave room for appointments, medicine deadlines and test notifications.
@@ -55,6 +57,14 @@ class ReminderNotifications {
       onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
     );
     _initialized = true;
+    if (Platform.isAndroid) {
+      _notificationPolicyAccess = await _plugin
+              .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin
+              >()
+              ?.hasNotificationPolicyAccess() ??
+          false;
+    }
   }
 
   static Future<bool> requestPermissions() async {
@@ -87,6 +97,73 @@ class ReminderNotifications {
     return Permission.notification.isGranted;
   }
 
+  static Future<bool> requestMaximumAlertPermissions() async {
+    if (!_initialized || !Platform.isAndroid) return false;
+    final android = _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    if (android == null) return false;
+    await android.requestFullScreenIntentPermission();
+    await android.requestNotificationPolicyAccess();
+    _notificationPolicyAccess =
+        await android.hasNotificationPolicyAccess() ?? false;
+    return _notificationPolicyAccess;
+  }
+
+  static AndroidNotificationDetails _medicineAndroidDetails(
+    AppData data,
+    bool english, {
+    List<AndroidNotificationAction> actions = const [],
+  }) {
+    final maximum = data.loudMedicationReminders;
+    final bypassDnd = maximum && _notificationPolicyAccess;
+    return AndroidNotificationDetails(
+      maximum
+          ? bypassDnd
+                ? 'medicine_critical_reminders_dnd_v1'
+                : 'medicine_critical_reminders_v1'
+          : 'medicine_reminders',
+      maximum
+          ? english
+                ? 'Maximum medicine alerts'
+                : 'Maksimalaus garsumo vaistų priminimai'
+          : english
+          ? 'Medicine reminders'
+          : 'Vaistų priminimai',
+      channelDescription: maximum
+          ? english
+                ? 'Alarm-style medicine reminders'
+                : 'Žadintuvo tipo vaistų priminimai'
+          : english
+          ? 'Reminders for scheduled medicines'
+          : 'Priminimai apie suplanuotą vaistų vartojimą',
+      importance: Importance.max,
+      priority: maximum ? Priority.max : Priority.high,
+      category: maximum ? AndroidNotificationCategory.alarm : null,
+      visibility: maximum ? NotificationVisibility.public : null,
+      playSound: true,
+      enableVibration: true,
+      vibrationPattern: maximum
+          ? Int64List.fromList([0, 1000, 400, 1000, 400, 1500])
+          : null,
+      fullScreenIntent: maximum,
+      channelBypassDnd: bypassDnd,
+      audioAttributesUsage: maximum
+          ? AudioAttributesUsage.alarm
+          : AudioAttributesUsage.notification,
+      actions: actions,
+    );
+  }
+
+  static DarwinNotificationDetails _medicineIosDetails(AppData data) =>
+      DarwinNotificationDetails(
+        categoryIdentifier: 'medicine',
+        interruptionLevel: data.loudMedicationReminders
+            ? InterruptionLevel.timeSensitive
+            : null,
+      );
+
   static Future<void> showTest(AppData data) async {
     if (!_initialized) return;
     final english = data.language == 'en';
@@ -97,16 +174,8 @@ class ReminderNotifications {
           ? 'Notifications are enabled. Scheduled reminders will appear at the selected time.'
           : 'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.',
       NotificationDetails(
-        android: AndroidNotificationDetails(
-          'medicine_reminders',
-          english ? 'Medicine reminders' : 'Vaistų priminimai',
-          channelDescription: english
-              ? 'Reminders for scheduled medicines'
-              : 'Priminimai apie suplanuotą vaistų vartojimą',
-          importance: Importance.max,
-          priority: Priority.high,
-        ),
-        iOS: DarwinNotificationDetails(),
+        android: _medicineAndroidDetails(data, english),
+        iOS: _medicineIosDetails(data),
       ),
     );
   }
@@ -344,14 +413,9 @@ class ReminderNotifications {
     ].join('\n');
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
     final details = NotificationDetails(
-        android: AndroidNotificationDetails(
-          'medicine_reminders',
-          english ? 'Medicine reminders' : 'Vaistų priminimai',
-          channelDescription: english
-              ? 'Reminders for scheduled medicines'
-              : 'Priminimai apie suplanuotą vaistų vartojimą',
-          importance: Importance.max,
-          priority: Priority.high,
+        android: _medicineAndroidDetails(
+          data,
+          english,
           actions: [
             AndroidNotificationAction(
               'taken',
@@ -370,7 +434,7 @@ class ReminderNotifications {
             ),
           ],
         ),
-        iOS: DarwinNotificationDetails(categoryIdentifier: 'medicine'),
+        iOS: _medicineIosDetails(data),
     );
     Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
           _id(reminder.id, occurrence, repeatIndex),

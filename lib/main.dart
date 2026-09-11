@@ -192,6 +192,7 @@ Future<bool> _showPermissionsCenter(
   var camera = data.cameraConsentGranted;
   var medicineNotifications = data.medicationNotificationsGranted;
   var repeatUnconfirmed = data.repeatUnconfirmedMedicationReminders;
+  var loudMedicationReminders = data.loudMedicationReminders;
   var appointmentNotifications = data.appointmentNotificationsGranted;
   var ai = data.aiConsentGranted;
   final confirmed = await showDialog<bool>(
@@ -246,6 +247,26 @@ Future<bool> _showPermissionsCenter(
               ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.alarm_on_rounded),
+                value: medicineNotifications && loudMedicationReminders,
+                title: Text(tx(
+                  dialogContext,
+                  'Maksimalaus garsumo priminimai',
+                  'Maximum alert reminders',
+                )),
+                subtitle: Text(tx(
+                  dialogContext,
+                  'Žadintuvo garsas, stipri vibracija ir perspėjimas virš užrakinto ekrano. „Netrukdyti“ režimui reikės atskiro telefono leidimo.',
+                  'Alarm sound, strong vibration and an alert over the lock screen. Bypassing Do Not Disturb requires a separate phone permission.',
+                )),
+                onChanged: medicineNotifications
+                    ? (value) => setDialogState(
+                        () => loudMedicationReminders = value,
+                      )
+                    : null,
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
                 secondary: const Icon(Icons.event_available_outlined),
                 value: appointmentNotifications,
                 title: Text(tx(dialogContext, 'Vizitų priminimai', 'Appointment reminders')),
@@ -286,6 +307,8 @@ Future<bool> _showPermissionsCenter(
     ..cameraConsentGranted = camera
     ..medicationNotificationsGranted = medicineNotifications
     ..repeatUnconfirmedMedicationReminders = repeatUnconfirmed
+    ..loudMedicationReminders =
+        medicineNotifications && loudMedicationReminders
     ..appointmentNotificationsGranted = appointmentNotifications;
 
   if (camera) {
@@ -295,6 +318,9 @@ Future<bool> _showPermissionsCenter(
   }
   if (medicineNotifications || appointmentNotifications) {
     await ReminderNotifications.requestPermissions();
+  }
+  if (medicineNotifications && loudMedicationReminders) {
+    await ReminderNotifications.requestMaximumAlertPermissions();
   }
   await Store.save(data);
   await ReminderNotifications.scheduleAll(data);

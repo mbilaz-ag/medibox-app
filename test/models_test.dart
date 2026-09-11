@@ -10,6 +10,7 @@ void main() {
       profile: UserProfile(),
     );
     expect(data.repeatUnconfirmedMedicationReminders, isTrue);
+    expect(data.loudMedicationReminders, isFalse);
   });
 
   test('member and reminder survive JSON round trip', () {
