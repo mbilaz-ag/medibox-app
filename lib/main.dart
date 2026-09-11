@@ -347,10 +347,11 @@ Future<bool> _cameraAvailable(BuildContext context, AppData data) async {
   return false;
 }
 
-class _App extends State<App> {
+class _App extends State<App> with WidgetsBindingObserver {
   AppData? data;
   bool launchAccepted = false;
   bool authenticating = false;
+  bool _reloadingNotificationActions = false;
   final navigatorKey = GlobalKey<NavigatorState>();
 
   Future<void> _finishOpening(AppData current) async {
@@ -453,6 +454,7 @@ class _App extends State<App> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     Future.wait([
       Store.load(),
       Future<void>.delayed(const Duration(milliseconds: 1400)),
@@ -469,6 +471,37 @@ class _App extends State<App> {
         },
       );
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_reloadNotificationActions());
+    }
+  }
+
+  Future<void> _reloadNotificationActions() async {
+    final current = data;
+    if (current == null || _reloadingNotificationActions) return;
+    _reloadingNotificationActions = true;
+    try {
+      // Give the background notification isolate time to finish its local
+      // write before refreshing the in-memory reminder history.
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final stored = await Store.load();
+      current.reminders = stored.reminders;
+      CloudSyncService.instance.queueUpload(current);
+      await ReminderNotifications.scheduleAll(current);
+      if (mounted) setState(() {});
+    } finally {
+      _reloadingNotificationActions = false;
+    }
   }
 
   Future<void> _handleReminderAction(
@@ -491,6 +524,7 @@ class _App extends State<App> {
       await ReminderNotifications.snooze(reminder, current, occurrence);
     }
     await Store.save(current);
+    CloudSyncService.instance.queueUpload(current);
     if (mounted) setState(() {});
   }
 

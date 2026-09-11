@@ -33,6 +33,9 @@ class Store {
   static const _linkedMemberId = 'medibox_linked_member_id_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
+    // Notification actions run in a separate Flutter isolate. Refresh the
+    // local cache so their reminder changes are visible in the main app.
+    await p.reload();
     List<T> list<T>(String key, T Function(Map<String, dynamic>) parse) {
       try {
         final raw = p.getString(key);
