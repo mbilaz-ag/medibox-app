@@ -114,7 +114,7 @@ void main() {
 }
 
 http.Response _html(String value, {Map<String, String>? headers}) =>
-    http.Response.bytes(utf8.encode(value), 200, headers: headers);
+    http.Response.bytes(utf8.encode(value), 200, headers: headers ?? const {});
 
 String _offer(String pharmacy, String price, String url) => '''
   <li class="list__item">
