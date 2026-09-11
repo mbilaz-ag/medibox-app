@@ -77,7 +77,7 @@ jobs:
 
       - name: Configure archive and export
         run: |
-          flutter build ios --release --config-only --build-number="${GITHUB_RUN_NUMBER}"
+          flutter build ios --release --config-only --no-codesign --build-number="${GITHUB_RUN_NUMBER}"
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
