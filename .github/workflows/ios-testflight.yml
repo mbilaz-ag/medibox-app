@@ -78,6 +78,24 @@ jobs:
       - name: Configure archive and export
         run: |
           flutter build ios --release --config-only --no-codesign --build-number="${GITHUB_RUN_NUMBER}"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          project = Path("ios/Runner.xcodeproj/project.pbxproj")
+          text = project.read_text()
+          bundle_id = "PRODUCT_BUNDLE_IDENTIFIER = lt.medibox.medibox;"
+          if bundle_id not in text:
+              raise SystemExit("MediBox Runner bundle identifier not found")
+          signing = (
+              'CODE_SIGN_IDENTITY = "Apple Distribution";\n'
+              "CODE_SIGN_STYLE = Manual;\n"
+              f"DEVELOPMENT_TEAM = {os.environ['APPLE_TEAM_ID']};\n"
+              f'PROVISIONING_PROFILE_SPECIFIER = "{os.environ["PROFILE_NAME"]}";\n'
+              + bundle_id
+          )
+          project.write_text(text.replace(bundle_id, signing))
+          PY
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -99,10 +117,6 @@ jobs:
             -scheme Runner \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/MediBox.xcarchive" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
             archive
           mkdir -p build/ios/ipa
           xcodebuild -exportArchive \
