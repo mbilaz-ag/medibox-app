@@ -17,6 +17,12 @@ for platform in ('android', 'ios'):
 
 manifest = root / 'android/app/src/main/AndroidManifest.xml'
 text = manifest.read_text().replace('android:label="medibox"', 'android:label="MediBox"')
+if 'android:allowBackup=' not in text:
+    text = text.replace(
+        '<application',
+        '<application\n        android:allowBackup="false"\n        android:fullBackupContent="@xml/backup_rules"\n        android:dataExtractionRules="@xml/data_extraction_rules"',
+        1,
+    )
 if 'android.permission.INTERNET' not in text:
     text = text.replace(
         '<application',
@@ -58,6 +64,36 @@ if 'ScheduledNotificationReceiver' not in text:
 '''
     text = text.replace('</application>', receivers + '    </application>', 1)
 manifest.write_text(text)
+
+backup_domains = (
+    'root', 'file', 'database', 'sharedpref', 'external',
+    'device_root', 'device_file', 'device_database', 'device_sharedpref',
+)
+xml_dir = root / 'android/app/src/main/res/xml'
+xml_dir.mkdir(parents=True, exist_ok=True)
+exclusions = '\n'.join(
+    f'    <exclude domain="{domain}" path="." />' for domain in backup_domains
+)
+(xml_dir / 'backup_rules.xml').write_text(
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<full-backup-content>\n'
+    f'{exclusions}\n'
+    '</full-backup-content>\n'
+)
+section_exclusions = '\n'.join(
+    f'        <exclude domain="{domain}" path="." />' for domain in backup_domains
+)
+(xml_dir / 'data_extraction_rules.xml').write_text(
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<data-extraction-rules>\n'
+    '    <cloud-backup>\n'
+    f'{section_exclusions}\n'
+    '    </cloud-backup>\n'
+    '    <device-transfer>\n'
+    f'{section_exclusions}\n'
+    '    </device-transfer>\n'
+    '</data-extraction-rules>\n'
+)
 
 # local_auth requires FragmentActivity on Android.
 for activity in (root / 'android/app/src/main').rglob('MainActivity.kt'):
