@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
