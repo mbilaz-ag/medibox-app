@@ -66,8 +66,45 @@ String doseUnitLabel(BuildContext context, String unit) {
     'tabletė' => 'tablet',
     'kapsulė' => 'capsule',
     'dozė' => 'dose',
+    'tūbelė' => 'tube',
+    'įpurškimas' => 'spray',
+    'lašas' => 'drop',
     _ => unit,
   };
+}
+
+const medicineQuantityUnits = [
+  'vnt.',
+  'tabletė',
+  'kapsulė',
+  'ml',
+  'g',
+  'mg',
+  'dozė',
+  'tūbelė',
+  'įpurškimas',
+  'lašas',
+];
+
+String suggestedMedicineQuantityUnit(String dosageForm) {
+  final value = dosageForm.toLowerCase();
+  if (value.contains('tūbel')) return 'tūbelė';
+  if (value.contains('tablet')) return 'tabletė';
+  if (value.contains('kapsul')) return 'kapsulė';
+  if (value.contains('laš')) return 'lašas';
+  if (value.contains('purš') || value.contains('aerozol')) return 'įpurškimas';
+  if (value.contains('tirpal') ||
+      value.contains('sirup') ||
+      value.contains('suspens') ||
+      value.contains('skyst')) {
+    return 'ml';
+  }
+  if (value.contains('krem') ||
+      value.contains('tepal') ||
+      value.contains('gel')) {
+    return 'g';
+  }
+  return 'vnt.';
 }
 
 String subscriptionPlanLabel(BuildContext context, SubscriptionPlan plan) =>
@@ -1949,8 +1986,8 @@ Widget _medicineStatusCard({
               ? _expiryDetail(context, medicine.expiry, days)
               : tx(
                   context,
-                  'liko ${quantityLabel(medicine.stock)} vnt.',
-                  '${quantityLabel(medicine.stock)} remaining',
+                  'liko ${quantityLabel(medicine.stock)} ${doseUnitLabel(context, medicine.stockUnit)}',
+                  '${quantityLabel(medicine.stock)} ${doseUnitLabel(context, medicine.stockUnit)} remaining',
                 );
           return InkWell(
             onTap: onMedicineTap == null ? null : () => onMedicineTap(medicine),
@@ -2548,8 +2585,8 @@ class _CabinetPageState extends State<CabinetPage> {
                                   Icons.inventory_2_outlined,
                                   tx(
                                     c,
-                                    '${quantityLabel(m.stock)} vnt.',
-                                    '${quantityLabel(m.stock)} left',
+                                    '${quantityLabel(m.stock)} ${doseUnitLabel(c, m.stockUnit)}',
+                                    '${quantityLabel(m.stock)} ${doseUnitLabel(c, m.stockUnit)} left',
                                   ),
                                   green,
                                 ),
@@ -3138,7 +3175,7 @@ class _MedicinePageState extends State<MedicinePage> {
                     Column(
                       children: [
                         Text(
-                          '${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)}',
+                          '${tx(c, 'Likutis', 'Stock')}: ${quantityLabel(med.stock)} ${doseUnitLabel(c, med.stockUnit)}',
                         ),
                         Text(
                           '${tx(c, 'Perspėjimo riba', 'Warning threshold')}: ${quantityLabel(med.lowStockThreshold)}',
@@ -3821,7 +3858,7 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
         card(
           Text(
             '${widget.medicine.name} ${widget.medicine.strength}\n'
-            '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)}',
+            '${tx(context, 'Bendras likutis', 'Total stock')}: ${quantityLabel(widget.medicine.stock)} ${doseUnitLabel(context, widget.medicine.stockUnit)}',
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
         ),
@@ -3843,7 +3880,7 @@ class _MedicineInventoryPageState extends State<MedicineInventoryPage> {
                 child: Icon(Icons.inventory_2_outlined, color: green),
               ),
               title: Text(
-                '${quantityLabel(item.quantity)} ${tx(context, 'vnt.', 'units')}',
+                '${quantityLabel(item.quantity)} ${doseUnitLabel(context, widget.medicine.stockUnit)}',
               ),
               subtitle: Text(
                 [
@@ -4019,6 +4056,11 @@ class _MedicineEditor extends State<MedicineEditor> {
       (widget.registryMedicine?.prescriptionStatus.toLowerCase() ==
           'receptinis');
   late bool doseRuleVerified = widget.medicine?.doseRuleVerified ?? false;
+  late String stockUnit =
+      widget.medicine?.stockUnit ??
+      suggestedMedicineQuantityUnit(
+        widget.registryMedicine?.dosageForm ?? '',
+      );
   late final Set<String> selectedCategories = {
     ..._splitCategories(widget.medicine?.category ?? ''),
     if (widget.medicine == null)
@@ -4178,6 +4220,9 @@ class _MedicineEditor extends State<MedicineEditor> {
     strength.text = medicine.strength;
     manufacturer.text = medicine.registrant;
     dosageForm.text = medicine.dosageForm;
+    if (widget.medicine == null) {
+      stockUnit = suggestedMedicineQuantityUnit(medicine.dosageForm);
+    }
     packageSize.text = medicine.packageDescription;
     prescription = medicine.prescriptionStatus.toLowerCase() == 'receptinis';
     if (dosage.text.trim().isEmpty && medicine.administrationRoute.isNotEmpty) {
@@ -4763,7 +4808,33 @@ class _MedicineEditor extends State<MedicineEditor> {
           'Vaisto turi užtekti iki YYYY-MM-DD',
           'Medicine should last until YYYY-MM-DD',
         ),
-        field(c, stock, 'Kiekis', 'Quantity', number: true),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: field(c, stock, 'Kiekis', 'Quantity', number: true),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                key: ValueKey(stockUnit),
+                initialValue: stockUnit,
+                decoration: InputDecoration(
+                  labelText: tx(c, 'Likučio vienetas', 'Stock unit'),
+                ),
+                items: medicineQuantityUnits
+                    .map(
+                      (unit) => DropdownMenuItem(
+                        value: unit,
+                        child: Text(doseUnitLabel(c, unit)),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) => setState(() => stockUnit = value!),
+              ),
+            ),
+          ],
+        ),
         field(
           c,
           lowStockThreshold,
@@ -4860,6 +4931,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                   prescriptionValidUntil: prescriptionValidUntil.text.trim(),
                   treatmentUntil: treatmentUntil.text.trim(),
                   stock: parsedStock,
+                  stockUnit: stockUnit,
                   lowStockThreshold: parsedThreshold,
                   prescription: prescription,
                   leaflet: leaflet.text.trim(),
@@ -4942,6 +5014,7 @@ class _MedicineEditor extends State<MedicineEditor> {
                 ..prescriptionValidUntil = prescriptionValidUntil.text.trim()
                 ..treatmentUntil = treatmentUntil.text.trim()
                 ..stock = parsedStock
+                ..stockUnit = stockUnit
                 ..lowStockThreshold = parsedThreshold
                 ..prescription = prescription
                 ..batchNumber = batchNumber.text.trim()
@@ -6251,21 +6324,70 @@ class _HealthCalendarPageState extends State<HealthCalendarPage> {
             );
           }
           final item = event.$3 as Reminder;
+          final taken = item.takenDates.contains(key);
+          final today = DateTime.now();
+          final selectedDate = DateTime(
+            selectedDay.year,
+            selectedDay.month,
+            selectedDay.day,
+          );
+          final canMarkTaken = !selectedDate.isAfter(
+            DateTime(today.year, today.month, today.day),
+          );
+          final parts = item.time.split(':');
+          final occurrence = DateTime(
+            selectedDay.year,
+            selectedDay.month,
+            selectedDay.day,
+            int.tryParse(parts.firstOrNull ?? '') ?? 0,
+            int.tryParse(parts.length > 1 ? parts[1] : '') ?? 0,
+          );
           return Card(
             child: ListTile(
               leading: Icon(
-                item.takenDates.contains(key)
-                    ? Icons.check_circle
-                    : Icons.medication_outlined,
-                color: item.takenDates.contains(key)
-                    ? green
-                    : const Color(0xffff9f1c),
+                taken ? Icons.check_circle : Icons.medication_outlined,
+                color: taken ? green : const Color(0xffff9f1c),
               ),
               title: Text(
                 '${item.time} • ${item.title}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: Text(_who(widget.data, item, tx(context, 'Aš', 'Me'))),
+              subtitle: Text(
+                [
+                  _who(widget.data, item, tx(context, 'Aš', 'Me')),
+                  '${quantityLabel(item.quantityPerDose)} ${doseUnitLabel(context, item.doseUnit)}',
+                ].where((value) => value.isNotEmpty).join(' • '),
+              ),
+              trailing: canMarkTaken
+                  ? IconButton(
+                      tooltip: taken
+                          ? tx(
+                              context,
+                              'Atšaukti suvartojimą',
+                              'Undo consumption',
+                            )
+                          : tx(
+                              context,
+                              'Pažymėti suvartojimą',
+                              'Mark as taken',
+                            ),
+                      onPressed: () {
+                        if (taken) {
+                          undoDoseTaken(widget.data, item, occurrence);
+                        } else {
+                          markDoseTaken(widget.data, item, occurrence);
+                        }
+                        widget.onChanged();
+                        setState(() {});
+                      },
+                      icon: Icon(
+                        taken
+                            ? Icons.check_circle
+                            : Icons.radio_button_unchecked,
+                        color: taken ? green : const Color(0xff7b8ba1),
+                      ),
+                    )
+                  : null,
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -6811,6 +6933,20 @@ class _ReminderEditor extends State<ReminderEditor> {
     return widget.data.members.firstOrNull?.id ?? '';
   }
 
+  Med? get selectedMedicine =>
+      widget.data.meds.where((medicine) => medicine.id == medId).firstOrNull;
+
+  String _initialDoseUnit() {
+    final existing = widget.reminder;
+    final requested = existing?.medId ?? widget.initialMedId;
+    return widget.data.meds
+            .where((medicine) => medicine.id == requested)
+            .map((medicine) => medicine.stockUnit)
+            .firstOrNull ??
+        existing?.doseUnit ??
+        'vnt.';
+  }
+
   late final titleC = TextEditingController(text: widget.reminder?.title ?? ''),
       dose = TextEditingController(text: widget.reminder?.dose ?? ''),
       quantity = TextEditingController(
@@ -6826,7 +6962,7 @@ class _ReminderEditor extends State<ReminderEditor> {
   late String medId = widget.reminder?.medId ?? widget.initialMedId,
       memberId = _initialMemberId(),
       time = widget.reminder?.time ?? '08:00';
-  late String doseUnit = widget.reminder?.doseUnit ?? 'vnt.';
+  late String doseUnit = _initialDoseUnit();
   late List<int> days = [
     ...(widget.reminder?.weekdays ?? [1, 2, 3, 4, 5, 6, 7]),
   ];
@@ -6891,7 +7027,11 @@ class _ReminderEditor extends State<ReminderEditor> {
             ),
           ],
           onChanged: (v) {
-            setState(() => medId = v!);
+            setState(() {
+              medId = v!;
+              final medicine = selectedMedicine;
+              if (medicine != null) doseUnit = medicine.stockUnit;
+            });
             if (medId.isNotEmpty) {
               final medicine = widget.data.meds.firstWhere(
                 (x) => x.id == medId,
@@ -7018,11 +7158,12 @@ class _ReminderEditor extends State<ReminderEditor> {
             const SizedBox(width: 10),
             Expanded(
               child: DropdownButtonFormField<String>(
+                key: ValueKey('$medId-$doseUnit'),
                 initialValue: doseUnit,
                 decoration: InputDecoration(
                   labelText: tx(c, 'Vienetas', 'Unit'),
                 ),
-                items: const ['vnt.', 'tabletė', 'kapsulė', 'ml', 'dozė']
+                items: medicineQuantityUnits
                     .map(
                       (unit) => DropdownMenuItem(
                         value: unit,
@@ -7030,11 +7171,25 @@ class _ReminderEditor extends State<ReminderEditor> {
                       ),
                     )
                     .toList(),
-                onChanged: (value) => setState(() => doseUnit = value!),
+                onChanged: selectedMedicine == null
+                    ? (value) => setState(() => doseUnit = value!)
+                    : null,
               ),
             ),
           ],
         ),
+        if (selectedMedicine != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              tx(
+                c,
+                'Pažymėjus suvartojimą, pasirinktas kiekis bus atimtas iš „${selectedMedicine!.name}“ likučio (${doseUnitLabel(c, selectedMedicine!.stockUnit)}).',
+                'When marked as taken, the selected amount will be deducted from “${selectedMedicine!.name}” stock (${doseUnitLabel(c, selectedMedicine!.stockUnit)}).',
+              ),
+              style: const TextStyle(color: Color(0xff526874)),
+            ),
+          ),
         const SizedBox(height: 12),
         field(
           c,
@@ -7082,7 +7237,7 @@ class _ReminderEditor extends State<ReminderEditor> {
             r.memberId = memberId;
             r.time = time;
             r.dose = dose.text.trim();
-            r.doseUnit = doseUnit;
+            r.doseUnit = selectedMedicine?.stockUnit ?? doseUnit;
             r.quantityPerDose = amount;
             r.instructions = instructions.text.trim();
             r.startDate = startDate.text.trim();
@@ -7927,12 +8082,12 @@ class _DoctorSummaryPageState extends State<DoctorSummaryPage> {
                     subtitle: Text(
                       tx(
                         c,
-                        'Likutis: ${quantityLabel(medicine.stock)} vnt.',
-                        'Stock: ${quantityLabel(medicine.stock)} units',
+                        'Likutis: ${quantityLabel(medicine.stock)} ${doseUnitLabel(c, medicine.stockUnit)}',
+                        'Stock: ${quantityLabel(medicine.stock)} ${doseUnitLabel(c, medicine.stockUnit)}',
                       ),
                     ),
                     trailing: Text(
-                      '${quantityLabel(_consumedMedicineAmount(data, household ? '' : memberId, medicine.id, periodDays))} ${tx(c, 'vnt.', 'units')}',
+                      '${quantityLabel(_consumedMedicineAmount(data, household ? '' : memberId, medicine.id, periodDays))} ${doseUnitLabel(c, medicine.stockUnit)}',
                       style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                   ),
@@ -11522,7 +11677,7 @@ class _SymptomWizardPageState extends State<SymptomWizardPage> {
               subtitle: Text(
                 '$source • ${medicine.substance}\n'
                 '${_matchReason(c, widget.category)}\n$doseLine\n'
-                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)}',
+                '${tx(c, 'Turite', 'In stock')}: ${quantityLabel(medicine.stock)} ${doseUnitLabel(c, medicine.stockUnit)}',
               ),
               isThreeLine: false,
               trailing: const Icon(Icons.chevron_right),
