@@ -9,6 +9,9 @@ service cloud.firestore {
           'mbilaz@gmail.com'
         ];
     }
+    function isDeleted(userId) {
+      return exists(/databases/$(database)/documents/deletedUsers/$(userId));
+    }
     function household(id) {
       return get(/databases/$(database)/documents/households/$(id)).data;
     }
@@ -17,6 +20,7 @@ service cloud.firestore {
     }
     function validJoin(id) {
       return signedIn()
+        && !isDeleted(request.auth.uid)
         && !(request.auth.uid in resource.data.memberUids)
         && request.auth.uid in request.resource.data.memberUids
         && request.resource.data.memberUids.size() == resource.data.memberUids.size() + 1
@@ -36,13 +40,16 @@ service cloud.firestore {
     }
 
     match /users/{userId}/medibox/{document} {
-      allow read, write: if signedIn() && request.auth.uid == userId;
+      allow read, write: if isAdmin()
+        || (signedIn() && request.auth.uid == userId && !isDeleted(userId));
     }
     match /users/{userId}/settings/{document} {
-      allow read, write: if signedIn() && request.auth.uid == userId;
+      allow read, write: if isAdmin()
+        || (signedIn() && request.auth.uid == userId && !isDeleted(userId));
     }
     match /users/{userId}/subscription/{document} {
-      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow read: if isAdmin()
+        || (signedIn() && request.auth.uid == userId && !isDeleted(userId));
       allow write: if isAdmin();
     }
     match /userProfiles/{userId} {
@@ -50,6 +57,7 @@ service cloud.firestore {
         && (request.auth.uid == userId || isAdmin());
       allow create: if signedIn()
         && request.auth.uid == userId
+        && !isDeleted(userId)
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.keys().hasOnly([
           'uid', 'email', 'displayName', 'photoUrl', 'isAnonymous',
@@ -57,32 +65,43 @@ service cloud.firestore {
         ]);
       allow update: if signedIn()
         && request.auth.uid == userId
+        && !isDeleted(userId)
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'email', 'displayName', 'photoUrl', 'isAnonymous',
           'providers', 'lastSeenAt'
         ]);
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
     match /premiumRequests/{userId} {
       allow create: if signedIn()
         && request.auth.uid == userId
+        && !isDeleted(userId)
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.status == 'pending';
       allow read, update: if isAdmin();
-      allow delete: if false;
+      allow delete: if isAdmin();
+    }
+    match /deletedUsers/{userId} {
+      allow read: if isAdmin()
+        || (signedIn() && request.auth.uid == userId);
+      allow create, update, delete: if isAdmin();
     }
     match /households/{householdpk} {
       allow create: if signedIn()
+                    && !isDeleted(request.auth.uid)
                     && request.resource.data.ownerUid == request.auth.uid
                     && request.auth.uid in request.resource.data.memberUids;
-      allow read: if signedIn() && request.auth.uid in resource.data.memberUids;
+      allow read: if isAdmin()
+                  || (signedIn() && request.auth.uid in resource.data.memberUids);
       allow update: if (signedIn() && resource.data.ownerUid == request.auth.uid)
+                    || isAdmin()
                     || validJoin(householdpk)
                     || validLeave();
-      allow delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow delete: if isAdmin()
+                    || (signedIn() && resource.data.ownerUid == request.auth.uid);
       match /data/{document} {
-        allow read, write: if isHouseholdMember(householdpk);
+        allow read, write: if isAdmin() || isHouseholdMember(householdpk);
       }
     }
     match /householdInvites/{code} {
@@ -91,8 +110,8 @@ service cloud.firestore {
       allow create: if signedIn()
                     && request.resource.data.ownerUid == request.auth.uid
                     && get(/databases/$(database)/documents/households/$(request.resource.data.householdId)).data.ownerUid == request.auth.uid;
-      allow update, delete: if signedIn()
-                            && resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isAdmin()
+                            || (signedIn() && resource.data.ownerUid == request.auth.uid);
     }
   }
 }

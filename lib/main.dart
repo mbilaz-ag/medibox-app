@@ -1319,7 +1319,6 @@ class _OnboardingPageState extends State<OnboardingPage> {
           subtitle: Text(tx(context, 'Sukurti namų ūkį arba įvesti kvietimo kodą', 'Create a household or enter an invite code')),
           trailing: const Icon(Icons.chevron_right),
           onTap: () async {
-            if (!await requirePremium(context) || !context.mounted) return;
             if (CloudSyncService.instance.user == null) {
               setState(() => step = 2);
               return;
@@ -8756,12 +8755,9 @@ class _CloudAccountPageState extends State<CloudAccountPage> {
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: busy ? null : () async {
-                // Existing household members must always be able to manage or
-                // leave the household, even after Premium expires.
-                if (widget.data.householdId.isEmpty &&
-                    (!await requirePremium(context) || !context.mounted)) {
-                  return;
-                }
+                // Joining an existing Premium household must remain available
+                // to Free accounts. Premium is checked only when creating a
+                // new shared household, not before the invite-code screen.
                 await Navigator.push(context, MaterialPageRoute(builder: (_) => HouseholdSettingsPage(data: widget.data, onChanged: widget.onChanged)));
                 if (mounted) setState(() {});
               },
@@ -8874,6 +8870,7 @@ class _HouseholdSettingsPageState extends State<HouseholdSettingsPage> {
       ),
       FilledButton(
         onPressed: busy ? null : () => _run(() async {
+          if (!await requirePremium(context) || !context.mounted) return;
           if (householdName.text.trim().isEmpty) throw StateError('name_required');
           info = await CloudSyncService.instance.createHousehold(householdName.text, widget.data, shareExistingData: shareExisting, onRemoteApplied: () async => widget.onChanged());
         }),

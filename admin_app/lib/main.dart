@@ -517,7 +517,31 @@ class _DashboardPageState extends State<DashboardPage> {
                     'Galioja iki ${_date(user.validUntil!)}',
                 ].join('\n'),
               ),
-              trailing: const Icon(Icons.chevron_right_rounded),
+              trailing: PopupMenuButton<String>(
+                tooltip: 'Vartotojo veiksmai',
+                onSelected: (value) {
+                  if (value == 'manage') _editUser(user);
+                  if (value == 'delete') _deleteUser(user);
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'manage',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.edit_outlined),
+                      title: Text('Valdyti planą'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.delete_forever_outlined, color: Colors.red),
+                      title: Text('Ištrinti vartotoją', style: TextStyle(color: Colors.red)),
+                    ),
+                  ),
+                ],
+              ),
               onTap: () => _editUser(user),
             ),
           ),
@@ -618,6 +642,40 @@ class _DashboardPageState extends State<DashboardPage> {
     );
     await _load();
     if (mounted) _toast('Vartotojo planas atnaujintas.');
+  }
+
+  Future<void> _deleteUser(AdminUser user) async {
+    final label = user.email.isNotEmpty ? user.email : user.name;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 38),
+        title: const Text('Ištrinti vartotoją?'),
+        content: Text(
+          '$label\n\nBus pašalinti vartotojo MediBox duomenys, planas ir užklausos. Paskyros prieiga bus užblokuota. Šio veiksmo atšaukti negalima.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Atšaukti'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.delete_forever_outlined),
+            label: const Text('Ištrinti negrįžtamai'),
+          ),
+        ],
+      ),
+    );
+    if (accepted != true) return;
+    try {
+      await widget.repository.deleteUser(user);
+      await _load();
+      if (mounted) _toast('Vartotojas ištrintas.');
+    } catch (value) {
+      if (mounted) _toast('$value'.replaceFirst('Bad state: ', ''));
+    }
   }
 
   void _toast(String value) => ScaffoldMessenger.of(
