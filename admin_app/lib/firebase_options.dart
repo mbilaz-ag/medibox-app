@@ -11,7 +11,7 @@ class AdminFirebaseOptions {
 
   static const android = FirebaseOptions(
     apiKey: 'AIzaSyCS4_FhipWdyMl5VtpG-3fKhS-toPpKb6Y',
-    appId: '1:281777960665:android:admin-placeholder',
+    appId: '1:281777960665:android:1bd0c3b4d89c68c79570c8',
     messagingSenderId: '281777960665',
     projectId: 'medibox-6d80d',
     storageBucket: 'medibox-6d80d.firebasestorage.app',
@@ -20,4 +20,3 @@ class AdminFirebaseOptions {
   static const googleWebClientId =
       '281777960665-b2nigi9i4lfsi6s2gjegvidmnbrhv7mm.apps.googleusercontent.com';
 }
-
