@@ -612,4 +612,19 @@ class AppData {
     this.linkedMemberId = '',
   }) : shopping = shopping ?? [],
        appointments = appointments ?? [];
+
+  /// The member this account should show when the home page first opens.
+  /// Household accounts use their explicit per-account link. The legacy
+  /// `self` fallback is only safe outside a shared household.
+  String get preferredHomeMemberId {
+    if (linkedMemberId.isNotEmpty &&
+        members.any((member) => member.id == linkedMemberId)) {
+      return linkedMemberId;
+    }
+    if (householdId.isEmpty) {
+      final own = members.where((member) => member.relation == 'self');
+      if (own.length == 1) return own.first.id;
+    }
+    return '';
+  }
 }

@@ -2,6 +2,34 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:medibox/models/models.dart';
 
 void main() {
+  test('home page prefers the member linked to this account', () {
+    final data = AppData(
+      meds: [],
+      members: [
+        Member(id: 'parent', name: 'Mama', relation: 'family'),
+        Member(id: 'child', name: 'Jonas', relation: 'child'),
+      ],
+      reminders: [],
+      profile: UserProfile(),
+      householdId: 'home',
+      linkedMemberId: 'child',
+    );
+
+    expect(data.preferredHomeMemberId, 'child');
+  });
+
+  test('shared home does not guess another member when account link is absent', () {
+    final data = AppData(
+      meds: [],
+      members: [Member(id: 'owner', name: 'Mama', relation: 'self')],
+      reminders: [],
+      profile: UserProfile(),
+      householdId: 'home',
+    );
+
+    expect(data.preferredHomeMemberId, isEmpty);
+  });
+
   test('unconfirmed medicine reminder repetition is enabled by default', () {
     final data = AppData(
       meds: [],
