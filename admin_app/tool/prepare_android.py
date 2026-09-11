@@ -34,5 +34,20 @@ for permission in (
 manifest.write_text(text)
 
 gradle = target / "app/build.gradle.kts"
-gradle.write_text(configure_android_signing(gradle.read_text()))
+gradle_text = configure_android_signing(gradle.read_text())
+gradle_text += '''
 
+// Required by flutter_local_notifications on current Android versions.
+android {
+    compileOptions {
+        isCoreLibraryDesugaringEnabled = true
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+}
+'''
+gradle.write_text(gradle_text)
