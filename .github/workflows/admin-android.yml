@@ -3,7 +3,14 @@ name: Build MediBox Admin Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [feature/reminder-repeat-30]
+    branches: [main]
+    paths:
+      - 'admin_app/**'
+      - '.github/workflows/admin-android.yml'
+      - 'tool/android_signing.py'
+      - 'tool/restore_release_keystore.py'
+      - 'tool/verify_apk_signer.py'
+  pull_request:
     paths:
       - 'admin_app/**'
       - '.github/workflows/admin-android.yml'

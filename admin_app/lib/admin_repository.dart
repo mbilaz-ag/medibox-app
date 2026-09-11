@@ -166,4 +166,59 @@ class AdminRepository {
       'updatedBy': currentUser?.email ?? currentUser?.uid,
     });
   }
+
+  Future<void> deleteUser(AdminUser user) async {
+    if (!isAdmin) throw StateError('Administratoriaus prieiga nesuteikta.');
+    final email = user.email.trim().toLowerCase();
+    if (user.uid == currentUser?.uid || allowedEmails.contains(email)) {
+      throw StateError('Administratoriaus paskyros ištrinti negalima.');
+    }
+
+    final membershipRef = firestore.doc('users/${user.uid}/settings/household');
+    final membership = await membershipRef.get();
+    final householdId = '${membership.data()?['householdId'] ?? ''}';
+    final batch = firestore.batch();
+
+    if (householdId.isNotEmpty) {
+      final householdRef = firestore.doc('households/$householdId');
+      final household = await householdRef.get();
+      final value = household.data() ?? const <String, dynamic>{};
+      final members = List<String>.from(value['memberUids'] as List? ?? const []);
+      final isOwner = value['ownerUid'] == user.uid;
+      if (isOwner && members.any((uid) => uid != user.uid)) {
+        throw StateError(
+          'Pirmiausia perduokite šio namų ūkio administravimą kitam nariui.',
+        );
+      }
+      if (isOwner) {
+        final inviteCode = '${value['inviteCode'] ?? ''}';
+        if (inviteCode.isNotEmpty) {
+          batch.delete(firestore.doc('householdInvites/$inviteCode'));
+        }
+        batch.delete(firestore.doc('households/$householdId/data/state'));
+        batch.delete(householdRef);
+      } else {
+        final accounts = Map<String, dynamic>.from(
+          value['accounts'] as Map? ?? const {},
+        )..remove(user.uid);
+        batch.update(householdRef, {
+          'memberUids': FieldValue.arrayRemove([user.uid]),
+          'accounts': accounts,
+        });
+      }
+    }
+
+    batch.set(firestore.doc('deletedUsers/${user.uid}'), {
+      'uid': user.uid,
+      'email': user.email,
+      'deletedAt': FieldValue.serverTimestamp(),
+      'deletedBy': currentUser?.email ?? currentUser?.uid,
+    });
+    batch.delete(firestore.doc('users/${user.uid}/medibox/state'));
+    batch.delete(membershipRef);
+    batch.delete(firestore.doc('users/${user.uid}/subscription/current'));
+    batch.delete(firestore.doc('premiumRequests/${user.uid}'));
+    batch.delete(firestore.doc('userProfiles/${user.uid}'));
+    await batch.commit();
+  }
 }

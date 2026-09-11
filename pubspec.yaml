@@ -1,7 +1,7 @@
 name: medibox
 description: MediBox - išmani šeimos vaistinėlė
 publish_to: 'none'
-version: 0.21.13+67
+version: 0.21.14+68
 environment:
   sdk: '>=3.3.0 <4.0.0'
 dependencies:

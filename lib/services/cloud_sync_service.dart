@@ -88,6 +88,9 @@ class CloudSyncService {
   DocumentReference<Map<String, dynamic>> _membershipDocument(String uid) =>
       FirebaseFirestore.instance.doc('users/$uid/settings/household');
 
+  DocumentReference<Map<String, dynamic>> _deletedUserDocument(String uid) =>
+      FirebaseFirestore.instance.doc('deletedUsers/$uid');
+
   DocumentReference<Map<String, dynamic>> _householdDocument(String id) =>
       FirebaseFirestore.instance.doc('households/$id');
 
@@ -118,6 +121,7 @@ class CloudSyncService {
         state = CloudSyncState.signedOut;
         return;
       }
+      await _ensureAccountActive(current.uid);
       await _loadMembership(current.uid, data);
       await _connect(data, onRemoteApplied: onRemoteApplied);
     } catch (error) {
@@ -139,9 +143,20 @@ class CloudSyncService {
     final result = await FirebaseAuth.instance.signInWithCredential(credential);
     final current = result.user;
     if (current == null) throw StateError('google_user_missing');
+    await _ensureAccountActive(current.uid);
     await _loadMembership(current.uid, data);
     await _connect(data, onRemoteApplied: onRemoteApplied);
     return current;
+  }
+
+  Future<void> _ensureAccountActive(String uid) async {
+    if (!(await _deletedUserDocument(uid).get()).exists) return;
+    await FirebaseAuth.instance.signOut();
+    try {
+      await GoogleSignIn.instance.signOut();
+    } catch (_) {}
+    state = CloudSyncState.signedOut;
+    throw StateError('account_deleted');
   }
 
   Future<void> _loadMembership(String uid, AppData data) async {
@@ -788,6 +803,9 @@ class CloudSyncService {
     }
     if (value.contains('leave_household_first')) {
       return 'Pirmiausia išeikite iš bendro namų ūkio.';
+    }
+    if (value.contains('account_deleted')) {
+      return 'Ši paskyra pašalinta. Jei manote, kad tai klaida, kreipkitės į administratorių.';
     }
     if (value.contains('network')) return 'Nėra interneto ryšio.';
     if (value.contains('permission-denied')) {
