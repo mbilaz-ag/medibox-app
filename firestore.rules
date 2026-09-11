@@ -45,6 +45,25 @@ service cloud.firestore {
       allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
       allow write: if isAdmin();
     }
+    match /userProfiles/{userId} {
+      allow read: if signedIn()
+        && (request.auth.uid == userId || isAdmin());
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoUrl', 'isAnonymous',
+          'providers', 'createdAt', 'lastSeenAt'
+        ]);
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'displayName', 'photoUrl', 'isAnonymous',
+          'providers', 'lastSeenAt'
+        ]);
+      allow delete: if false;
+    }
     match /premiumRequests/{userId} {
       allow create: if signedIn()
         && request.auth.uid == userId
