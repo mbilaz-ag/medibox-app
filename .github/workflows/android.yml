@@ -3,7 +3,7 @@ name: Build MediBox Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, feature/reminder-repeat-30]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -39,8 +39,8 @@ jobs:
           flutter create --no-pub --platforms=android,ios --project-name medibox --org lt.medibox "$RUNNER_TEMP/medibox-native"
           python3 tool/prepare_platforms.py "$RUNNER_TEMP/medibox-native"
       - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - run: flutter analyze lib test
+      - run: flutter test test
       - name: Read application version
         id: version
         shell: bash
@@ -73,7 +73,7 @@ jobs:
           path: ${{ steps.version.outputs.apk }}
           if-no-files-found: error
       - name: Publish APK for in-app updates
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/feature/reminder-repeat-30')
+        if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
