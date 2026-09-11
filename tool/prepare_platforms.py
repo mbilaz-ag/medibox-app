@@ -97,7 +97,11 @@ if 'ScheduledNotificationReceiver' not in text:
             </intent-filter>
         </receiver>
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
-        <receiver android:exported="false" android:name=".MediBoxAlarmReceiver" />
+        <receiver android:exported="false" android:name=".MediBoxAlarmReceiver">
+            <intent-filter>
+                <action android:name="com.medibox.STOP_MAXIMUM_ALARM" />
+            </intent-filter>
+        </receiver>
 '''
     text = text.replace('</application>', receivers + '    </application>', 1)
 manifest.write_text(text)
@@ -143,8 +147,6 @@ for activity in (root / 'android/app/src/main').rglob('MainActivity.kt'):
         activity_text = activity_text.replace(
             'import io.flutter.embedding.android.FlutterFragmentActivity',
             '''import android.app.AlarmManager
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -158,7 +160,6 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
-import androidx.core.app.NotificationCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -272,8 +273,6 @@ private object MediBoxAlarmScheduler {
 
 private object MediBoxAlarmPlayback {
     const val stopAction = "com.medibox.STOP_MAXIMUM_ALARM"
-    private const val controlChannelId = "medibox_alarm_controls_v1"
-    private const val controlNotificationId = 2147482001
     private var player: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -294,9 +293,6 @@ private object MediBoxAlarmPlayback {
         wakeLock = null
         pendingResult?.finish()
         pendingResult = null
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE)
-            as NotificationManager
-        manager.cancel(controlNotificationId)
     }
 
     fun start(context: Context, result: BroadcastReceiver.PendingResult) {
@@ -308,8 +304,6 @@ private object MediBoxAlarmPlayback {
             session = activeSession
             pendingResult = result
         }
-        showControlNotification(application)
-
         val power = application.getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = power.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -376,40 +370,6 @@ private object MediBoxAlarmPlayback {
         if (activeSession == session) stop(context)
     }
 
-    private fun showControlNotification(context: Context) {
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE)
-            as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                controlChannelId,
-                "MediBox garsaus signalo valdymas",
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                setSound(null, null)
-                enableVibration(false)
-            }
-            manager.createNotificationChannel(channel)
-        }
-        val stopIntent = Intent(context, MediBoxAlarmReceiver::class.java)
-            .setAction(stopAction)
-        val stopPendingIntent = PendingIntent.getBroadcast(
-            context,
-            controlNotificationId,
-            stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(context, controlChannelId)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("MediBox • vaistų priminimas")
-            .setContentText("Garsus signalas aktyvus")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setOngoing(true)
-            .setSilent(true)
-            .addAction(0, "Išjungti garsą", stopPendingIntent)
-            .build()
-        manager.notify(controlNotificationId, notification)
-    }
 }
 
 class MediBoxAlarmReceiver : BroadcastReceiver() {

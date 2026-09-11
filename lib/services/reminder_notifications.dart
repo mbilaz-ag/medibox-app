@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -152,6 +153,17 @@ class ReminderNotifications {
     } catch (_) {}
   }
 
+  static Future<void> _stopMaximumAlarmSound() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final intent = AndroidIntent(
+        action: 'com.medibox.STOP_MAXIMUM_ALARM',
+        package: 'lt.medibox.medibox',
+      );
+      await intent.sendBroadcast();
+    } catch (_) {}
+  }
+
   static AndroidNotificationDetails _medicineAndroidDetails(
     AppData data,
     bool english, {
@@ -242,13 +254,26 @@ class ReminderNotifications {
     final body = english
         ? 'Notifications are enabled. Scheduled reminders will appear at the selected time.'
         : 'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.';
+    final stopActions = data.loudMedicationReminders
+        ? [
+            AndroidNotificationAction(
+              'stop_alarm',
+              english ? 'Stop sound' : 'Išjungti garsą',
+              showsUserInterface: false,
+            ),
+          ]
+        : const <AndroidNotificationAction>[];
     try {
       await _plugin.show(
         2147483000,
         title,
         body,
         NotificationDetails(
-          android: _medicineAndroidDetails(data, english),
+          android: _medicineAndroidDetails(
+            data,
+            english,
+            actions: stopActions,
+          ),
           iOS: _medicineIosDetails(data),
         ),
       );
@@ -258,7 +283,10 @@ class ReminderNotifications {
         title,
         body,
         NotificationDetails(
-          android: _medicineFallbackAndroidDetails(english),
+          android: _medicineFallbackAndroidDetails(
+            english,
+            actions: stopActions,
+          ),
           iOS: _medicineIosDetails(data),
         ),
       );
@@ -502,6 +530,12 @@ class ReminderNotifications {
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
     final notificationId = _id(reminder.id, occurrence, repeatIndex);
     final actions = [
+      if (data.loudMedicationReminders)
+        AndroidNotificationAction(
+          'stop_alarm',
+          english ? 'Stop sound' : 'Išjungti garsą',
+          showsUserInterface: false,
+        ),
       AndroidNotificationAction(
         'taken',
         english ? 'Taken' : 'Išgėriau',
@@ -600,11 +634,15 @@ class ReminderNotifications {
   }
 
   static void _notificationResponse(NotificationResponse response) {
+    final action = response.actionId;
+    if (action != null && action.isNotEmpty && action != 'open') {
+      _stopMaximumAlarmSound();
+    }
+    if (action == 'stop_alarm') return;
     final parts = response.payload?.split('|');
     if (parts == null || parts.length != 2) return;
     final occurrence = DateTime.tryParse(parts[1]);
     if (occurrence == null) return;
-    final action = response.actionId;
     onAction?.call(
       action == null || action.isEmpty ? 'open' : action,
       parts[0],
@@ -615,11 +653,15 @@ class ReminderNotifications {
   static Future<void> handleBackgroundAction(
     NotificationResponse response,
   ) async {
+    final action = response.actionId;
+    if (action != null && action.isNotEmpty && action != 'open') {
+      await _stopMaximumAlarmSound();
+    }
+    if (action == 'stop_alarm') return;
     final parts = response.payload?.split('|');
     if (parts == null || parts.length != 2) return;
     final occurrence = DateTime.tryParse(parts[1]);
     if (occurrence == null) return;
-    final action = response.actionId;
     if (action == null || action.isEmpty || action == 'open') return;
 
     await initialize();
