@@ -99,7 +99,10 @@ class SubscriptionService extends ChangeNotifier {
   StreamSubscription<User?>? _authSubscription;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
       _entitlementSubscription;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+      _premiumRequestSubscription;
   SubscriptionEntitlement _entitlement = SubscriptionEntitlement.free;
+  bool _premiumRequestPending = false;
   bool _initialized = false;
   bool _loading = false;
   String _message = '';
@@ -108,6 +111,7 @@ class SubscriptionService extends ChangeNotifier {
   bool get hasPremium => _entitlement.hasPremium;
   bool get loading => _loading;
   String get message => _message;
+  bool get premiumRequestPending => _premiumRequestPending;
 
   DocumentReference<Map<String, dynamic>> _document(String uid) =>
       FirebaseFirestore.instance.doc('users/$uid/subscription/current');
@@ -124,16 +128,24 @@ class SubscriptionService extends ChangeNotifier {
 
   Future<void> _bindUser(User? user) async {
     await _entitlementSubscription?.cancel();
+    await _premiumRequestSubscription?.cancel();
     _entitlementSubscription = null;
+    _premiumRequestSubscription = null;
     if (user == null) {
       _loading = false;
       _message = '';
+      _premiumRequestPending = false;
       _setEntitlement(SubscriptionEntitlement.free);
       return;
     }
     _loading = true;
     _message = '';
     notifyListeners();
+    try {
+      await _upsertUserProfile(user);
+    } catch (_) {
+      // A profile is useful for administration, but must never block the app.
+    }
     _entitlementSubscription = _document(user.uid).snapshots().listen(
       (snapshot) {
         _loading = false;
@@ -145,6 +157,26 @@ class SubscriptionService extends ChangeNotifier {
         _setError('subscription_read_error');
       },
     );
+    _premiumRequestSubscription = FirebaseFirestore.instance
+        .doc('premiumRequests/${user.uid}')
+        .snapshots()
+        .listen((snapshot) {
+      _premiumRequestPending = snapshot.data()?['status'] == 'pending';
+      notifyListeners();
+    });
+  }
+
+  Future<void> _upsertUserProfile(User user) async {
+    await FirebaseFirestore.instance.doc('userProfiles/${user.uid}').set({
+      'uid': user.uid,
+      'email': user.email ?? '',
+      'displayName': user.displayName ?? '',
+      'photoUrl': user.photoURL ?? '',
+      'isAnonymous': user.isAnonymous,
+      'providers': user.providerData.map((value) => value.providerId).toList(),
+      'createdAt': user.metadata.creationTime ?? FieldValue.serverTimestamp(),
+      'lastSeenAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> refresh() async {
@@ -175,6 +207,9 @@ class SubscriptionService extends ChangeNotifier {
       'requestedPlan': plan.firestoreValue,
       'status': 'pending',
       'requestedAt': FieldValue.serverTimestamp(),
+      'termsVersion': '2026-09-11',
+      'termsAcceptedAt': FieldValue.serverTimestamp(),
+      'immediateServiceRequested': true,
     });
   }
 
@@ -196,6 +231,7 @@ class SubscriptionService extends ChangeNotifier {
   Future<void> disposeService() async {
     await _authSubscription?.cancel();
     await _entitlementSubscription?.cancel();
+    await _premiumRequestSubscription?.cancel();
     _initialized = false;
   }
 }
