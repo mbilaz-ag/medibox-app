@@ -38,6 +38,7 @@ import 'services/subscription_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppUpdateService.initialize();
   await ReminderNotifications.initialize();
   runApp(const App());
 }
@@ -9439,7 +9440,7 @@ class _ProfilePage extends State<ProfilePage> {
                 tx(c, 'Programėlės atnaujinimas', 'App update'),
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: const Text(
+              subtitle: Text(
                 'MediBox ${AppUpdateService.currentVersion}',
               ),
               trailing: const Icon(Icons.refresh_rounded),
