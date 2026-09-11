@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/models.dart';
 import 'firebase_leaflet_service.dart';
+import 'reminder_logic.dart';
 import 'store.dart';
 import 'subscription_service.dart';
 
@@ -175,10 +176,12 @@ class CloudSyncService {
     }
     final reference = _activeDocument(data);
     final remote = await reference.get();
+    final pendingActions = await Store.loadPendingReminderActions();
     if (remote.exists && remote.data()?['payload'] is Map) {
       final payload = Map<String, dynamic>.from(remote.data()!['payload'] as Map);
       if (Store.containsPersonalContent(data) && data.householdId.isEmpty) {
         _mergeRemoteIntoLocal(data, payload);
+        _applyPendingReminderActions(data, pendingActions);
         await _uploadNow(data);
       } else {
         Store.applyCloudPayload(
@@ -186,10 +189,13 @@ class CloudSyncService {
           payload,
           applyProfile: data.householdId.isEmpty,
         );
+        _applyPendingReminderActions(data, pendingActions);
         await Store.save(data);
         await onRemoteApplied();
+        if (pendingActions.isNotEmpty) await _uploadNow(data);
       }
     } else {
+      _applyPendingReminderActions(data, pendingActions);
       await _uploadNow(data);
     }
     await _listen(data, onRemoteApplied);
@@ -258,6 +264,8 @@ class CloudSyncService {
       _uploadAgain = true;
       return;
     }
+    final pendingActions = await Store.loadPendingReminderActions();
+    _applyPendingReminderActions(data, pendingActions);
     _uploading = true;
     state = CloudSyncState.syncing;
     try {
@@ -276,6 +284,7 @@ class CloudSyncService {
         await _syncHouseholdAccountNames(data);
       }
       await Store.save(data);
+      await Store.clearPendingReminderActions();
       state = CloudSyncState.synced;
       message = '';
     } catch (error) {
@@ -629,6 +638,26 @@ class CloudSyncService {
     );
     Store.applyCloudPayload(remote, payload);
     _mergeAppData(local, remote);
+  }
+
+  void _applyPendingReminderActions(
+    AppData data,
+    List<Map<String, String>> actions,
+  ) {
+    for (final item in actions) {
+      final reminderId = item['reminderId'];
+      final occurrence = DateTime.tryParse(item['occurrence'] ?? '');
+      if (reminderId == null || occurrence == null) continue;
+      final matches = data.reminders.where(
+        (reminder) => reminder.id == reminderId,
+      );
+      if (matches.isEmpty) continue;
+      if (item['action'] == 'taken') {
+        markDoseTaken(data, matches.first, occurrence);
+      } else if (item['action'] == 'skip') {
+        markDoseSkipped(matches.first, occurrence);
+      }
+    }
   }
 
   void _mergePayloadIntoLocal(AppData local, Map<String, dynamic> payload) {

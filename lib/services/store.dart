@@ -31,6 +31,8 @@ class Store {
   static const _householdName = 'medibox_household_name_v1';
   static const _householdRole = 'medibox_household_role_v1';
   static const _linkedMemberId = 'medibox_linked_member_id_v1';
+  static const _pendingReminderActions =
+      'medibox_pending_reminder_actions_v1';
   static Future<AppData> load() async {
     final p = await SharedPreferences.getInstance();
     // Notification actions run in a separate Flutter isolate. Refresh the
@@ -139,6 +141,53 @@ class Store {
       p.setString(_householdRole, d.householdRole),
       p.setString(_linkedMemberId, d.linkedMemberId),
     ]);
+  }
+
+  static Future<void> recordPendingReminderAction(
+    String action,
+    String reminderId,
+    DateTime occurrence,
+  ) async {
+    if (action != 'taken' && action != 'skip') return;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.reload();
+    final pending = await loadPendingReminderActions();
+    final entry = <String, String>{
+      'action': action,
+      'reminderId': reminderId,
+      'occurrence': occurrence.toIso8601String(),
+    };
+    pending.removeWhere(
+      (item) =>
+          item['reminderId'] == reminderId &&
+          item['occurrence'] == entry['occurrence'],
+    );
+    pending.add(entry);
+    await preferences.setString(_pendingReminderActions, jsonEncode(pending));
+  }
+
+  static Future<List<Map<String, String>>> loadPendingReminderActions() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.reload();
+    try {
+      final raw = preferences.getString(_pendingReminderActions);
+      if (raw == null) return [];
+      return (jsonDecode(raw) as List)
+          .whereType<Map>()
+          .map(
+            (item) => item.map(
+              (key, value) => MapEntry('$key', '$value'),
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> clearPendingReminderActions() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_pendingReminderActions);
   }
 
   /// Only user-created content is synchronized. Device permissions, app lock

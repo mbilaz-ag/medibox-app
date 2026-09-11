@@ -495,6 +495,7 @@ class _App extends State<App> with WidgetsBindingObserver {
       // write before refreshing the in-memory reminder history.
       await Future<void>.delayed(const Duration(milliseconds: 250));
       final stored = await Store.load();
+      current.meds = stored.meds;
       current.reminders = stored.reminders;
       CloudSyncService.instance.queueUpload(current);
       await ReminderNotifications.scheduleAll(current);
@@ -523,6 +524,11 @@ class _App extends State<App> with WidgetsBindingObserver {
     } else if (action == 'snooze') {
       await ReminderNotifications.snooze(reminder, current, occurrence);
     }
+    await Store.recordPendingReminderAction(
+      action,
+      reminder.id,
+      occurrence,
+    );
     await Store.save(current);
     CloudSyncService.instance.queueUpload(current);
     if (mounted) setState(() {});

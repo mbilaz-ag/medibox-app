@@ -701,6 +701,11 @@ class ReminderNotifications {
     } else if (action == 'snooze') {
       await snooze(reminder, data, occurrence);
     }
+    await Store.recordPendingReminderAction(
+      action,
+      reminder.id,
+      occurrence,
+    );
     await Store.save(data);
   }
 
