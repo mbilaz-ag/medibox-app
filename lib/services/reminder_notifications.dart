@@ -131,8 +131,8 @@ class ReminderNotifications {
     return AndroidNotificationDetails(
       maximum
           ? bypassDnd
-                ? 'medicine_critical_reminders_dnd_v2'
-                : 'medicine_critical_reminders_v2'
+                ? 'medicine_critical_reminders_dnd_v3'
+                : 'medicine_critical_reminders_v3'
           : 'medicine_reminders',
       maximum
           ? english
@@ -169,7 +169,6 @@ class ReminderNotifications {
       sound: maximum
           ? const RawResourceAndroidNotificationSound('medibox_alarm')
           : null,
-      additionalFlags: maximum ? Int32List.fromList([4]) : null,
       fullScreenIntent: maximum,
       channelBypassDnd: bypassDnd,
       audioAttributesUsage: maximum
@@ -178,6 +177,22 @@ class ReminderNotifications {
       actions: actions,
     );
   }
+
+  static AndroidNotificationDetails _medicineFallbackAndroidDetails(
+    bool english, {
+    List<AndroidNotificationAction> actions = const [],
+  }) => AndroidNotificationDetails(
+    'medicine_reminders_fallback_v1',
+    english ? 'Medicine reminder backup' : 'Atsarginiai vaistų priminimai',
+    channelDescription: english
+        ? 'Backup channel used if a maximum alert cannot be shown'
+        : 'Atsarginis kanalas, jei nepavyksta parodyti garsaus priminimo',
+    importance: Importance.max,
+    priority: Priority.high,
+    playSound: true,
+    enableVibration: true,
+    actions: actions,
+  );
 
   static DarwinNotificationDetails _medicineIosDetails(AppData data) =>
       DarwinNotificationDetails(
@@ -190,17 +205,33 @@ class ReminderNotifications {
   static Future<void> showTest(AppData data) async {
     if (!_initialized) return;
     final english = data.language == 'en';
-    await _plugin.show(
-      2147483000,
-      english ? 'MediBox reminders work' : 'MediBox priminimas veikia',
-      english
-          ? 'Notifications are enabled. Scheduled reminders will appear at the selected time.'
-          : 'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.',
-      NotificationDetails(
-        android: _medicineAndroidDetails(data, english),
-        iOS: _medicineIosDetails(data),
-      ),
-    );
+    final title = english
+        ? 'MediBox reminders work'
+        : 'MediBox priminimas veikia';
+    final body = english
+        ? 'Notifications are enabled. Scheduled reminders will appear at the selected time.'
+        : 'Pranešimai įjungti. Tikrieji priminimai bus rodomi jūsų pasirinktu laiku.';
+    try {
+      await _plugin.show(
+        2147483000,
+        title,
+        body,
+        NotificationDetails(
+          android: _medicineAndroidDetails(data, english),
+          iOS: _medicineIosDetails(data),
+        ),
+      );
+    } catch (_) {
+      await _plugin.show(
+        2147483000,
+        title,
+        body,
+        NotificationDetails(
+          android: _medicineFallbackAndroidDetails(english),
+          iOS: _medicineIosDetails(data),
+        ),
+      );
+    }
   }
 
   static Future<void> scheduleAll(AppData data) async {
@@ -436,31 +467,39 @@ class ReminderNotifications {
         '${english ? 'Note' : 'Pastaba'}: ${reminder.instructions}',
     ].join('\n');
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
+    final actions = [
+      AndroidNotificationAction(
+        'taken',
+        english ? 'Taken' : 'Išgėriau',
+        showsUserInterface: false,
+      ),
+      AndroidNotificationAction(
+        'snooze',
+        english ? 'Remind in 10 min.' : 'Priminti po 10 min.',
+        showsUserInterface: false,
+      ),
+      AndroidNotificationAction(
+        'skip',
+        english ? 'Skip' : 'Praleisti',
+        showsUserInterface: false,
+      ),
+    ];
     final details = NotificationDetails(
         android: _medicineAndroidDetails(
           data,
           english,
-          actions: [
-            AndroidNotificationAction(
-              'taken',
-              english ? 'Taken' : 'Išgėriau',
-              showsUserInterface: false,
-            ),
-            AndroidNotificationAction(
-              'snooze',
-              english ? 'Remind in 10 min.' : 'Priminti po 10 min.',
-              showsUserInterface: false,
-            ),
-            AndroidNotificationAction(
-              'skip',
-              english ? 'Skip' : 'Praleisti',
-              showsUserInterface: false,
-            ),
-          ],
+          actions: actions,
         ),
         iOS: _medicineIosDetails(data),
     );
-    Future<void> schedule(AndroidScheduleMode mode) => _plugin.zonedSchedule(
+    final fallbackDetails = NotificationDetails(
+      android: _medicineFallbackAndroidDetails(english, actions: actions),
+      iOS: _medicineIosDetails(data),
+    );
+    Future<void> schedule(
+      AndroidScheduleMode mode,
+      NotificationDetails notificationDetails,
+    ) => _plugin.zonedSchedule(
           _id(reminder.id, occurrence, repeatIndex),
           snoozed
               ? english
@@ -475,21 +514,29 @@ class ReminderNotifications {
                     : 'MediBox • vaistų priminimas',
           body,
           tz.TZDateTime.from(when, tz.local),
-          details,
+          notificationDetails,
           androidScheduleMode: mode,
           payload: payload,
         );
-    if (snoozed) {
+    try {
+      await schedule(AndroidScheduleMode.exactAllowWhileIdle, details);
+      return;
+    } catch (_) {}
+    try {
+      await schedule(AndroidScheduleMode.inexactAllowWhileIdle, details);
+      return;
+    } catch (_) {}
+    if (data.loudMedicationReminders) {
       try {
-        await schedule(AndroidScheduleMode.exactAllowWhileIdle);
+        await schedule(
+          AndroidScheduleMode.exactAllowWhileIdle,
+          fallbackDetails,
+        );
       } catch (_) {
-        await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
-      }
-    } else {
-      try {
-        await schedule(AndroidScheduleMode.exactAllowWhileIdle);
-      } catch (_) {
-        await schedule(AndroidScheduleMode.inexactAllowWhileIdle);
+        await schedule(
+          AndroidScheduleMode.inexactAllowWhileIdle,
+          fallbackDetails,
+        );
       }
     }
   }
