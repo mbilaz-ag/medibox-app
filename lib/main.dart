@@ -1269,10 +1269,35 @@ class RoleAvatar extends StatelessWidget {
 
 class _Shell extends State<Shell> {
   int index = 0;
-  String selectedMemberId = '';
+  late String selectedMemberId;
+  bool memberSelectionChanged = false;
   DateTime? calendarInitialDate;
   String calendarInitialMemberId = '';
   int calendarRequestVersion = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    selectedMemberId = widget.data.preferredHomeMemberId;
+  }
+
+  @override
+  void didUpdateWidget(covariant Shell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final selectionStillExists = selectedMemberId.isEmpty ||
+        widget.data.members.any((member) => member.id == selectedMemberId);
+    if (!memberSelectionChanged || !selectionStillExists) {
+      selectedMemberId = widget.data.preferredHomeMemberId;
+      memberSelectionChanged = false;
+    }
+  }
+
+  void _selectHomeMember(String value) {
+    setState(() {
+      selectedMemberId = value;
+      memberSelectionChanged = true;
+    });
+  }
 
   void _openCalendar(DateTime date, String memberId) {
     setState(() {
@@ -1291,7 +1316,7 @@ class _Shell extends State<Shell> {
         data: d,
         onChanged: widget.onChanged,
         memberId: selectedMemberId,
-        onMemberChanged: (value) => setState(() => selectedMemberId = value),
+        onMemberChanged: _selectHomeMember,
         onOpenCalendar: _openCalendar,
       ),
       CabinetPage(data: d, onChanged: widget.onChanged),
@@ -1406,6 +1431,11 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext c) {
     final now = DateTime.now();
     final today = dateKey(now);
+    final homeMembers = [...data.members]..sort((a, b) {
+      if (a.id == data.linkedMemberId) return -1;
+      if (b.id == data.linkedMemberId) return 1;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
     final active =
         data.reminders
             .where(
@@ -1548,24 +1578,31 @@ class HomePage extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    ChoiceChip(
-                      label: Text(tx(c, 'Visa šeima', 'Whole family')),
-                      selected: memberId.isEmpty,
-                      onSelected: (_) => onMemberChanged(''),
-                    ),
-                    const SizedBox(width: 7),
-                    ...data.members.map(
+                    ...homeMembers.map(
                       (member) => Padding(
                         padding: const EdgeInsets.only(right: 7),
                         child: ChoiceChip(
                           avatar: Text(
                             _memberEmoji(member.gender, member.ageGroup),
                           ),
-                          label: Text(member.name),
+                          label: Text(
+                            member.id == data.linkedMemberId
+                                ? tx(
+                                    c,
+                                    '${member.name} (aš)',
+                                    '${member.name} (me)',
+                                  )
+                                : member.name,
+                          ),
                           selected: memberId == member.id,
                           onSelected: (_) => onMemberChanged(member.id),
                         ),
                       ),
+                    ),
+                    ChoiceChip(
+                      label: Text(tx(c, 'Visa šeima', 'Whole family')),
+                      selected: memberId.isEmpty,
+                      onSelected: (_) => onMemberChanged(''),
                     ),
                   ],
                 ),
