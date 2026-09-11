@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 108475)
-Total output lines: 12061
+Warning: truncated output (original token count: 108511)
+Total output lines: 12065
 
 import 'dart:async';
 import 'dart:convert';
@@ -1590,7 +1590,11 @@ class HomePage extends StatelessWidget {
                           ),
                           label: Text(
                             member.id == data.linkedMemberId
-                                ? tx(c, '${member.name} (aš)', '${member.name} (me)')
+                                ? tx(
+                                    c,
+                                    '${member.name} (aš)',
+                                    '${member.name} (me)',
+                                  )
                                 : member.name,
                           ),
                           selected: memberId == member.id,
@@ -2785,11 +2789,7 @@ class _GroundingSearchWidgetState extends State<GroundingSearchWidget> {
   @override
   void initState() {
     super.initState();
-    controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationReques…58475 tokens truncated…x(
+    controller = WebViewController…58511 tokens truncated…x(
                     context,
                     'Užklausos pateikimas pats savaime pinigų nenuskaito. Mokėjimas ir aktyvavimo data suderinami el. paštu. Planas automatiškai nepratęsiamas. Premium pradedamas teikti iškart po patvirtinimo ir galioja iki nurodytos datos. Nutraukus planą anksčiau, sumokėta suma paprastai negrąžinama, išskyrus atvejus, kai grąžinimą numato privalomi teisės aktai arba paslauga neatitinka reikalavimų. Įstatymuose nustatytos vartotojo teisės nėra ribojamos.',
                     'Submitting a request does not charge you. Payment and the activation date are arranged by email. The plan does not renew automatically. Premium starts immediately after approval and remains valid until the stated date. If cancelled early, amounts paid are generally non-refundable, except where mandatory law requires a refund or the service is non-conforming. Statutory consumer rights are not limited.',
