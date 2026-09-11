@@ -121,6 +121,37 @@ class ReminderNotifications {
     } catch (_) {}
   }
 
+  static Future<void> _playMaximumAlarmNow() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _alarmVolumeChannel.invokeMethod<bool>('playMaximumAlarm');
+    } catch (_) {}
+  }
+
+  static Future<void> _scheduleMaximumAlarm(
+    int id,
+    DateTime when,
+    Reminder reminder,
+    DateTime occurrence,
+  ) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _alarmVolumeChannel.invokeMethod<bool>('scheduleMaximumAlarm', {
+        'id': id,
+        'atMillis': when.millisecondsSinceEpoch,
+        'reminderId': reminder.id,
+        'occurrenceDate': _dateKey(occurrence),
+      });
+    } catch (_) {}
+  }
+
+  static Future<void> _cancelMaximumAlarms() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _alarmVolumeChannel.invokeMethod<bool>('cancelAllMaximumAlarms');
+    } catch (_) {}
+  }
+
   static AndroidNotificationDetails _medicineAndroidDetails(
     AppData data,
     bool english, {
@@ -232,10 +263,12 @@ class ReminderNotifications {
         ),
       );
     }
+    if (data.loudMedicationReminders) await _playMaximumAlarmNow();
   }
 
   static Future<void> scheduleAll(AppData data) async {
     if (!_initialized) return;
+    await _cancelMaximumAlarms();
     if (data.loudMedicationReminders) await _maximizeAlarmVolume();
     await _plugin.cancelAll();
     final now = DateTime.now();
@@ -467,6 +500,7 @@ class ReminderNotifications {
         '${english ? 'Note' : 'Pastaba'}: ${reminder.instructions}',
     ].join('\n');
     final payload = '${reminder.id}|${occurrence.toIso8601String()}';
+    final notificationId = _id(reminder.id, occurrence, repeatIndex);
     final actions = [
       AndroidNotificationAction(
         'taken',
@@ -500,7 +534,7 @@ class ReminderNotifications {
       AndroidScheduleMode mode,
       NotificationDetails notificationDetails,
     ) => _plugin.zonedSchedule(
-          _id(reminder.id, occurrence, repeatIndex),
+          notificationId,
           snoozed
               ? english
                     ? 'MediBox • reminder after 10 min.'
@@ -520,10 +554,26 @@ class ReminderNotifications {
         );
     try {
       await schedule(AndroidScheduleMode.exactAllowWhileIdle, details);
+      if (data.loudMedicationReminders && repeatIndex == 0) {
+        await _scheduleMaximumAlarm(
+          notificationId,
+          when,
+          reminder,
+          occurrence,
+        );
+      }
       return;
     } catch (_) {}
     try {
       await schedule(AndroidScheduleMode.inexactAllowWhileIdle, details);
+      if (data.loudMedicationReminders && repeatIndex == 0) {
+        await _scheduleMaximumAlarm(
+          notificationId,
+          when,
+          reminder,
+          occurrence,
+        );
+      }
       return;
     } catch (_) {}
     if (data.loudMedicationReminders) {
@@ -536,6 +586,14 @@ class ReminderNotifications {
         await schedule(
           AndroidScheduleMode.inexactAllowWhileIdle,
           fallbackDetails,
+        );
+      }
+      if (repeatIndex == 0) {
+        await _scheduleMaximumAlarm(
+          notificationId,
+          when,
+          reminder,
+          occurrence,
         );
       }
     }

@@ -67,6 +67,18 @@ if 'android.permission.MODIFY_AUDIO_SETTINGS' not in text:
         '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <application',
         1,
     )
+if 'android.permission.VIBRATE' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.VIBRATE"/>\n    <application',
+        1,
+    )
+if 'android.permission.WAKE_LOCK' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.WAKE_LOCK"/>\n    <application',
+        1,
+    )
 if 'android:showWhenLocked=' not in text:
     text = text.replace(
         '<activity',
@@ -85,6 +97,7 @@ if 'ScheduledNotificationReceiver' not in text:
             </intent-filter>
         </receiver>
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
+        <receiver android:exported="false" android:name=".MediBoxAlarmReceiver" />
 '''
     text = text.replace('</application>', receivers + '    </application>', 1)
 manifest.write_text(text)
@@ -129,11 +142,25 @@ for activity in (root / 'android/app/src/main').rglob('MainActivity.kt'):
     if 'medibox/alarm_volume' not in activity_text:
         activity_text = activity_text.replace(
             'import io.flutter.embedding.android.FlutterFragmentActivity',
-            '''import android.content.Context
+            '''import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.MediaPlayer
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel''',
+import io.flutter.plugin.common.MethodChannel
+import org.json.JSONArray
+import java.util.concurrent.atomic.AtomicBoolean''',
         )
         activity_text = re.sub(
             r'class MainActivity\s*:\s*FlutterFragmentActivity\(\)\s*',
@@ -156,10 +183,206 @@ import io.flutter.plugin.common.MethodChannel''',
                 } catch (error: Exception) {
                     result.error("alarm_volume", error.message, null)
                 }
+            } else if (call.method == "scheduleMaximumAlarm") {
+                val id = call.argument<Number>("id")?.toInt()
+                val atMillis = call.argument<Number>("atMillis")?.toLong()
+                if (id == null || atMillis == null) {
+                    result.error("alarm_arguments", "Missing alarm id or time", null)
+                } else {
+                    MediBoxAlarmScheduler.schedule(
+                        this,
+                        id,
+                        atMillis,
+                        call.argument<String>("reminderId") ?: "",
+                        call.argument<String>("occurrenceDate") ?: "",
+                    )
+                    result.success(true)
+                }
+            } else if (call.method == "playMaximumAlarm") {
+                sendBroadcast(Intent(this, MediBoxAlarmReceiver::class.java))
+                result.success(true)
+            } else if (call.method == "cancelAllMaximumAlarms") {
+                MediBoxAlarmScheduler.cancelAll(this)
+                result.success(true)
             } else {
                 result.notImplemented()
             }
         }
+    }
+}
+
+private object MediBoxAlarmScheduler {
+    private const val preferencesName = "medibox_maximum_alarm_ids"
+
+    private fun pendingIntent(context: Context, id: Int, intent: Intent): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            id,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    fun schedule(
+        context: Context,
+        id: Int,
+        atMillis: Long,
+        reminderId: String,
+        occurrenceDate: String,
+    ) {
+        val intent = Intent(context, MediBoxAlarmReceiver::class.java)
+            .putExtra("alarmId", id)
+            .putExtra("reminderId", reminderId)
+            .putExtra("occurrenceDate", occurrenceDate)
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val operation = pendingIntent(context, id, intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !alarmManager.canScheduleExactAlarms()
+        ) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMillis, operation)
+        } else {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMillis, operation)
+        }
+        val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+        val ids = preferences.getStringSet("ids", emptySet())!!.toMutableSet()
+        ids.add(id.toString())
+        preferences.edit().putStringSet("ids", ids).apply()
+    }
+
+    fun cancelAll(context: Context) {
+        val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+        val ids = preferences.getStringSet("ids", emptySet())!!.toSet()
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        for (value in ids) {
+            val id = value.toIntOrNull() ?: continue
+            val intent = Intent(context, MediBoxAlarmReceiver::class.java)
+            alarmManager.cancel(pendingIntent(context, id, intent))
+        }
+        preferences.edit().remove("ids").apply()
+    }
+
+    fun remove(context: Context, id: Int) {
+        val preferences = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
+        val ids = preferences.getStringSet("ids", emptySet())!!.toMutableSet()
+        ids.remove(id.toString())
+        preferences.edit().putStringSet("ids", ids).apply()
+    }
+}
+
+class MediBoxAlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val alarmId = intent.getIntExtra("alarmId", -1)
+        if (alarmId >= 0) MediBoxAlarmScheduler.remove(context, alarmId)
+        if (doseAlreadyHandled(context, intent)) return
+
+        val pendingResult = goAsync()
+        val application = context.applicationContext
+        val power = application.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = power.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "MediBox:MedicineAlarm",
+        )
+        wakeLock.acquire(20_000)
+
+        val audio = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        try {
+            audio.setStreamVolume(
+                AudioManager.STREAM_ALARM,
+                audio.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+                0,
+            )
+        } catch (_: Exception) {}
+
+        val vibrator = application.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        val pattern = longArrayOf(0, 1500, 250, 1500, 250, 2000, 400, 2500)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(
+                VibrationEffect.createWaveform(
+                    pattern,
+                    intArrayOf(0, 255, 0, 255, 0, 255, 0, 255),
+                    -1,
+                ),
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build(),
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(pattern, -1)
+        }
+
+        var player: MediaPlayer? = null
+        val completed = AtomicBoolean(false)
+        lateinit var finishPlayback: () -> Unit
+        finishPlayback = {
+            if (completed.compareAndSet(false, true)) {
+                try {
+                    player?.stop()
+                } catch (_: Exception) {}
+                player?.release()
+                vibrator.cancel()
+                if (wakeLock.isHeld) wakeLock.release()
+                pendingResult.finish()
+            }
+        }
+        try {
+            val descriptor = application.resources.openRawResourceFd(R.raw.medibox_alarm)
+            player = MediaPlayer().also { media ->
+                media.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                media.setDataSource(
+                    descriptor.fileDescriptor,
+                    descriptor.startOffset,
+                    descriptor.length,
+                )
+                descriptor.close()
+                media.setVolume(1.0f, 1.0f)
+                media.setOnCompletionListener { finishPlayback() }
+                media.prepare()
+                media.start()
+            }
+            Handler(Looper.getMainLooper()).postDelayed(
+                { finishPlayback() },
+                15_000,
+            )
+        } catch (_: Exception) {
+            finishPlayback()
+        }
+    }
+
+    private fun doseAlreadyHandled(context: Context, intent: Intent): Boolean {
+        val reminderId = intent.getStringExtra("reminderId") ?: return false
+        val occurrenceDate = intent.getStringExtra("occurrenceDate") ?: return false
+        if (reminderId.isEmpty() || occurrenceDate.isEmpty()) return false
+        return try {
+            val preferences = context.getSharedPreferences(
+                "FlutterSharedPreferences",
+                Context.MODE_PRIVATE,
+            )
+            val raw = preferences.getString("flutter.medibox_reminders_v1", null)
+                ?: return false
+            val reminders = JSONArray(raw)
+            for (index in 0 until reminders.length()) {
+                val reminder = reminders.getJSONObject(index)
+                if (reminder.optString("id") != reminderId) continue
+                val taken = reminder.optJSONArray("takenDates")
+                val skipped = reminder.optJSONArray("skippedDates")
+                return arrayContains(taken, occurrenceDate) ||
+                    arrayContains(skipped, occurrenceDate)
+            }
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun arrayContains(values: JSONArray?, expected: String): Boolean {
+        if (values == null) return false
+        for (index in 0 until values.length()) {
+            if (values.optString(index) == expected) return true
+        }
+        return false
     }
 }
 ''',
