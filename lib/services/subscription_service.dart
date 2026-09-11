@@ -166,6 +166,18 @@ class SubscriptionService extends ChangeNotifier {
     }
   }
 
+  Future<void> requestPremium(SubscriptionPlan plan) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw StateError('sign_in_required');
+    await FirebaseFirestore.instance.doc('premiumRequests/${user.uid}').set({
+      'uid': user.uid,
+      'email': user.email ?? '',
+      'requestedPlan': plan.firestoreValue,
+      'status': 'pending',
+      'requestedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
   void _setEntitlement(SubscriptionEntitlement value) {
     _entitlement = value;
     notifyListeners();
