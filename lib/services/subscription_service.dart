@@ -101,6 +101,14 @@ class SubscriptionService extends ChangeNotifier {
       _entitlementSubscription;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
       _premiumRequestSubscription;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+      _membershipSubscription;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+      _householdSubscription;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+      _householdEntitlementSubscription;
+  SubscriptionEntitlement _personalEntitlement = SubscriptionEntitlement.free;
+  SubscriptionEntitlement _householdEntitlement = SubscriptionEntitlement.free;
   SubscriptionEntitlement _entitlement = SubscriptionEntitlement.free;
   bool _premiumRequestPending = false;
   bool _initialized = false;
@@ -129,8 +137,16 @@ class SubscriptionService extends ChangeNotifier {
   Future<void> _bindUser(User? user) async {
     await _entitlementSubscription?.cancel();
     await _premiumRequestSubscription?.cancel();
+    await _membershipSubscription?.cancel();
+    await _householdSubscription?.cancel();
+    await _householdEntitlementSubscription?.cancel();
     _entitlementSubscription = null;
     _premiumRequestSubscription = null;
+    _membershipSubscription = null;
+    _householdSubscription = null;
+    _householdEntitlementSubscription = null;
+    _personalEntitlement = SubscriptionEntitlement.free;
+    _householdEntitlement = SubscriptionEntitlement.free;
     if (user == null) {
       _loading = false;
       _message = '';
@@ -150,7 +166,8 @@ class SubscriptionService extends ChangeNotifier {
       (snapshot) {
         _loading = false;
         _message = '';
-        _setEntitlement(SubscriptionEntitlement.fromMap(snapshot.data()));
+        _personalEntitlement = SubscriptionEntitlement.fromMap(snapshot.data());
+        _recomputeEntitlement();
       },
       onError: (_) {
         _loading = false;
@@ -164,6 +181,60 @@ class SubscriptionService extends ChangeNotifier {
       _premiumRequestPending = snapshot.data()?['status'] == 'pending';
       notifyListeners();
     });
+    _membershipSubscription = FirebaseFirestore.instance
+        .doc('users/${user.uid}/settings/household')
+        .snapshots()
+        .listen(
+          (snapshot) => _bindHousehold(
+            user.uid,
+            '${snapshot.data()?['householdId'] ?? ''}',
+          ),
+        );
+  }
+
+  Future<void> _bindHousehold(String userUid, String householdId) async {
+    await _householdSubscription?.cancel();
+    await _householdEntitlementSubscription?.cancel();
+    _householdSubscription = null;
+    _householdEntitlementSubscription = null;
+    _householdEntitlement = SubscriptionEntitlement.free;
+    _recomputeEntitlement();
+    if (householdId.isEmpty) return;
+    _householdSubscription = FirebaseFirestore.instance
+        .doc('households/$householdId')
+        .snapshots()
+        .listen((snapshot) {
+          _bindHouseholdOwner(userUid, '${snapshot.data()?['ownerUid'] ?? ''}');
+        });
+  }
+
+  Future<void> _bindHouseholdOwner(String userUid, String ownerUid) async {
+    await _householdEntitlementSubscription?.cancel();
+    _householdEntitlementSubscription = null;
+    _householdEntitlement = SubscriptionEntitlement.free;
+    _recomputeEntitlement();
+    if (ownerUid.isEmpty || ownerUid == userUid) return;
+    if (FirebaseAuth.instance.currentUser?.uid != userUid) return;
+    _householdEntitlementSubscription = _document(ownerUid).snapshots().listen(
+      (snapshot) {
+        _householdEntitlement = SubscriptionEntitlement.fromMap(snapshot.data());
+        _recomputeEntitlement();
+      },
+      onError: (_) {
+        _householdEntitlement = SubscriptionEntitlement.free;
+        _recomputeEntitlement();
+      },
+    );
+  }
+
+  void _recomputeEntitlement() {
+    _setEntitlement(
+      _personalEntitlement.hasPremium
+          ? _personalEntitlement
+          : _householdEntitlement.hasPremium
+          ? _householdEntitlement
+          : _personalEntitlement,
+    );
   }
 
   Future<void> _upsertUserProfile(User user) async {
@@ -191,7 +262,8 @@ class SubscriptionService extends ChangeNotifier {
     try {
       final snapshot = await _document(user.uid).get();
       _loading = false;
-      _setEntitlement(SubscriptionEntitlement.fromMap(snapshot.data()));
+      _personalEntitlement = SubscriptionEntitlement.fromMap(snapshot.data());
+      _recomputeEntitlement();
     } catch (_) {
       _loading = false;
       _setError('subscription_read_error');
@@ -232,6 +304,9 @@ class SubscriptionService extends ChangeNotifier {
     await _authSubscription?.cancel();
     await _entitlementSubscription?.cancel();
     await _premiumRequestSubscription?.cancel();
+    await _membershipSubscription?.cancel();
+    await _householdSubscription?.cancel();
+    await _householdEntitlementSubscription?.cancel();
     _initialized = false;
   }
 }
