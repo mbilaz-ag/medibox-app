@@ -143,6 +143,8 @@ for activity in (root / 'android/app/src/main').rglob('MainActivity.kt'):
         activity_text = activity_text.replace(
             'import io.flutter.embedding.android.FlutterFragmentActivity',
             '''import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -156,11 +158,11 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
+import androidx.core.app.NotificationCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import org.json.JSONArray
-import java.util.concurrent.atomic.AtomicBoolean''',
+import org.json.JSONArray''',
         )
         activity_text = re.sub(
             r'class MainActivity\s*:\s*FlutterFragmentActivity\(\)\s*',
@@ -268,20 +270,51 @@ private object MediBoxAlarmScheduler {
     }
 }
 
-class MediBoxAlarmReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val alarmId = intent.getIntExtra("alarmId", -1)
-        if (alarmId >= 0) MediBoxAlarmScheduler.remove(context, alarmId)
-        if (doseAlreadyHandled(context, intent)) return
+private object MediBoxAlarmPlayback {
+    const val stopAction = "com.medibox.STOP_MAXIMUM_ALARM"
+    private const val controlChannelId = "medibox_alarm_controls_v1"
+    private const val controlNotificationId = 2147482001
+    private var player: MediaPlayer? = null
+    private var vibrator: Vibrator? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var pendingResult: BroadcastReceiver.PendingResult? = null
+    private var activeSession = 0L
 
-        val pendingResult = goAsync()
+    @Synchronized
+    fun stop(context: Context) {
+        activeSession += 1
+        try {
+            player?.stop()
+        } catch (_: Exception) {}
+        player?.release()
+        player = null
+        vibrator?.cancel()
+        vibrator = null
+        if (wakeLock?.isHeld == true) wakeLock?.release()
+        wakeLock = null
+        pendingResult?.finish()
+        pendingResult = null
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE)
+            as NotificationManager
+        manager.cancel(controlNotificationId)
+    }
+
+    fun start(context: Context, result: BroadcastReceiver.PendingResult) {
         val application = context.applicationContext
+        stop(application)
+        val session: Long
+        synchronized(this) {
+            activeSession += 1
+            session = activeSession
+            pendingResult = result
+        }
+        showControlNotification(application)
+
         val power = application.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val wakeLock = power.newWakeLock(
+        wakeLock = power.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "MediBox:MedicineAlarm",
-        )
-        wakeLock.acquire(20_000)
+        ).also { it.acquire(20_000) }
 
         val audio = application.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         try {
@@ -292,10 +325,10 @@ class MediBoxAlarmReceiver : BroadcastReceiver() {
             )
         } catch (_: Exception) {}
 
-        val vibrator = application.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        vibrator = application.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
         val pattern = longArrayOf(0, 1500, 250, 1500, 250, 2000, 400, 2500)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator.vibrate(
+            vibrator?.vibrate(
                 VibrationEffect.createWaveform(
                     pattern,
                     intArrayOf(0, 255, 0, 255, 0, 255, 0, 255),
@@ -305,23 +338,10 @@ class MediBoxAlarmReceiver : BroadcastReceiver() {
             )
         } else {
             @Suppress("DEPRECATION")
-            vibrator.vibrate(pattern, -1)
+            vibrator?.vibrate(pattern, -1)
         }
 
-        var player: MediaPlayer? = null
-        val completed = AtomicBoolean(false)
-        lateinit var finishPlayback: () -> Unit
-        finishPlayback = {
-            if (completed.compareAndSet(false, true)) {
-                try {
-                    player?.stop()
-                } catch (_: Exception) {}
-                player?.release()
-                vibrator.cancel()
-                if (wakeLock.isHeld) wakeLock.release()
-                pendingResult.finish()
-            }
-        }
+        val finishPlayback = { finishIfActive(application, session) }
         try {
             val descriptor = application.resources.openRawResourceFd(R.raw.medibox_alarm)
             player = MediaPlayer().also { media ->
@@ -349,6 +369,59 @@ class MediBoxAlarmReceiver : BroadcastReceiver() {
         } catch (_: Exception) {
             finishPlayback()
         }
+    }
+
+    @Synchronized
+    private fun finishIfActive(context: Context, session: Long) {
+        if (activeSession == session) stop(context)
+    }
+
+    private fun showControlNotification(context: Context) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE)
+            as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                controlChannelId,
+                "MediBox garsaus signalo valdymas",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                setSound(null, null)
+                enableVibration(false)
+            }
+            manager.createNotificationChannel(channel)
+        }
+        val stopIntent = Intent(context, MediBoxAlarmReceiver::class.java)
+            .setAction(stopAction)
+        val stopPendingIntent = PendingIntent.getBroadcast(
+            context,
+            controlNotificationId,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, controlChannelId)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("MediBox • vaistų priminimas")
+            .setContentText("Garsus signalas aktyvus")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setOngoing(true)
+            .setSilent(true)
+            .addAction(0, "Išjungti garsą", stopPendingIntent)
+            .build()
+        manager.notify(controlNotificationId, notification)
+    }
+}
+
+class MediBoxAlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == MediBoxAlarmPlayback.stopAction) {
+            MediBoxAlarmPlayback.stop(context.applicationContext)
+            return
+        }
+        val alarmId = intent.getIntExtra("alarmId", -1)
+        if (alarmId >= 0) MediBoxAlarmScheduler.remove(context, alarmId)
+        if (doseAlreadyHandled(context, intent)) return
+        MediBoxAlarmPlayback.start(context, goAsync())
     }
 
     private fun doseAlreadyHandled(context: Context, intent: Intent): Boolean {

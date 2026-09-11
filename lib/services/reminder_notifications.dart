@@ -200,7 +200,7 @@ class ReminderNotifications {
       sound: maximum
           ? const RawResourceAndroidNotificationSound('medibox_alarm')
           : null,
-      fullScreenIntent: maximum,
+      fullScreenIntent: false,
       channelBypassDnd: bypassDnd,
       audioAttributesUsage: maximum
           ? AudioAttributesUsage.alarm
