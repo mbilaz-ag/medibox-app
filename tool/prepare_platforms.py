@@ -61,6 +61,12 @@ if 'android.permission.USE_FULL_SCREEN_INTENT' not in text:
         '<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>\n    <application',
         1,
     )
+if 'android.permission.MODIFY_AUDIO_SETTINGS' not in text:
+    text = text.replace(
+        '<application',
+        '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>\n    <application',
+        1,
+    )
 if 'android:showWhenLocked=' not in text:
     text = text.replace(
         '<activity',
@@ -120,7 +126,52 @@ for activity in (root / 'android/app/src/main').rglob('MainActivity.kt'):
         'import io.flutter.embedding.android.FlutterActivity',
         'import io.flutter.embedding.android.FlutterFragmentActivity',
     ).replace('FlutterActivity()', 'FlutterFragmentActivity()')
+    if 'medibox/alarm_volume' not in activity_text:
+        activity_text = activity_text.replace(
+            'import io.flutter.embedding.android.FlutterFragmentActivity',
+            '''import android.content.Context
+import android.media.AudioManager
+import io.flutter.embedding.android.FlutterFragmentActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel''',
+        )
+        activity_text = re.sub(
+            r'class MainActivity\s*:\s*FlutterFragmentActivity\(\)\s*',
+            '''class MainActivity : FlutterFragmentActivity() {
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "medibox/alarm_volume",
+        ).setMethodCallHandler { call, result ->
+            if (call.method == "maximizeAlarmVolume") {
+                try {
+                    val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audio.setStreamVolume(
+                        AudioManager.STREAM_ALARM,
+                        audio.getStreamMaxVolume(AudioManager.STREAM_ALARM),
+                        0,
+                    )
+                    result.success(true)
+                } catch (error: Exception) {
+                    result.error("alarm_volume", error.message, null)
+                }
+            } else {
+                result.notImplemented()
+            }
+        }
+    }
+}
+''',
+            activity_text,
+            count=1,
+        )
     activity.write_text(activity_text)
+
+android_raw = root / 'android/app/src/main/res/raw'
+android_raw.mkdir(parents=True, exist_ok=True)
+shutil.copy2(root / 'assets/sounds/medibox_alarm.ogg',
+             android_raw / 'medibox_alarm.ogg')
 
 # Install the MediBox launcher icon generated from the approved brand mark.
 android_icons = {

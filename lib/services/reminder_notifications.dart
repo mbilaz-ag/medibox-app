@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
@@ -24,6 +25,7 @@ Future<void> notificationTapBackground(NotificationResponse response) async {
 
 class ReminderNotifications {
   static final _plugin = FlutterLocalNotificationsPlugin();
+  static const _alarmVolumeChannel = MethodChannel('medibox/alarm_volume');
   static ReminderActionHandler? onAction;
   static bool _initialized = false;
   static bool _notificationPolicyAccess = false;
@@ -108,7 +110,15 @@ class ReminderNotifications {
     await android.requestNotificationPolicyAccess();
     _notificationPolicyAccess =
         await android.hasNotificationPolicyAccess() ?? false;
+    await _maximizeAlarmVolume();
     return _notificationPolicyAccess;
+  }
+
+  static Future<void> _maximizeAlarmVolume() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _alarmVolumeChannel.invokeMethod<bool>('maximizeAlarmVolume');
+    } catch (_) {}
   }
 
   static AndroidNotificationDetails _medicineAndroidDetails(
@@ -121,8 +131,8 @@ class ReminderNotifications {
     return AndroidNotificationDetails(
       maximum
           ? bypassDnd
-                ? 'medicine_critical_reminders_dnd_v1'
-                : 'medicine_critical_reminders_v1'
+                ? 'medicine_critical_reminders_dnd_v2'
+                : 'medicine_critical_reminders_v2'
           : 'medicine_reminders',
       maximum
           ? english
@@ -145,8 +155,21 @@ class ReminderNotifications {
       playSound: true,
       enableVibration: true,
       vibrationPattern: maximum
-          ? Int64List.fromList([0, 1000, 400, 1000, 400, 1500])
+          ? Int64List.fromList([
+              0,
+              1500,
+              250,
+              1500,
+              250,
+              2000,
+              400,
+              2500,
+            ])
           : null,
+      sound: maximum
+          ? const RawResourceAndroidNotificationSound('medibox_alarm')
+          : null,
+      additionalFlags: maximum ? Int32List.fromList([4]) : null,
       fullScreenIntent: maximum,
       channelBypassDnd: bypassDnd,
       audioAttributesUsage: maximum
@@ -182,6 +205,7 @@ class ReminderNotifications {
 
   static Future<void> scheduleAll(AppData data) async {
     if (!_initialized) return;
+    if (data.loudMedicationReminders) await _maximizeAlarmVolume();
     await _plugin.cancelAll();
     final now = DateTime.now();
     if (data.medicationNotificationsGranted) {
