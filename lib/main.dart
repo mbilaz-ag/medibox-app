@@ -8705,7 +8705,32 @@ class SubscriptionPage extends StatelessWidget {
               features: _premiumFeatures(context),
             ),
             const SizedBox(height: 8),
-            card(
+            if (entitlement.hasPremium)
+              card(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tx(context, 'Premium aktyvus', 'Premium is active'),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w900,
+                        color: navy,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      tx(
+                        context,
+                        'Jūsų planas jau aktyvuotas. Dėl plano pakeitimo ar nutraukimo kreipkitės: andrius.grudinskas@gmail.com',
+                        'Your plan is already active. To change or cancel it, contact: andrius.grudinskas@gmail.com',
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              card(
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -8728,22 +8753,29 @@ class SubscriptionPage extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   const SelectableText('andrius.grudinskas@gmail.com'),
-                  if (user != null) ...[
+                  if (service.premiumRequestPending) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        const Icon(Icons.schedule_rounded, color: green),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            tx(
+                              context,
+                              'Jūsų Premium užklausa laukia patvirtinimo.',
+                              'Your Premium request is awaiting approval.',
+                            ),
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (user != null) ...[
                     const SizedBox(height: 12),
                     FilledButton.icon(
                       onPressed: () async {
-                        final choice = await showDialog<SubscriptionPlan>(
-                          context: context,
-                          builder: (c) => AlertDialog(
-                            title: Text(tx(c, 'Pasirinkite planą', 'Choose a plan')),
-                            content: Text(tx(c, 'Atsiųsime jūsų užklausą administratoriui.', 'We will send your request to the administrator.')),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(c), child: Text(tx(c, 'Atšaukti', 'Cancel'))),
-                              FilledButton(onPressed: () => Navigator.pop(c, SubscriptionPlan.premiumMonthly), child: Text(tx(c, 'Mėnesinis', 'Monthly'))),
-                              FilledButton(onPressed: () => Navigator.pop(c, SubscriptionPlan.premiumYearly), child: Text(tx(c, 'Metinis', 'Annual'))),
-                            ],
-                          ),
-                        );
+                        final choice = await _showPremiumRequestDialog(context);
                         if (choice == null || !context.mounted) return;
                         try {
                           await SubscriptionService.instance.requestPremium(choice);
@@ -8767,6 +8799,78 @@ class SubscriptionPage extends StatelessWidget {
           ],
         );
       },
+    ),
+  );
+}
+
+Future<SubscriptionPlan?> _showPremiumRequestDialog(BuildContext context) {
+  var plan = SubscriptionPlan.premiumMonthly;
+  var accepted = false;
+  return showDialog<SubscriptionPlan>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: Text(tx(context, 'Premium užklausa', 'Premium request')),
+        content: SizedBox(
+          width: 520,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                RadioListTile<SubscriptionPlan>(
+                  value: SubscriptionPlan.premiumMonthly,
+                  groupValue: plan,
+                  onChanged: (value) => setState(() => plan = value!),
+                  title: Text(tx(context, 'Mėnesinis – 1,99 €', 'Monthly – €1.99')),
+                ),
+                RadioListTile<SubscriptionPlan>(
+                  value: SubscriptionPlan.premiumYearly,
+                  groupValue: plan,
+                  onChanged: (value) => setState(() => plan = value!),
+                  title: Text(tx(context, 'Metinis – 19,99 €', 'Annual – €19.99')),
+                ),
+                const Divider(),
+                Text(
+                  tx(context, 'Pirkimo ir naudojimo sąlygos', 'Purchase and usage terms'),
+                  style: const TextStyle(fontWeight: FontWeight.w900, color: navy),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  tx(
+                    context,
+                    'Užklausos pateikimas pats savaime pinigų nenuskaito. Mokėjimas ir aktyvavimo data suderinami el. paštu. Planas automatiškai nepratęsiamas. Premium pradedamas teikti iškart po patvirtinimo ir galioja iki nurodytos datos. Nutraukus planą anksčiau, sumokėta suma paprastai negrąžinama, išskyrus atvejus, kai grąžinimą numato privalomi teisės aktai arba paslauga neatitinka reikalavimų. Įstatymuose nustatytos vartotojo teisės nėra ribojamos.',
+                    'Submitting a request does not charge you. Payment and the activation date are arranged by email. The plan does not renew automatically. Premium starts immediately after approval and remains valid until the stated date. If cancelled early, amounts paid are generally non-refundable, except where mandatory law requires a refund or the service is non-conforming. Statutory consumer rights are not limited.',
+                  ),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: accepted,
+                  onChanged: (value) => setState(() => accepted = value ?? false),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: Text(
+                    tx(
+                      context,
+                      'Perskaičiau, sutinku su sąlygomis ir prašau pradėti teikti paslaugą iškart po patvirtinimo.',
+                      'I have read and accept the terms and request that the service begin immediately after approval.',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(tx(context, 'Atšaukti', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: accepted ? () => Navigator.pop(dialogContext, plan) : null,
+            child: Text(tx(context, 'Siųsti užklausą', 'Send request')),
+          ),
+        ],
+      ),
     ),
   );
 }
