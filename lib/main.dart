@@ -8756,7 +8756,12 @@ class _CloudAccountPageState extends State<CloudAccountPage> {
             const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: busy ? null : () async {
-                if (!await requirePremium(context) || !context.mounted) return;
+                // Existing household members must always be able to manage or
+                // leave the household, even after Premium expires.
+                if (widget.data.householdId.isEmpty &&
+                    (!await requirePremium(context) || !context.mounted)) {
+                  return;
+                }
                 await Navigator.push(context, MaterialPageRoute(builder: (_) => HouseholdSettingsPage(data: widget.data, onChanged: widget.onChanged)));
                 if (mounted) setState(() {});
               },
