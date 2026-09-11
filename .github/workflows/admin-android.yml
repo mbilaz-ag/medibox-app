@@ -69,11 +69,6 @@ jobs:
         run: |
           apksigner_path=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
           python3 tool/verify_apk_signer.py "$apksigner_path" "${{ steps.version.outputs.apk }}"
-          keytool -list -v \
-            -keystore "$MEDIBOX_KEYSTORE_PATH" \
-            -storetype PKCS12 \
-            -storepass:env MEDIBOX_KEYSTORE_PASSWORD \
-            -alias medibox-release | grep 'SHA1:'
       - uses: actions/upload-artifact@v4
         with:
           name: MediBox-Admin-Android-APK
