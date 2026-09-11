@@ -12,6 +12,15 @@ service cloud.firestore {
     function isDeleted(userId) {
       return exists(/databases/$(database)/documents/deletedUsers/$(userId));
     }
+    function canReadHouseholdOwnerPlan(userId) {
+      let membershipPath = /databases/$(database)/documents/users/$(request.auth.uid)/settings/household;
+      return signedIn()
+        && !isDeleted(request.auth.uid)
+        && exists(membershipPath)
+        && get(membershipPath).data.householdId != ''
+        && get(/databases/$(database)/documents/households/$(get(membershipPath).data.householdId)).data.ownerUid == userId
+        && request.auth.uid in get(/databases/$(database)/documents/households/$(get(membershipPath).data.householdId)).data.memberUids;
+    }
     function household(id) {
       return get(/databases/$(database)/documents/households/$(id)).data;
     }
@@ -49,7 +58,8 @@ service cloud.firestore {
     }
     match /users/{userId}/subscription/{document} {
       allow read: if isAdmin()
-        || (signedIn() && request.auth.uid == userId && !isDeleted(userId));
+        || (signedIn() && request.auth.uid == userId && !isDeleted(userId))
+        || canReadHouseholdOwnerPlan(userId);
       allow write: if isAdmin();
     }
     match /userProfiles/{userId} {
