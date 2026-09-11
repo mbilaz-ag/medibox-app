@@ -75,7 +75,7 @@ jobs:
           path: ${{ steps.version.outputs.apk }}
           if-no-files-found: error
       - name: Publish Admin APK
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: admin-v${{ steps.version.outputs.version }}
