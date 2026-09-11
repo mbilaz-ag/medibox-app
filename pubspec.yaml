@@ -1,7 +1,7 @@
 name: medibox
 description: MediBox - išmani šeimos vaistinėlė
 publish_to: 'none'
-version: 0.21.5+59
+version: 0.21.6+60
 environment:
   sdk: '>=3.3.0 <4.0.0'
 dependencies:
@@ -33,7 +33,6 @@ dependencies:
   firebase_app_check: ^0.4.7
   google_sign_in: ^7.2.0
   permission_handler: ^11.4.0
-  android_intent_plus: 5.3.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

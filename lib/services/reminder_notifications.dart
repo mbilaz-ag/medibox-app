@@ -1,10 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 
@@ -27,6 +28,7 @@ Future<void> notificationTapBackground(NotificationResponse response) async {
 class ReminderNotifications {
   static final _plugin = FlutterLocalNotificationsPlugin();
   static const _alarmVolumeChannel = MethodChannel('medibox/alarm_volume');
+  static const _stopAlarmSignalKey = 'medibox_stop_alarm_signal_v1';
   static ReminderActionHandler? onAction;
   static bool _initialized = false;
   static bool _notificationPolicyAccess = false;
@@ -156,11 +158,25 @@ class ReminderNotifications {
   static Future<void> _stopMaximumAlarmSound() async {
     if (!Platform.isAndroid) return;
     try {
-      final intent = AndroidIntent(
-        action: 'com.medibox.STOP_MAXIMUM_ALARM',
-        package: 'lt.medibox.medibox',
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.setInt(
+        _stopAlarmSignalKey,
+        DateTime.now().microsecondsSinceEpoch,
       );
-      await intent.sendBroadcast();
+    } catch (_) {}
+    try {
+      await _alarmVolumeChannel.invokeMethod<bool>('stopMaximumAlarm');
+    } catch (_) {}
+  }
+
+  static Future<void> _stopAlarmAndDismiss(
+    NotificationResponse response,
+  ) async {
+    await _stopMaximumAlarmSound();
+    final notificationId = response.id;
+    if (notificationId == null) return;
+    try {
+      await _plugin.cancel(notificationId);
     } catch (_) {}
   }
 
@@ -635,10 +651,13 @@ class ReminderNotifications {
 
   static void _notificationResponse(NotificationResponse response) {
     final action = response.actionId;
-    if (action != null && action.isNotEmpty && action != 'open') {
-      _stopMaximumAlarmSound();
+    if (action == 'stop_alarm') {
+      unawaited(_stopAlarmAndDismiss(response));
+      return;
     }
-    if (action == 'stop_alarm') return;
+    if (action != null && action.isNotEmpty && action != 'open') {
+      unawaited(_stopMaximumAlarmSound());
+    }
     final parts = response.payload?.split('|');
     if (parts == null || parts.length != 2) return;
     final occurrence = DateTime.tryParse(parts[1]);
@@ -654,10 +673,14 @@ class ReminderNotifications {
     NotificationResponse response,
   ) async {
     final action = response.actionId;
+    if (action == 'stop_alarm') {
+      await initialize();
+      await _stopAlarmAndDismiss(response);
+      return;
+    }
     if (action != null && action.isNotEmpty && action != 'open') {
       await _stopMaximumAlarmSound();
     }
-    if (action == 'stop_alarm') return;
     final parts = response.payload?.split('|');
     if (parts == null || parts.length != 2) return;
     final occurrence = DateTime.tryParse(parts[1]);

@@ -97,11 +97,7 @@ if 'ScheduledNotificationReceiver' not in text:
             </intent-filter>
         </receiver>
         <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
-        <receiver android:exported="false" android:name=".MediBoxAlarmReceiver">
-            <intent-filter>
-                <action android:name="com.medibox.STOP_MAXIMUM_ALARM" />
-            </intent-filter>
-        </receiver>
+        <receiver android:exported="false" android:name=".MediBoxAlarmReceiver" />
 '''
     text = text.replace('</application>', receivers + '    </application>', 1)
 manifest.write_text(text)
@@ -204,6 +200,9 @@ import org.json.JSONArray''',
             } else if (call.method == "playMaximumAlarm") {
                 sendBroadcast(Intent(this, MediBoxAlarmReceiver::class.java))
                 result.success(true)
+            } else if (call.method == "stopMaximumAlarm") {
+                MediBoxAlarmPlayback.stop(applicationContext)
+                result.success(true)
             } else if (call.method == "cancelAllMaximumAlarms") {
                 MediBoxAlarmScheduler.cancelAll(this)
                 result.success(true)
@@ -272,7 +271,9 @@ private object MediBoxAlarmScheduler {
 }
 
 private object MediBoxAlarmPlayback {
-    const val stopAction = "com.medibox.STOP_MAXIMUM_ALARM"
+    private const val flutterPreferencesName = "FlutterSharedPreferences"
+    private const val stopSignalKey = "flutter.medibox_stop_alarm_signal_v1"
+    private const val stopSignalPollMillis = 150L
     private var player: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -298,6 +299,7 @@ private object MediBoxAlarmPlayback {
     fun start(context: Context, result: BroadcastReceiver.PendingResult) {
         val application = context.applicationContext
         stop(application)
+        val stopSignalAtStart = stopSignal(application)
         val session: Long
         synchronized(this) {
             activeSession += 1
@@ -336,6 +338,7 @@ private object MediBoxAlarmPlayback {
         }
 
         val finishPlayback = { finishIfActive(application, session) }
+        pollForStopSignal(application, session, stopSignalAtStart)
         try {
             val descriptor = application.resources.openRawResourceFd(R.raw.medibox_alarm)
             player = MediaPlayer().also { media ->
@@ -370,14 +373,32 @@ private object MediBoxAlarmPlayback {
         if (activeSession == session) stop(context)
     }
 
+    private fun stopSignal(context: Context): Long =
+        context.getSharedPreferences(flutterPreferencesName, Context.MODE_PRIVATE)
+            .getLong(stopSignalKey, 0L)
+
+    private fun pollForStopSignal(
+        context: Context,
+        session: Long,
+        initialSignal: Long,
+    ) {
+        Handler(Looper.getMainLooper()).postDelayed(
+            {
+                if (activeSession != session) return@postDelayed
+                if (stopSignal(context) != initialSignal) {
+                    finishIfActive(context, session)
+                } else {
+                    pollForStopSignal(context, session, initialSignal)
+                }
+            },
+            stopSignalPollMillis,
+        )
+    }
+
 }
 
 class MediBoxAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == MediBoxAlarmPlayback.stopAction) {
-            MediBoxAlarmPlayback.stop(context.applicationContext)
-            return
-        }
         val alarmId = intent.getIntExtra("alarmId", -1)
         if (alarmId >= 0) MediBoxAlarmScheduler.remove(context, alarmId)
         if (doseAlreadyHandled(context, intent)) return
