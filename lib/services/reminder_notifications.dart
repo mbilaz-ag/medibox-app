@@ -276,6 +276,7 @@ class ReminderNotifications {
               'stop_alarm',
               english ? 'Stop sound' : 'Išjungti garsą',
               showsUserInterface: false,
+              cancelNotification: true,
             ),
           ]
         : const <AndroidNotificationAction>[];
@@ -551,6 +552,7 @@ class ReminderNotifications {
           'stop_alarm',
           english ? 'Stop sound' : 'Išjungti garsą',
           showsUserInterface: false,
+          cancelNotification: true,
         ),
       AndroidNotificationAction(
         'taken',
@@ -674,8 +676,15 @@ class ReminderNotifications {
   ) async {
     final action = response.actionId;
     if (action == 'stop_alarm') {
-      await initialize();
-      await _stopAlarmAndDismiss(response);
+      // The background action runs in a headless Flutter engine. Signal the
+      // native alarm player first: plugin initialization may be unavailable
+      // there, but stopping the audible alarm must never depend on it.
+      await _stopMaximumAlarmSound();
+      try {
+        await initialize();
+        final notificationId = response.id;
+        if (notificationId != null) await _plugin.cancel(notificationId);
+      } catch (_) {}
       return;
     }
     if (action != null && action.isNotEmpty && action != 'open') {
