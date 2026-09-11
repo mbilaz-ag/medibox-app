@@ -111,12 +111,12 @@ jobs:
             -exportPath build/ios/ipa
           IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
           test -n "$IPA_PATH"
-          mv "$IPA_PATH" build/ios/ipa/MediBox-v0.20.1.ipa
+          mv "$IPA_PATH" build/ios/ipa/MediBox.ipa
 
       - uses: actions/upload-artifact@v4
         with:
           name: MediBox-iOS-signed-IPA
-          path: build/ios/ipa/MediBox-v0.20.1.ipa
+          path: build/ios/ipa/MediBox.ipa
           if-no-files-found: error
 
       - name: Upload to TestFlight
@@ -126,7 +126,7 @@ jobs:
           chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
           xcrun altool --upload-app \
             --type ios \
-            --file build/ios/ipa/MediBox-v0.20.1.ipa \
+            --file build/ios/ipa/MediBox.ipa \
             --apiKey "$APP_STORE_CONNECT_KEY_ID" \
             --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
 
