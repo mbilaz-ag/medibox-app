@@ -8721,35 +8721,45 @@ class SubscriptionPage extends StatelessWidget {
                   Text(
                     tx(
                       context,
-                      'Norite Premium plano? Kreipkitės:\n\nandrius.grudinskas@gmail.com',
-                      'Until payments are connected, an administrator changes the plan manually in Firebase. The change appears automatically in the app.',
+                      'Norite Premium plano? Kreipkitės:',
+                      'Want a Premium plan? Contact:',
                     ),
+                    style: const TextStyle(fontWeight: FontWeight.w800, color: navy),
                   ),
+                  const SizedBox(height: 4),
+                  const SelectableText('andrius.grudinskas@gmail.com'),
                   if (user != null) ...[
                     const SizedBox(height: 12),
-                    Text(
-                      tx(context, 'Paskyros UID', 'Account UID'),
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 4),
-                    SelectableText(user.uid),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
+                    FilledButton.icon(
                       onPressed: () async {
-                        await Clipboard.setData(ClipboardData(text: user.uid));
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                tx(context, 'UID nukopijuotas', 'UID copied'),
-                              ),
-                            ),
-                          );
+                        final choice = await showDialog<SubscriptionPlan>(
+                          context: context,
+                          builder: (c) => AlertDialog(
+                            title: Text(tx(c, 'Pasirinkite planą', 'Choose a plan')),
+                            content: Text(tx(c, 'Atsiųsime jūsų užklausą administratoriui.', 'We will send your request to the administrator.')),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(c), child: Text(tx(c, 'Atšaukti', 'Cancel'))),
+                              FilledButton(onPressed: () => Navigator.pop(c, SubscriptionPlan.premiumMonthly), child: Text(tx(c, 'Mėnesinis', 'Monthly'))),
+                              FilledButton(onPressed: () => Navigator.pop(c, SubscriptionPlan.premiumYearly), child: Text(tx(c, 'Metinis', 'Annual'))),
+                            ],
+                          ),
+                        );
+                        if (choice == null || !context.mounted) return;
+                        try {
+                          await SubscriptionService.instance.requestPremium(choice);
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context, 'Užklausa išsiųsta.', 'Request sent.'))));
+                        } catch (_) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tx(context, 'Nepavyko išsiųsti užklausos.', 'Could not send request.'))));
                         }
                       },
-                      icon: const Icon(Icons.copy_rounded),
-                      label: Text(tx(context, 'Kopijuoti UID', 'Copy UID')),
+                      icon: const Icon(Icons.workspace_premium_rounded),
+                      label: Text(tx(context, 'Noriu Premium', 'I want Premium')),
                     ),
+                  ] else ...[
+                    const SizedBox(height: 12),
+                    Text(tx(context, 'Norėdami pateikti užklausą, prisijunkite su „Google“.', 'Sign in with Google to send a request.')),
                   ],
                 ],
               ),
