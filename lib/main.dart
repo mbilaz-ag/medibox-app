@@ -8818,17 +8818,23 @@ Future<SubscriptionPlan?> _showPremiumRequestDialog(BuildContext context) {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                RadioListTile<SubscriptionPlan>(
-                  value: SubscriptionPlan.premiumMonthly,
+                RadioGroup<SubscriptionPlan>(
                   groupValue: plan,
-                  onChanged: (value) => setState(() => plan = value!),
-                  title: Text(tx(context, 'Mėnesinis – 1,99 €', 'Monthly – €1.99')),
-                ),
-                RadioListTile<SubscriptionPlan>(
-                  value: SubscriptionPlan.premiumYearly,
-                  groupValue: plan,
-                  onChanged: (value) => setState(() => plan = value!),
-                  title: Text(tx(context, 'Metinis – 19,99 €', 'Annual – €19.99')),
+                  onChanged: (value) {
+                    if (value != null) setState(() => plan = value);
+                  },
+                  child: Column(
+                    children: [
+                      RadioListTile<SubscriptionPlan>(
+                        value: SubscriptionPlan.premiumMonthly,
+                        title: Text(tx(context, 'Mėnesinis – 1,99 €', 'Monthly – €1.99')),
+                      ),
+                      RadioListTile<SubscriptionPlan>(
+                        value: SubscriptionPlan.premiumYearly,
+                        title: Text(tx(context, 'Metinis – 19,99 €', 'Annual – €19.99')),
+                      ),
+                    ],
+                  ),
                 ),
                 const Divider(),
                 Text(
