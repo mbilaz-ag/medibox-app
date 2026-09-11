@@ -63,10 +63,58 @@ void main() {
     expect(result.best.pharmacy, 'Camelia');
     expect(result.best.price, 3.45);
   });
+
+  test('loads the dynamically rendered pharmacy table', () async {
+    var postedForOffers = false;
+    final client = MockClient((request) async {
+      if (request.url.path.startsWith('/paieska/')) {
+        return _html(
+          '<a href="/espumisan-40mg.html">'
+          'Espumisan 40mg minkštosios kapsulės</a>',
+          headers: {'set-cookie': 'PHPSESSID=test-session; path=/'},
+        );
+      }
+      if (request.method == 'POST') {
+        postedForOffers = true;
+        expect(request.headers['cookie'], 'PHPSESSID=test-session');
+        expect(request.bodyFields['task'], 'elvaistines');
+        expect(request.bodyFields['0123456789abcdef'], '1');
+        return _html('''
+          <ul class="pharmacy-block">
+            ${_offer('camelia', '4.39', 'https://camelia.lt/product')}
+          </ul>
+        ''');
+      }
+      return _html('''
+        <html><head><title>Espumisan 40mg minkštosios kapsulės N50</title></head>
+        <body><section id="section5" data-token="0123456789abcdef"></section></body>
+        </html>
+      ''');
+    });
+
+    final result = await MedicinePriceService(client).find(
+      Med(
+        id: 'dynamic-espumisan',
+        name: 'Espumisan',
+        substance: 'Simetikonas',
+        strength: '40 mg',
+        purpose: '',
+        category: 'Virškinimas',
+        expiry: '',
+        stock: 10,
+        dosageForm: 'minkštosios kapsulės',
+        packageSize: '',
+      ),
+      forceRefresh: true,
+    );
+
+    expect(postedForOffers, isTrue);
+    expect(result.best.price, 4.39);
+  });
 }
 
-http.Response _html(String value) =>
-    http.Response.bytes(utf8.encode(value), 200);
+http.Response _html(String value, {Map<String, String>? headers}) =>
+    http.Response.bytes(utf8.encode(value), 200, headers: headers);
 
 String _offer(String pharmacy, String price, String url) => '''
   <li class="list__item">

@@ -38,6 +38,8 @@ class MedicinePriceService {
   final http.Client client;
   MedicinePriceService(this.client);
 
+  String? _sessionCookie;
+
   static final _cache = <String, MedicinePriceComparison>{};
   static const _cacheDuration = Duration(minutes: 30);
 
@@ -59,11 +61,16 @@ class MedicinePriceService {
       final request = http.Request('GET', uri)
         ..followRedirects = false
         ..headers['User-Agent'] =
-            'MediBox/1.0 (+https://github.com/mbilaz-ag/medibox-app)'
+            'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
+                'Chrome/152 Mobile Safari/537.36 MediBox/1.0'
         ..headers['Accept-Language'] = 'lt,en;q=0.8';
+      if (_sessionCookie != null) {
+        request.headers['Cookie'] = _sessionCookie!;
+      }
       final response = await client
           .send(request)
           .timeout(const Duration(seconds: 20));
+      _rememberSession(response.headers['set-cookie']);
       if ([301, 302, 303, 307, 308].contains(response.statusCode)) {
         await response.stream.drain<void>();
         final location = response.headers['location'];
@@ -86,6 +93,49 @@ class MedicinePriceService {
       return html.parse(utf8.decode(bytes));
     }
     throw const FormatException('Too many redirects');
+  }
+
+  Future<Document> _loadOffers(Uri uri, Document productPage) async {
+    final token = productPage
+        .querySelector('#section5[data-token]')
+        ?.attributes['data-token'];
+    if (token == null || !RegExp(r'^[a-f0-9]{16,64}$').hasMatch(token)) {
+      throw const FormatException('Missing medicine price token');
+    }
+    final request = http.Request('POST', uri)
+      ..headers['User-Agent'] =
+          'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
+              'Chrome/152 Mobile Safari/537.36 MediBox/1.0'
+      ..headers['Accept-Language'] = 'lt,en;q=0.8'
+      ..headers['X-Requested-With'] = 'XMLHttpRequest'
+      ..headers['Referer'] = uri.toString()
+      ..bodyFields = {'task': 'elvaistines', token: '1'};
+    if (_sessionCookie != null) request.headers['Cookie'] = _sessionCookie!;
+    final response = await client
+        .send(request)
+        .timeout(const Duration(seconds: 20));
+    _rememberSession(response.headers['set-cookie']);
+    if (response.statusCode != 200) {
+      await response.stream.drain<void>();
+      throw StateError('Medicine offers HTTP ${response.statusCode}');
+    }
+    final bytes = <int>[];
+    await for (final chunk in response.stream.timeout(
+      const Duration(seconds: 20),
+    )) {
+      bytes.addAll(chunk);
+      if (bytes.length > 2000000) {
+        throw const FormatException('Oversized medicine offers');
+      }
+    }
+    return html.parse(utf8.decode(bytes));
+  }
+
+  void _rememberSession(String? setCookie) {
+    final match = RegExp(r'(?:^|[,;]\s*)(PHPSESSID=[^;,\s]+)').firstMatch(
+      setCookie ?? '',
+    );
+    if (match != null) _sessionCookie = match.group(1);
   }
 
   Future<MedicinePriceComparison> find(
@@ -117,7 +167,10 @@ class MedicinePriceService {
       page = await _get(productUrl);
     }
 
-    final offers = parseOffers(page);
+    var offers = parseOffers(page);
+    if (offers.isEmpty) {
+      offers = parseOffers(await _loadOffers(productUrl, page));
+    }
     if (offers.isEmpty) throw const FormatException('No medicine prices');
     final result = MedicinePriceComparison(
       productUrl: productUrl.toString(),
