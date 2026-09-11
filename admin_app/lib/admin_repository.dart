@@ -57,8 +57,8 @@ class AdminRepository {
       firestore.collection('userProfiles').get(),
       firestore.collection('premiumRequests').get(),
     ]);
-    final profiles = results[0] as QuerySnapshot<Map<String, dynamic>>;
-    final requests = results[1] as QuerySnapshot<Map<String, dynamic>>;
+    final profiles = results[0];
+    final requests = results[1];
     final subscriptions = await Future.wait(
       profiles.docs.map(
         (profile) => firestore
@@ -167,4 +167,3 @@ class AdminRepository {
     });
   }
 }
-
