@@ -148,7 +148,7 @@ class MedicinePriceService {
           uri.host == 'vaistai.lt' &&
           uri.path.endsWith('.html') &&
           !uri.path.startsWith('/paieska/')) {
-        matches.add(uri.replace(query: '', fragment: ''));
+        matches.add(_withoutQuery(uri));
       }
     }
     if (matches.length != 1) {
@@ -173,7 +173,7 @@ class MedicinePriceService {
       if (!title.startsWith(identity) || !title.endsWith(package)) continue;
       final uri = productUrl.resolve(link.attributes['href']!);
       if (uri.scheme == 'https' && uri.host == 'vaistai.lt') {
-        variants.add(uri.replace(query: '', fragment: ''));
+        variants.add(_withoutQuery(uri));
       }
     }
     if (variants.length == 1) return variants.single;
@@ -190,6 +190,9 @@ class MedicinePriceService {
     if (normalize(title).startsWith(normalize(medicine.name))) return title;
     return medicine.packageSize.trim();
   }
+
+  static Uri _withoutQuery(Uri uri) =>
+      Uri.parse('${uri.scheme}://${uri.authority}${uri.path}');
 
   static List<MedicinePriceOffer> parseOffers(Document page) {
     final offers = <MedicinePriceOffer>[];

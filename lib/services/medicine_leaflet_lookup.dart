@@ -100,7 +100,9 @@ class MedicineLeafletLookup {
           uri.host == 'vaistai.lt' &&
           uri.path.endsWith('.html') &&
           !uri.path.startsWith('/paieska/')) {
-        matches.add(uri.replace(query: '', fragment: '').toString());
+        matches.add(
+          Uri.parse('${uri.scheme}://${uri.authority}${uri.path}').toString(),
+        );
       }
     }
     if (matches.length != 1) throw const FormatException('No unique exact leaflet');
