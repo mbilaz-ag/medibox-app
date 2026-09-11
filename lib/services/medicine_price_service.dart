@@ -177,13 +177,16 @@ class MedicinePriceService {
       }
     }
     if (variants.length == 1) return variants.single;
-    final currentLabel = normalize('${page.title} ${_packageLabel(page, medicine)}');
+    final currentLabel = normalize(
+      '${page.querySelector('title')?.text ?? ''} '
+      '${_packageLabel(page, medicine)}',
+    );
     if (currentLabel.contains(package)) return null;
     throw const FormatException('Exact medicine package not found');
   }
 
   static String _packageLabel(Document page, Med medicine) {
-    final title = page.title.trim();
+    final title = (page.querySelector('title')?.text ?? '').trim();
     if (normalize(title).startsWith(normalize(medicine.name))) return title;
     return medicine.packageSize.trim();
   }
